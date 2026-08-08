@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Configura tu agente Hermes</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">H</div>
+        <div class="brand-text">
+          <div class="brand-title">Hermes</div>
+          <div class="brand-sub">Asistente de configuración</div>
+        </div>
+      </div>
+      <ol class="stepper" id="stepper"></ol>
+      <div class="sidebar-foot">
+        <span class="dot-ok"></span>
+        <span id="conn">Local · privado</span>
+      </div>
+    </aside>
+
+    <main class="stage">
+      <div class="panel-wrap">
+        <section class="panel" id="panel"><!-- rendered by app.js --></section>
+      </div>
+      <footer class="nav">
+        <button class="btn btn-ghost" id="navBack">← Atrás</button>
+        <div class="nav-progress" id="navProgress"></div>
+        <button class="btn btn-primary" id="navNext">Continuar →</button>
+      </footer>
+    </main>
+  </div>
+
+  <div class="toast" id="toast"></div>
+  <script src="app.js"></script>
+</body>
+</html>

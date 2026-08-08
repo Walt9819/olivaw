@@ -1,0 +1,9 @@
+# Keep LF in the repo so shell/.command scripts run on macOS/Linux.
+* text=auto eol=lf
+# Windows-only scripts keep CRLF.
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.vbs text eol=crlf
+# Treat model/binary assets as binary (none tracked yet, but future-proof).
+*.png binary
+*.zip binary

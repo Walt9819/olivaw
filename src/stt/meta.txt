@@ -1,0 +1,2 @@
+model: cuda/float16 loaded in 11.0s
+device=cuda model=medium lang=es audio=16.4s decode=4.6s

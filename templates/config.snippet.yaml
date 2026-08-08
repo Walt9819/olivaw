@@ -1,0 +1,30 @@
+# Hermes config snippet — merge these keys into the user's Hermes config.yaml so
+# Hermes uses the local bridge (Claude Code) as its model. The installer does this
+# automatically (with a backup); shown here for reference / manual setup.
+
+model:
+  default: claude-code
+  provider: custom
+  base_url: http://127.0.0.1:8790/v1
+  context_length: 1000000        # advertise a big window; Hermes compacts at threshold ×
+
+compression:
+  enabled: true
+  threshold: 0.5                 # compact at ~500k tokens
+
+# Enable subagents (delegate_task) + clean Telegram UX on the chat platform:
+platform_toolsets:
+  telegram:
+    - hermes-telegram
+    - delegation
+
+display:
+  platforms:
+    telegram:
+      tool_progress: 'off'
+      interim_assistant_messages: false
+      background_process_notifications: 'off'
+      cleanup_progress: true
+
+# NOTE: the OpenAI-style client needs a non-empty API key even though the bridge
+# ignores it — set OPENAI_API_KEY=sk-local-not-used in the environment/.env.

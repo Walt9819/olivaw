@@ -1,0 +1,268 @@
+# iGalenus STT glossary
+# Domain terms / proper nouns primed into faster-whisper's initial_prompt so they
+# transcribe with the correct spelling instead of phonetic guesses.
+#
+# Rules:
+#   - One term or short phrase per line.
+#   - Lines starting with # and blank lines are ignored.
+#   - Keep it curated: Whisper's initial_prompt is a soft bias with a ~224-token
+#     budget, so add the HIGH-VALUE jargon (product names, acronyms, people,
+#     medical terms) rather than everything.
+#   - transcribe.py loads this file automatically on every run; just edit and save.
+
+# --- Product / platform ---
+iGalenus
+Galenus
+INTELIGENCIA.GALENUS
+Patients.iGalenus.com
+gbook
+gbook-gcp
+gbot
+ece
+cold start
+
+# --- Tools / tech ---
+Claude
+Claude Code
+Hermes
+GPU
+RTX A2000
+OpenAI
+Anthropic
+ElevenLabs
+
+# --- Domain / billing / compliance ---
+CFDI
+facturacion
+NOM-024
+NOM-024-SSA3-2012
+OAuth
+WhatsApp
+
+# --- NOM-024 / certificacion SIRES ---
+SIRES
+DGIS
+GIIS
+GIIS-A004
+GIIS-B015
+SGSI
+CIF
+CLUES
+RENAPO
+CURP
+SINBA
+SNIBMS
+SIS
+SEUL
+GOBI
+INDAUTOR
+INEGI
+Consulta Externa
+Paquete Informativo
+Declaracion de Aplicabilidad
+catalogos DGIS
+archivo de intercambio
+derechohabiencia
+somatometria
+
+# --- Medical / clinical ---
+oftalmologia
+medicina interna
+genetista
+Pedigree
+HPO
+ICD-11
+arbol genealogico
+residentes R4 y R5
+expediente clinico
+receta
+consulta
+dictado
+muletillas
+
+gbook
+gbook_tenants
+Salenus
+openclaw
+ignumber
+expediente
+LangGraph
+Cloud Run
+pgvector
+Nouvelle Dermaestetica
+Valeria
+
+# --- gbook unified platform (scheduling + EHR) ---
+GNOX
+django-tenants
+Deepgram
+Scribe
+NOM-004
+Odoo
+partner de Odoo
+Odoo Partner
+res.partner
+orden de venta
+OV
+ERP
+videollamada
+videoconsulta
+telemedicina
+apoderado
+Stripe
+Stripe Terminal
+Tap to Pay
+
+# --- People ---
+Maria
+Sarhej
+Mariana
+Mariana Castello
+Jorge Elias
+Izabel
+Pamela
+Jaime Macias
+Ashley
+Kowatzin
+Marlon
+Fernando Perez
+Laura Ramirez
+Maria Alcozer
+
+# --- Team (iGalenus) ---
+Arturo
+Claudia
+Montse
+Rene
+Andres
+
+# --- Colaboradores externos ---
+Gaby Hernandez
+Gaby Hernández
+
+# --- Certificacion / eventos ---
+pre-revision documental
+preverificacion
+InnovaFest
+Anexo 1 A
+Anexo 2
+
+# --- Clinics / accounts ---
+Clinica Santa Lucia
+Medica Mas Visual
+Enfocar
+Veoo
+
+# --- Competitors ---
+Alida
+LIDA
+Eleonor
+Revai
+eleonor.mx
+Luis Barrón
+Mariana
+Nouvelle Dermaestética
+Samara Chávez
+Coexistence
+WABA
+Cloud API
+Mariana Serrano
+Andy
+cotizador
+micas
+graduación
+Castello
+Sarhej Nava
+triptico
+Nouvelle
+cookies
+
+# --- CRM iGalenus (bot Maria / Nouvelle) ---
+crm-igalenus
+agent_engine
+Meta Cloud API
+Embedded Signup
+Celery
+Star Medica
+Queretaro
+msgstore
+
+# --- Tratamientos Nouvelle ---
+Janus
+HydraFacial
+DiamondGlow
+OxyGeneo
+Liftera
+Venus Viva
+Dermapen
+Profhilo
+Sculptra
+Radiesse
+Ultracol
+PDRN
+bioestimuladores
+biorremodeladores
+PIO
+presión intraocular
+AV
+agudeza visual
+paquimetría
+Goldmann
+iCare
+Tonopen
+AV s/c
+AV c/c
+mmHg
+eje
+cilindro
+esfera
+lensometría
+DR (dosis reducción)
+dosis reducción
+cédula profesional
+bitácora
+optometría
+heredofamiliares
+antecedentes heredofamiliares
+biomicroscopía
+fondo de ojo
+queratometría
+dioptrías
+bitácora médica
+descripción de normalidad
+Sarhej Nava
+Jibot
+Jibook
+Betania
+Izabel Ríos
+Jorge Elías
+pedigrí
+heterocigoto
+homocigoto
+fertilización in vitro
+FIV
+GIIS
+LIIGH
+LIIGH-UNAM
+Juriquilla
+formato PED
+archivo PED
+PLINK
+LINKAGE
+enfermedades raras
+Family ID
+Individual ID
+Father ID
+Mother ID
+affection
+genomica
+Claudia Gonzaga
+Gonzaga-Jauregui
+CEPCAL
+ERCAL
+Antigua Guatemala
+Gabriela Repetto
+Victor Raggio
+Susana Grosso
+Red Mexicana de Enfermedades Raras
+Baylor

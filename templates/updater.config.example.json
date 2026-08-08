@@ -1,0 +1,23 @@
+{
+  "_comment": "Copy to <install>/updater.config.json and fill in. Holds the supervisor's settings + the token used ONLY to send the user a Telegram 'updated' note. Never commit this file.",
+
+  "repo": "Walt9819/olivaw",
+  "auto_update": true,
+
+  "bridge_cmd": ["PYTHON_PATH", "src/claude_bridge.py"],
+  "bridge_cwd": "INSTALL_DIR",
+  "bridge_url": "http://127.0.0.1:8790",
+  "env": {
+    "CLAUDE_BRIDGE_CLAUDE": "ABSOLUTE_PATH_TO_claude",
+    "CLAUDE_BRIDGE_WORKSPACE": "PATH_TO_hermes-workspace"
+  },
+
+  "telegram_bot_token": "THE_BOT_TOKEN",
+  "telegram_chat_id": "THE_USER_CHAT_ID",
+  "maintainer_chat_id": "YOUR_CHAT_ID_FOR_FAILURE_ALERTS",
+
+  "poll_minutes": 45,
+  "idle_seconds": 300,
+  "nightly_hour": 4,
+  "lang": "es"
+}
