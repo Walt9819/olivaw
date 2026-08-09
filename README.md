@@ -17,6 +17,40 @@ Telegram ⇄ Hermes gateway ⇄ bridge (localhost:8790) ⇄ claude -p  (Claude C
                           supervisor: keeps it alive + auto-updates when idle
 ```
 
+## 🚀 Empezar en ~15 minutos (guía para no-técnicos)
+
+> Esta guía es para ti si alguien te compartió **olivaw** y quieres tu propio asistente.
+> Lo normal es hacerlo **una vez, con la ayuda de quien te lo compartió**. No necesitas saber programar.
+
+**Lo que necesitas antes:**
+- Una **cuenta de pago de Claude** (plan Pro o Max) → [claude.com](https://claude.com). Es lo que le da “cerebro” a tu agente.
+- Tu ayudante instalará por ti (si no los tienes) cuatro programas gratuitos: Python, Node.js, Claude Code y Hermes. El instalador te dice cuál falta.
+
+**Paso 1 — Instálalo.** En **Windows**, busca “PowerShell” en el menú de inicio, ábrelo, pega esto y pulsa Enter:
+```powershell
+powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/Walt9819/olivaw/main/install/install-windows.ps1 -OutFile $env:TEMP\olivaw.ps1; & $env:TEMP\olivaw.ps1"
+```
+En **Mac**, abre la app “Terminal”, pega esto y pulsa Enter:
+```bash
+curl -fsSL https://raw.githubusercontent.com/Walt9819/olivaw/main/install/install-macos.command -o ~/olivaw.command && HB_REPO=Walt9819/olivaw bash ~/olivaw.command
+```
+Se descarga solo, verifica que todo esté bien y abre un **asistente en tu navegador**.
+
+**Paso 2 — Sigue el asistente** (te lleva de la mano y prueba cada paso):
+1. Elige el cerebro (**Claude Code**) y pulsa **“Probar el cerebro”**.
+2. Conecta **Hermes**.
+3. Ponle **nombre** a tu agente y dile **para qué** lo quieres.
+4. Conéctalo a tu **Telegram** (te ayuda a crear el bot con BotFather y te deja como su único dueño).
+5. Pulsa **“Aplicar y activar”**.
+
+**Paso 3 — Háblale.** Abre tu bot en Telegram y salúdalo. ¡Ya piensa por ti! 🎉
+
+**¿Y las actualizaciones?** No haces nada. Se actualiza **solo y en silencio** cuando no lo estás usando; solo te llega un aviso: *“🔄 se actualizó a la versión X”*.
+
+**¿Algo falló?** Escríbele a quien te compartió olivaw — casi siempre es un programa que faltó instalar, y el asistente te dice cuál.
+
+---
+
 ## How updates work (the important part)
 
 A tiny **supervisor** (`src/launcher.py`) is what auto-starts at login — not the bridge directly.
@@ -128,9 +162,15 @@ skip the wizard and configure from parameters (add `-NoWizard` / `HB_NO_WIZARD=1
 
 ## Publishing an update (maintainer)
 
+One-time setup (so `--publish` can create the GitHub Release):
+```powershell
+winget install --id GitHub.cli -e   # install the GitHub CLI once
+gh auth login                       # GitHub.com → HTTPS → login with a browser
+```
+Then, for every update:
 ```bash
 python tools/release.py patch -m "Ahora puede ver imágenes que le mandes" --publish
-# bumps VERSION, builds + checksums the release zip, creates the GitHub Release.
+# bumps VERSION, builds + checksums the release zip, creates the GitHub Release via gh.
 ```
 Every installed supervisor picks it up and applies it when idle. Config changes ship as idempotent
 `--migration` steps in the release manifest.
