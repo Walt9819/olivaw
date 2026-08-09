@@ -163,6 +163,7 @@ def initial_state():
         "default_provider": providers.DEFAULT_ID,
         "usecases": usecases.public_list(),
         "smtp_providers": channels.SMTP_PROVIDERS,
+        "image_options": channels.IMAGE_OPTIONS,
     }
 
 
@@ -503,6 +504,16 @@ class Handler(BaseHTTPRequestHandler):
         if sub == "send-test":
             return channels.send_test(body.get("target", ""),
                                       body.get("text", "Prueba desde el asistente ✅"), profile)
+        if sub == "tools-setup":
+            return channels.tools_setup(profile)
+        if sub == "mcp-catalog":
+            return channels.mcp_catalog(profile)
+        if sub == "mcp-list":
+            return channels.mcp_list(profile)
+        if sub == "mcp-install":
+            return channels.mcp_install(body.get("name", ""), profile)
+        if sub == "mcp-add":
+            return channels.mcp_add(body.get("name", ""), body.get("url", ""), profile)
         return {"ok": False, "detail": "canal desconocido"}
 
     def _agent_action(self, slug, action):

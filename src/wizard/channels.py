@@ -8,6 +8,7 @@ its wrapper, so channels for agent B never touch agent A.
 """
 
 import os
+import re
 import smtplib
 import ssl
 import subprocess
@@ -138,3 +139,74 @@ def email_test(host, port, user, password, from_addr, to_addr, secure):
 # ── generic outbound test (reuses configured platform creds) ────────────────────
 def send_test(target, text="Prueba desde el asistente ✅", profile=None, hermes=None):
     return hermes_ctl.send(target, text, hermes, profile)
+
+
+# ── Capabilities: image/video/vision toolsets ──────────────────────────────────
+# Hermes ships these image providers, ALL requiring a paid/keyed API:
+#   deepinfra, fal, krea, openai, openai-codex, openrouter, xai
+# None is free-no-key, local, or Google. So we surface the honest free paths as
+# guidance and drive `hermes setup tools` (which enables the toolset AND captures the
+# provider + key correctly). The genuinely-free providers below need a small custom
+# Hermes plugin (Pollinations / Gemini / local GPU) — offered separately.
+IMAGE_OPTIONS = [
+    {"id": "local", "label": "GPU local — Stable Diffusion", "free": True, "ships": False,
+     "note": "Gratis, ilimitado y privado: genera en tu propia GPU (igual que tu STT/TTS "
+             "local). Requiere instalar un modelo. Necesita un conector local (te lo armo).",
+     "link": ""},
+    {"id": "gemini", "label": "Google Gemini — capa gratuita", "free": True, "ships": False,
+     "note": "Usa tu cuenta de Google: crea una API key GRATIS en Google AI Studio. Buena "
+             "calidad y capa gratuita amplia. Necesita un conector (te lo armo).",
+     "link": "https://aistudio.google.com/app/apikey"},
+    {"id": "pollinations", "label": "Pollinations — gratis, sin cuenta", "free": True, "ships": False,
+     "note": "Sin registro ni clave: lo más simple para empezar. Necesita un conector (te lo armo).",
+     "link": "https://pollinations.ai"},
+    {"id": "openrouter", "label": "OpenRouter — clave gratis", "free": False, "ships": True,
+     "note": "Clave gratuita; algunos modelos de imagen son gratis o muy baratos. Ya soportado "
+             "por Hermes (elige 'openrouter' en la configuración).",
+     "link": "https://openrouter.ai/keys"},
+    {"id": "paid", "label": "OpenAI · xAI · fal · DeepInfra — de pago", "free": False, "ships": True,
+     "note": "Alta calidad, requieren clave de pago. Ya soportados por Hermes.", "link": ""},
+]
+
+
+def tools_setup(profile=None):
+    """Open Hermes' interactive tool configurator (enables image/video/vision toolsets per
+    platform AND captures the provider + API key — the correct place for that)."""
+    return launch_terminal(profile, "setup tools", title="Hermes - Capacidades")
+
+
+# ── Connectors (MCP) — the RIGHT place for connectors (Hermes-side, works via the
+#    bridge). Claude Code MCP connectors do NOT work here (the bridge disables them). ──
+def mcp_catalog(profile=None, hermes=None):
+    r = hermes_ctl._run(["mcp", "catalog"], hermes, timeout=40, profile=profile)
+    rows = []
+    for line in (r["out"] or "").splitlines():
+        s = line.strip()
+        low = s.lower()
+        if (not s or low.startswith(("name", "install", "picker", "catalog", "mcp"))
+                or "hermes mcp" in low or set(s) <= set("- ")):
+            continue
+        cols = re.split(r"\s{2,}", s)
+        if len(cols) >= 2 and re.fullmatch(r"[A-Za-z0-9_.-]+", cols[0]):
+            rows.append({"name": cols[0], "status": cols[1] if len(cols) > 1 else "",
+                         "desc": cols[2] if len(cols) > 2 else ""})
+    return {"ok": r["ok"], "servers": rows, "detail": (r["err"] or "")[:200]}
+
+
+def mcp_list(profile=None, hermes=None):
+    r = hermes_ctl._run(["mcp", "list"], hermes, timeout=30, profile=profile)
+    return {"ok": r["ok"], "detail": (r["out"] or r["err"])[:800]}
+
+
+def mcp_install(name, profile=None):
+    """Install a catalog MCP server (may require OAuth login -> runs in a terminal)."""
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", name or ""):
+        return {"ok": False, "detail": "Nombre de conector invalido."}
+    return launch_terminal(profile, "mcp install " + name, title="Hermes MCP: " + name)
+
+
+def mcp_add(name, url, profile=None):
+    """Add a custom remote MCP server by URL (may require OAuth -> runs in a terminal)."""
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", name or "") or not (url or "").startswith("http"):
+        return {"ok": False, "detail": "Nombre o URL invalidos."}
+    return launch_terminal(profile, 'mcp add %s --url %s' % (name, url), title="Hermes MCP: " + name)

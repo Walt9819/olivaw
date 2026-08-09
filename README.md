@@ -138,9 +138,19 @@ How it works:
 - **Gateways survive reboot:** the supervisor also keeps each extra agent's Hermes gateway alive
   (`<slug> gateway run --external-supervisor`), so channels come back after a restart.
 
-### Extra channels (optional, per agent)
+### Extras: capabilities, connectors & channels (optional, per agent)
 
-A final optional step connects an agent to more channels — each guided and testable:
+A final optional step gives an agent more power — all Hermes-side, so it actually works through
+the bridge (Claude Code MCP connectors do **not** work here — the bridge disables them):
+
+- **Image / video generation** — opens `hermes setup tools` to enable the toolset and pick a
+  provider. The wizard lists free/low-cost options (local GPU, Google Gemini free tier,
+  Pollinations no-key, OpenRouter) alongside the paid ones Hermes ships
+  (openai, xai, fal, deepinfra, krea).
+- **Connectors (MCP)** — browse the Hermes catalog (`hermes mcp catalog`) and install with one
+  click, or add a custom server by URL. This is the correct place for connectors like Pixa.
+
+…and it connects an agent to more channels — each guided and testable:
 
 - **WhatsApp** — opens `hermes whatsapp` (personal, QR) or `whatsapp-cloud` (Business API) in a terminal.
 - **Slack** — generates the app manifest (`hermes slack manifest`) to paste at api.slack.com, then

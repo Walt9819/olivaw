@@ -27,7 +27,7 @@
   if (!S.agent) S.agent = { mode: "default", slug: "default" };
   if (!S.smtp) S.smtp = { provider: "gmail", port: 587, secure: "starttls" };
   var META = { providers: [], usecases: [], default_provider: "claude-code", hermes: {},
-    agents: { default: null, extra: [] }, smtp_providers: [] };
+    agents: { default: null, extra: [] }, smtp_providers: [], image_options: [] };
 
   function save() { try { localStorage.setItem(LS, JSON.stringify(S)); } catch (e) {} }
   function load() { try { return JSON.parse(localStorage.getItem(LS)); } catch (e) { return null; } }
@@ -676,8 +676,37 @@
     return '' +
       '<div class="eyebrow">Paso 6 · Más canales <span class="muted">(opcional)</span></div>' +
       '<h1>¿Por dónde más pueden hablarle?</h1>' +
-      '<p class="lead">Tu agente ya vive en Telegram. Si quieres, conéctalo también a otros ' +
-      'canales. Cada uno es opcional y puedes volver luego.</p>' +
+      '<p class="lead">Tu agente ya vive en Telegram. Aquí puedes darle más capacidades ' +
+      '(imágenes, video), conectar herramientas externas, y sumar más canales. Todo es opcional.</p>' +
+
+      // Capabilities: image / video generation
+      '<details open><summary>🎨 Generación de imágenes y video</summary>' +
+      '<p class="small muted">Activa la generación en Hermes (se abre una ventana para elegir ' +
+      'proveedor y su clave). Opciones gratis o con tu cuenta de Google:</p>' +
+      (META.image_options || []).map(function (o) {
+        return '<div class="row" style="gap:8px;align-items:flex-start;margin-bottom:6px">' +
+          '<span>' + (o.free ? '🆓' : '💳') + '</span><div class="grow"><b class="small">' +
+          esc(o.label) + '</b><div class="muted small">' + esc(o.note) +
+          (o.link ? ' <a href="' + esc(o.link) + '" target="_blank" rel="noopener">abrir</a>' : '') +
+          '</div></div></div>';
+      }).join("") +
+      '<div class="row" style="margin-top:8px"><button class="btn btn-soft btn-sm" id="capImg">Configurar imágenes en Hermes</button></div>' +
+      chLine("capPill") + '</details>' +
+
+      // Connectors (MCP)
+      '<details><summary>🧩 Conectores (MCP)</summary>' +
+      '<p class="small muted">Conecta herramientas externas <b>del lado de Hermes</b> — así sí ' +
+      'funcionan con tu agente. (Los conectores de Claude Code no funcionan aquí.)</p>' +
+      '<div class="row"><button class="btn btn-soft btn-sm" id="mcpCat">Ver catálogo</button>' +
+      '<button class="btn btn-soft btn-sm" id="mcpMine">Ver instalados</button></div>' +
+      '<div id="mcpList" style="margin-top:10px"></div>' +
+      '<div class="hr"></div><b class="small">Añadir uno personalizado</b>' +
+      '<label class="field" style="margin-top:8px"><span class="lab">Nombre</span>' +
+      '<input type="text" id="mcpName" placeholder="pixa"></label>' +
+      '<label class="field"><span class="lab">URL del servidor MCP</span>' +
+      '<input type="text" id="mcpUrl" placeholder="https://..."></label>' +
+      '<div class="row"><button class="btn btn-soft btn-sm" id="mcpAdd">Añadir</button></div>' +
+      chLine("mcpPill") + '</details>' +
 
       // WhatsApp
       '<details open><summary>💬 WhatsApp</summary>' +
@@ -737,6 +766,47 @@
   function eChannels() {
     if (!S.applied) return;
     var prof = targetProfile(), ws = targetWorkspace();
+
+    // Capabilities: image/video setup (launches hermes setup tools)
+    var capPill = el("capPill");
+    if (el("capImg")) el("capImg").onclick = function () {
+      capPill.style.display = "inline-flex";
+      runTest(this, capPill, function () { return api("channel/tools-setup", { profile: prof }); }, "Abriendo…");
+    };
+
+    // Connectors (MCP)
+    var mcpPill = el("mcpPill");
+    if (el("mcpCat")) el("mcpCat").onclick = function () {
+      var b = this; b.disabled = true;
+      api("channel/mcp-catalog", { profile: prof }).then(function (r) {
+        b.disabled = false;
+        var box = el("mcpList");
+        if (!r || !r.ok || !(r.servers || []).length) { box.innerHTML = '<span class="muted small">Catálogo no disponible.</span>'; return; }
+        box.innerHTML = r.servers.map(function (s) {
+          return '<div class="row" style="justify-content:space-between;border-bottom:1px solid var(--line-2);padding:6px 0">' +
+            '<div class="grow"><b class="small">' + esc(s.name) + '</b> <span class="muted small">' + esc(s.desc || "") + '</span></div>' +
+            '<button class="btn btn-soft btn-sm" data-mcp="' + esc(s.name) + '">Instalar</button></div>';
+        }).join("");
+        Array.prototype.forEach.call(box.querySelectorAll("[data-mcp]"), function (btn) {
+          btn.onclick = function () {
+            mcpPill.style.display = "inline-flex";
+            runTest(btn, mcpPill, function () { return api("channel/mcp-install", { profile: prof, name: btn.getAttribute("data-mcp") }); }, "Abriendo…");
+          };
+        });
+      });
+    };
+    if (el("mcpMine")) el("mcpMine").onclick = function () {
+      var b = this; b.disabled = true;
+      api("channel/mcp-list", { profile: prof }).then(function (r) {
+        b.disabled = false;
+        el("mcpList").innerHTML = '<pre>' + esc((r && r.detail) || "—") + '</pre>';
+      });
+    };
+    if (el("mcpAdd")) el("mcpAdd").onclick = function () {
+      mcpPill.style.display = "inline-flex";
+      var name = (el("mcpName") || {}).value, url = (el("mcpUrl") || {}).value;
+      runTest(this, mcpPill, function () { return api("channel/mcp-add", { profile: prof, name: name, url: url }); }, "Abriendo…");
+    };
 
     var wa = el("waPair"), waPill = el("waPill");
     if (wa) wa.onclick = function () {
@@ -820,6 +890,7 @@
         META.hermes = st.hermes || {};
         META.agents = st.agents || { default: null, extra: [] };
         META.smtp_providers = st.smtp_providers || [];
+        META.image_options = st.image_options || [];
         META.default_provider = st.default_provider || "claude-code";
         var d = st.defaults || {};
         // fill only empty fields (don't clobber a resumed session)
