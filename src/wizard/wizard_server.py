@@ -506,6 +506,12 @@ class Handler(BaseHTTPRequestHandler):
                                       body.get("text", "Prueba desde el asistente ✅"), profile)
         if sub == "tools-setup":
             return channels.tools_setup(profile)
+        if sub == "history-status":
+            return channels.history_status(profile)
+        if sub == "history-enable":
+            return channels.history_enable(profile)
+        if sub == "sessions-recent":
+            return channels.sessions_recent(profile)
         if sub == "mcp-catalog":
             return channels.mcp_catalog(profile)
         if sub == "mcp-list":

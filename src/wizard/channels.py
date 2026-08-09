@@ -175,6 +175,36 @@ def tools_setup(profile=None):
     return launch_terminal(profile, "setup tools", title="Hermes - Capacidades")
 
 
+# ── Conversation memory / history (resume past conversations) ──────────────────
+# The agent can search + resume past conversations via Hermes' `session_search` tool and
+# the SQLite session store (`hermes sessions browse`). By default `session_search` is only
+# in the `cli` toolset, NOT chat platforms — so on Telegram the agent can't recall history.
+# NOTE: `hermes config set` mangles list values into a scalar string, so we must NOT use it
+# to edit platform_toolsets. The sanctioned enable path is the interactive `setup tools`.
+def history_status(profile=None, hermes=None):
+    """Report whether session_search is enabled on the common chat platforms."""
+    out = {"ok": True, "platforms": {}}
+    for plat in ("telegram", "cli", "whatsapp", "slack", "discord"):
+        raw = hermes_ctl.config_get("platform_toolsets.%s" % plat, hermes, profile)
+        if not raw:
+            continue
+        out["platforms"][plat] = "session_search" in raw
+    out["enabled_telegram"] = out["platforms"].get("telegram", False)
+    return out
+
+
+def history_enable(profile=None):
+    """Open Hermes' tool configurator so the user can turn on Session Search for their
+    channel (Session Search is item ~16 under each platform). Sanctioned + safe."""
+    return launch_terminal(profile, "setup tools", title="Hermes - Memoria de conversaciones")
+
+
+def sessions_recent(profile=None, hermes=None, limit=10):
+    """List recent stored sessions (proof the history exists / is searchable)."""
+    r = hermes_ctl._run(["sessions", "list"], hermes, timeout=30, profile=profile)
+    return {"ok": r["ok"], "detail": (r["out"] or r["err"])[:1500]}
+
+
 # ── Connectors (MCP) — the RIGHT place for connectors (Hermes-side, works via the
 #    bridge). Claude Code MCP connectors do NOT work here (the bridge disables them). ──
 def mcp_catalog(profile=None, hermes=None):

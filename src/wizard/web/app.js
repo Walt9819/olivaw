@@ -679,8 +679,19 @@
       '<p class="lead">Tu agente ya vive en Telegram. Aquí puedes darle más capacidades ' +
       '(imágenes, video), conectar herramientas externas, y sumar más canales. Todo es opcional.</p>' +
 
+      // Conversation memory / history (resume past conversations)
+      '<details open><summary>🧠 Memoria de conversaciones (recordar y retomar)</summary>' +
+      '<p class="small muted">Deja que tu agente <b>recuerde y retome</b> conversaciones pasadas: ' +
+      'busca en su historial, continúa un hilo anterior o empieza uno nuevo cuando aplica. ' +
+      'En Telegram esto requiere activar «Session Search» (por defecto solo está en la CLI).</p>' +
+      '<div class="row"><button class="btn btn-soft btn-sm" id="histStatus">Ver estado</button>' +
+      '<button class="btn btn-primary btn-sm" id="histEnable">Activar memoria</button>' +
+      '<button class="btn btn-soft btn-sm" id="histList">Ver conversaciones recientes</button></div>' +
+      '<div id="histBox" style="margin-top:8px"></div>' +
+      chLine("histPill") + '</details>' +
+
       // Capabilities: image / video generation
-      '<details open><summary>🎨 Generación de imágenes y video</summary>' +
+      '<details><summary>🎨 Generación de imágenes y video</summary>' +
       '<p class="small muted">Activa la generación en Hermes (se abre una ventana para elegir ' +
       'proveedor y su clave). Opciones gratis o con tu cuenta de Google:</p>' +
       (META.image_options || []).map(function (o) {
@@ -766,6 +777,35 @@
   function eChannels() {
     if (!S.applied) return;
     var prof = targetProfile(), ws = targetWorkspace();
+
+    // Conversation memory / history
+    var histPill = el("histPill");
+    if (el("histStatus")) el("histStatus").onclick = function () {
+      var b = this; b.disabled = true;
+      api("channel/history-status", { profile: prof }).then(function (r) {
+        b.disabled = false;
+        var box = el("histBox"); if (!r) { box.innerHTML = ""; return; }
+        var rows = Object.keys(r.platforms || {}).map(function (p) {
+          return '<div class="small">' + (r.platforms[p] ? "✅" : "⬜") + " " + esc(p) +
+            (r.platforms[p] ? " — memoria activa" : " — sin memoria") + "</div>";
+        }).join("");
+        box.innerHTML = rows + (r.enabled_telegram ? "" :
+          '<div class="callout warn small" style="margin-top:6px">En Telegram aún no está activa. ' +
+          'Pulsa «Activar memoria» y marca «Session Search».</div>');
+      });
+    };
+    if (el("histEnable")) el("histEnable").onclick = function () {
+      histPill.style.display = "inline-flex";
+      runTest(this, histPill, function () { return api("channel/history-enable", { profile: prof }); }, "Abriendo…")
+        .then(function (r) { if (r && r.ok) toast("Marca «Session Search» en tu canal, guarda y reinicia el gateway."); });
+    };
+    if (el("histList")) el("histList").onclick = function () {
+      var b = this; b.disabled = true;
+      api("channel/sessions-recent", { profile: prof }).then(function (r) {
+        b.disabled = false;
+        el("histBox").innerHTML = '<pre>' + esc((r && r.detail) || "—") + '</pre>';
+      });
+    };
 
     // Capabilities: image/video setup (launches hermes setup tools)
     var capPill = el("capPill");

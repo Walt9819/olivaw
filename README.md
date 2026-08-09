@@ -143,6 +143,11 @@ How it works:
 A final optional step gives an agent more power — all Hermes-side, so it actually works through
 the bridge (Claude Code MCP connectors do **not** work here — the bridge disables them):
 
+- **Conversation memory** — lets the agent recall and resume past conversations. Hermes keeps a
+  searchable session store, but `session_search` ships only on the `cli` toolset, so on Telegram the
+  agent can't recall history until you enable it. The wizard shows per-platform status and opens
+  `hermes setup tools` to turn on Session Search; every agent's `CLAUDE.md` is also warm-started to
+  recall history before assuming ignorance and to continue vs. start-fresh sensibly.
 - **Image / video generation** — opens `hermes setup tools` to enable the toolset and pick a
   provider. The wizard lists free/low-cost options (local GPU, Google Gemini free tier,
   Pollinations no-key, OpenRouter) alongside the paid ones Hermes ships
