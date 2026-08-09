@@ -116,6 +116,7 @@ Send the final reply to the user (only when no more tool calls are needed):
 
 How to decide well:
 - Use only tool names that appear in <available_tools>, spelled exactly. Never invent a tool. Never use placeholders or guess a missing argument — if you lack a value, call a tool to obtain it.
+- Only the tools in <available_tools> exist here. Any tools, MCP connectors, or integrations from your own Claude Code environment (for example an image generator, Pixa, or other MCP servers) are NOT available in this runtime. If the user asks for a capability that has no matching tool in <available_tools> (e.g. generating an image when no image tool is listed), do NOT emit a call for it — reply with the "final" shape, say plainly that that capability isn't enabled yet, and offer an alternative you can do.
 - Prefer real action (run commands, edit files, save memory, schedule tasks, delegate subtasks) over describing it. When you have enough information to act, act.
 - For big or parallelizable work, delegate independent subtasks with the delegation tool if it is available, and keep going.
 - Keep working across turns until the task is genuinely done; only then use the "final" shape.
@@ -636,10 +637,44 @@ def parse_decision(text, valid_names=None):
     # was salvageable, never dump the raw JSON to the chat — return empty so the
     # do_POST guard sends a safe placeholder instead.
     if _LOOKS_LIKE_TOOLJSON.search(text) or text.lstrip().startswith('{"'):
-        log.warning("unparseable tool/decision JSON in reply; suppressed from chat")
+        log.warning("unparseable tool/decision JSON in reply; will attempt repair")
         return "final", ""
 
     return "final", clean_final(text)
+
+
+# ── recovery for the "empty reply / plain Listo" failure mode ──────────────────
+# Root causes of a silent/empty reply: (1) the brain emitted a tool call for a tool NOT
+# in Hermes' catalog (e.g. a Claude-Code MCP like Pixa, or an image tool that isn't
+# enabled) — keep() drops it and nothing valid remains; (2) malformed/over-escaped JSON
+# (common when writing a file with a large body). Instead of returning a fake "Listo.",
+# we (a) try one cheap reformat round-trip, then (b) return an HONEST message.
+_TOOLNAME_RE = re.compile(r'"(?:name|tool|tool_name|recipient_name)"\s*:\s*"([A-Za-z0-9_.\-]+)"')
+_IMG_HINT_RE = re.compile(r"imag|img|pixa|dall|paint|render|foto|picture|photo", re.I)
+
+REPAIR_PROMPT = (
+    "The text below was meant to be ONE JSON object in this protocol and is malformed "
+    "(bad escaping, stray prose, or truncation). Repair it and output ONLY the corrected "
+    "single JSON object, nothing else. Valid shapes:\n"
+    '{"action":"tools","calls":[{"name":"<tool>","arguments":{...}}]}\n'
+    '{"action":"final","content":"<text>"}\n'
+    "If it references a tool that clearly does not exist, instead output a short "
+    '{"action":"final","content":"..."} that explains you could not do it.\n\n---\n')
+
+
+def _dropped_tool_names(raw, valid_names):
+    """Tool names the brain tried to call that aren't in Hermes' catalog (phantom calls)."""
+    if not valid_names:
+        return set()
+    return {n for n in _TOOLNAME_RE.findall(raw or "") if n not in valid_names}
+
+
+def _dump_unparseable(raw):
+    try:
+        with open(os.path.join(_HERE, "debug_unparseable.txt"), "w", encoding="utf-8") as fh:
+            fh.write(raw or "")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ── Dynamic model + effort router ────────────────────────────────────────────
@@ -1023,6 +1058,11 @@ class Handler(BaseHTTPRequestHandler):
                 valid_names = {(t.get("function", t) or {}).get("name")
                                for t in tools} - {None}
                 kind, value = parse_decision(text, valid_names)
+                # Eradicate the silent/empty "Listo." reply: if the brain's output couldn't
+                # be parsed into the protocol (phantom tool like Pixa, or malformed JSON from
+                # a large file write), try one repair and otherwise return an honest note.
+                if kind == "final" and not (value or "").strip() and (text or "").strip():
+                    kind, value = self._repair_decision(text, valid_names)
             else:
                 prompt = build_plain_prompt(messages)
                 model, effort = choose_model(_latest_user_text(messages), len(prompt), False, req.get("model"))
@@ -1054,7 +1094,8 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 value = clean_final(value)
                 if not value.strip():
-                    value = "Listo."  # never send an empty message to the chat
+                    # Honest fallback — never a fake success like "Listo.".
+                    value = "No pude generar una respuesta esta vez. Puedes reformular?"
                 if stream:
                     self._stream_content(cid, created, value, usage)
                 else:
@@ -1077,6 +1118,39 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             if counted:
                 _inflight_dec()
+
+    def _repair_decision(self, raw, valid_names):
+        """Recover from an unparseable decision reply. NEVER returns a fake success:
+        either a genuinely recovered action/reply, or an honest note to the user."""
+        _dump_unparseable(raw)
+        # 1) cheap stateless reformat — fixes malformed/over-escaped JSON, which is the
+        #    usual reason a file write or a long reply "vanished".
+        try:
+            fixed, _u, _s = run_claude(REPAIR_PROMPT + (raw or "")[:24000],
+                                       AUX_MODEL, EFFORT_LIGHT, persist=False)
+            k, v = parse_decision(fixed, valid_names)
+            if k == "tools" or (k == "final" and (v or "").strip()):
+                log.info("repair round-trip recovered a %s reply", k)
+                return k, v
+        except Exception as e:  # noqa: BLE001
+            log.warning("repair round-trip failed: %s", e)
+        # 2) honest fallback — no fake "Listo."
+        dropped = _dropped_tool_names(raw, valid_names)
+        if dropped:
+            names = ", ".join(sorted(dropped))
+            if _IMG_HINT_RE.search(names):
+                msg = ("Aun no puedo generar imagenes por aqui: no hay una herramienta de imagen "
+                       "habilitada en este agente. (Los conectores de tu Claude Code, como Pixa, "
+                       "no estan disponibles en este runtime.) Puedo ayudarte a activar la "
+                       "generacion de imagenes en Hermes, o describir lo que necesitas.")
+            else:
+                msg = ("Intente usar una herramienta que no esta disponible aqui (%s), asi que no "
+                       "pude completar eso. Puedo intentarlo de otra forma si quieres." % names)
+        else:
+            msg = ("No pude formatear mi respuesta correctamente y prefiero no darte un 'listo' "
+                   "falso. Puedes repetir o reformular? (guarde el detalle en el log).")
+        log.warning("decision unrecovered; honest note (dropped=%s)", sorted(dropped))
+        return "final", msg
 
     def _run_decision(self, messages, tools, stream, requested_model=None, read_images=False):
         """Run one decision turn, resuming the conversation's persistent Claude Code
