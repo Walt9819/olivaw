@@ -20,11 +20,13 @@ Telegram ⇄ Hermes gateway ⇄ bridge (localhost:8790) ⇄ claude -p  (Claude C
 ## 🚀 Empezar en ~15 minutos (guía para no-técnicos)
 
 > Esta guía es para ti si alguien te compartió **olivaw** y quieres tu propio asistente.
-> Lo normal es hacerlo **una vez, con la ayuda de quien te lo compartió**. No necesitas saber programar.
+> No necesitas saber programar. El instalador se encarga de **todo** solo.
 
-**Lo que necesitas antes:**
-- Una **cuenta de pago de Claude** (plan Pro o Max) → [claude.com](https://claude.com). Es lo que le da “cerebro” a tu agente.
-- Tu ayudante instalará por ti (si no los tienes) cuatro programas gratuitos: Python, Node.js, Claude Code y Hermes. El instalador te dice cuál falta.
+**Lo único que necesitas tener tú:**
+- Una **cuenta de pago de Claude** (plan Pro o Max) → [claude.com](https://claude.com). Es el “cerebro” de tu agente; iniciarás sesión una vez.
+- Una **cuenta de Hermes**.
+
+Todo lo demás (Python, Node, Claude Code y el propio Hermes) **se descarga e instala solo** — tú no instalas nada técnico a mano. La primera vez puede tardar varios minutos.
 
 **Paso 1 — Instálalo.** En **Windows**, busca “PowerShell” en el menú de inicio, ábrelo, pega esto y pulsa Enter:
 ```powershell

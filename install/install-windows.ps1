@@ -1,24 +1,22 @@
 <#
-  Hermes Bridge - Windows installer (run WITH the user, once).
+  olivaw - one-click installer (Windows).
 
-  What it does:
-    1. checks prerequisites (Python 3, Node, Claude Code CLI, Hermes) and installs the
-       Claude Code CLI if Node is present;
-    2. downloads the latest release from GitHub (or -LocalSource for first deploys),
-       verifies its SHA-256, and extracts it to the install dir;
-    3. registers the SUPERVISOR to auto-start at login (hidden);
-    4. finishes in the browser onboarding WIZARD (default), or, if -BotToken is given,
-       writes updater.config.json from parameters and starts the supervisor (headless).
+  Goal: the user installs NOTHING technical by hand. This script auto-installs every
+  dependency, then opens the browser wizard. The only things the user provides are their
+  Claude paid account (they log in once) and their Hermes account.
 
-  After this, updates are fully automatic - nothing else to run, ever.
+  What it installs automatically (each step is skipped if already present):
+    1. Hermes  -> official installer (also brings uv, Python, Node.js, ripgrep, ffmpeg, Git Bash)
+    2. uv      -> Astral's Python manager (from Hermes' bin, or bootstrapped)
+    3. Python  -> a uv-managed Python that runs the bridge/supervisor/wizard (no system Python)
+    4. Claude Code -> native installer (no Node required)
+    5. olivaw  -> downloads + SHA-256-verifies the latest release
+  Then it registers the supervisor at login and opens the setup wizard.
 
-  Examples:
-    # Non-technical path (opens the wizard):
-    powershell -ExecutionPolicy Bypass -File install-windows.ps1 -Repo "walt/hermes-bridge"
-
-    # Headless path (no wizard):
-    powershell -ExecutionPolicy Bypass -File install-windows.ps1 -NoWizard `
-      -Repo "walt/hermes-bridge" -BotToken "123:ABC" -ChatId "8114329186" -MaintainerId "8114329186"
+  Usage (non-technical, opens the wizard):
+    iex (irm https://raw.githubusercontent.com/Walt9819/olivaw/main/install/install-windows.ps1)
+  Advanced / headless (configure from params, no wizard):
+    install-windows.ps1 -NoWizard -BotToken "123:ABC" -ChatId "8114329186"
 #>
 [CmdletBinding()]
 param(
@@ -26,49 +24,102 @@ param(
   [string]$BotToken = "",
   [string]$ChatId = "",
   [string]$MaintainerId = "",
-  [string]$InstallDir = "$env:LOCALAPPDATA\HermesBridge",
+  [string]$InstallDir = "$env:LOCALAPPDATA\Olivaw",
   [string]$Workspace = "$env:USERPROFILE\hermes-workspace",
-  [string]$LocalSource = "",          # install from a local repo copy instead of GitHub
+  [string]$LocalSource = "",
   [string]$Lang = "es",
-  [switch]$NoWizard                   # skip the browser wizard (headless/param install)
+  [switch]$NoWizard,
+  [switch]$NoAutoInstall
 )
 $ErrorActionPreference = "Stop"
-# Wizard mode: when no bot token is passed, finish setup in the friendly browser
-# wizard instead of writing config from parameters. This is the non-technical path.
+$ProgressPreference = "SilentlyContinue"   # faster Invoke-WebRequest
 $UseWizard = (-not $NoWizard) -and [string]::IsNullOrWhiteSpace($BotToken)
+
 function Info($m){ Write-Host "  $m" -ForegroundColor Cyan }
 function Ok($m){ Write-Host "  [ok] $m" -ForegroundColor Green }
 function Warn($m){ Write-Host "  [!] $m" -ForegroundColor Yellow }
-
-Write-Host "`n=== Hermes Bridge installer (Windows) ===`n" -ForegroundColor White
-
-# 1) Prerequisites -----------------------------------------------------------
-$py = (Get-Command python -ErrorAction SilentlyContinue).Source
-if (-not $py) { throw "Python 3 not found. Install from https://python.org (check 'Add to PATH'), then re-run." }
-Ok "Python: $py"
-if (-not (Get-Command node -ErrorAction SilentlyContinue)) { Warn "Node.js not found - install from https://nodejs.org, then re-run." }
-$claude = (Get-Command claude -ErrorAction SilentlyContinue).Source
-if (-not $claude) {
-  if (Get-Command npm -ErrorAction SilentlyContinue) { Info "Installing Claude Code CLI..."; npm install -g @anthropic-ai/claude-code | Out-Null; $claude = (Get-Command claude -ErrorAction SilentlyContinue).Source }
+function Step($m){ Write-Host "`n> $m" -ForegroundColor White }
+function Refresh-Path {
+  $m = [Environment]::GetEnvironmentVariable('Path','Machine')
+  $u = [Environment]::GetEnvironmentVariable('Path','User')
+  $env:Path = (@($m,$u) | Where-Object { $_ } ) -join ';'
 }
-if ($claude) { Ok "Claude Code: $claude" } else { Warn "Claude Code CLI not found - install with: npm install -g @anthropic-ai/claude-code" }
-if (-not (Get-Command hermes -ErrorAction SilentlyContinue)) { Warn "Hermes not found - install it per its docs before first use (hermes.nousresearch.com)." }
+function Have($n){ (Get-Command $n -ErrorAction SilentlyContinue).Source }
 
-# 2) Get the code ------------------------------------------------------------
+Write-Host "`n=== olivaw installer (Windows) ===" -ForegroundColor White
+Write-Host "  Instalando todo automaticamente. Puede tardar varios minutos la primera vez.`n" -ForegroundColor DarkGray
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-$tmp = Join-Path $env:TEMP ("hb_" + [guid]::NewGuid().ToString("N"))
-New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+New-Item -ItemType Directory -Force -Path $Workspace  | Out-Null
+
+# 1) Hermes ------------------------------------------------------------------
+Step "1/5  Hermes"
+Refresh-Path
+if (Have hermes) {
+  Ok "Hermes ya esta instalado."
+} elseif ($NoAutoInstall) {
+  Warn "Hermes no encontrado y auto-install desactivado."
+} else {
+  Info "Instalando Hermes (trae Python, Node y utilidades)... esto tarda un poco."
+  try { iex (irm https://hermes-agent.nousresearch.com/install.ps1) } catch { Warn "El instalador de Hermes reporto: $($_.Exception.Message)" }
+  Refresh-Path
+  if (Have hermes) { Ok "Hermes instalado." } else { Warn "No pude confirmar Hermes en PATH; el asistente lo revisara." }
+}
+
+# 2) uv (Python manager) -----------------------------------------------------
+Step "2/5  uv (gestor de Python)"
+$uv = Have uv
+if (-not $uv -and (Test-Path "$env:LOCALAPPDATA\hermes\bin\uv.exe")) { $uv = "$env:LOCALAPPDATA\hermes\bin\uv.exe" }
+if (-not $uv -and -not $NoAutoInstall) {
+  Info "Instalando uv..."
+  try { powershell -ExecutionPolicy Bypass -Command "irm https://astral.sh/uv/install.ps1 | iex" | Out-Null } catch { Warn "uv install: $($_.Exception.Message)" }
+  Refresh-Path
+  $uv = (Have uv)
+  if (-not $uv -and (Test-Path "$env:USERPROFILE\.local\bin\uv.exe")) { $uv = "$env:USERPROFILE\.local\bin\uv.exe" }
+}
+if ($uv) { Ok "uv: $uv" } else { throw "No se pudo obtener uv (necesario para Python). Reintenta o instala Hermes primero." }
+
+# 3) Python via uv (runs our bridge/supervisor/wizard) -----------------------
+Step "3/5  Python"
+& $uv python install 3.12 2>&1 | Out-Null
+$py = (& $uv python find 3.12 2>$null | Select-Object -First 1)
+if (-not $py -or -not (Test-Path $py)) { $py = (& $uv python find 2>$null | Select-Object -First 1) }
+if (-not $py -or -not (Test-Path $py)) { throw "uv no pudo proveer Python." }
+$pyDir = Split-Path $py
+$pyw = Join-Path $pyDir "pythonw.exe"; if (-not (Test-Path $pyw)) { $pyw = $py }
+Ok "Python: $py"
+
+# 4) Claude Code (native install; no Node needed) ----------------------------
+Step "4/5  Claude Code"
+Refresh-Path
+$claude = Have claude
+if ($claude) {
+  Ok "Claude Code ya esta instalado."
+} elseif ($NoAutoInstall) {
+  Warn "Claude Code no encontrado y auto-install desactivado."
+} else {
+  Info "Instalando Claude Code (instalador nativo)..."
+  try { powershell -ExecutionPolicy Bypass -Command "irm https://claude.ai/install.ps1 | iex" | Out-Null } catch { Warn "Claude install: $($_.Exception.Message)" }
+  Refresh-Path
+  $claude = Have claude
+  if (-not $claude -and (Test-Path "$env:USERPROFILE\.local\bin\claude.exe")) { $claude = "$env:USERPROFILE\.local\bin\claude.exe" }
+  if ($claude) { Ok "Claude Code instalado." } else { Warn "No pude confirmar Claude en PATH; el asistente lo revisara." }
+}
+
+# 5) olivaw (download + verify + extract) ------------------------------------
+Step "5/5  olivaw"
 if ($LocalSource) {
-  Info "Installing from local source: $LocalSource"
+  Info "Instalando desde copia local: $LocalSource"
   Copy-Item -Recurse -Force (Join-Path $LocalSource "src") $InstallDir
   Copy-Item -Recurse -Force (Join-Path $LocalSource "templates") $InstallDir
   Copy-Item -Force (Join-Path $LocalSource "VERSION") $InstallDir
 } else {
-  Info "Fetching latest release from $Repo ..."
-  $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers @{ "User-Agent"="hb-installer" }
+  $tmp = Join-Path $env:TEMP ("olv_" + [guid]::NewGuid().ToString("N"))
+  New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+  Info "Descargando la ultima version de $Repo ..."
+  $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers @{ "User-Agent"="olivaw-installer" }
   $zipA = $rel.assets | Where-Object { $_.name -like "*.zip" } | Select-Object -First 1
   $shaA = $rel.assets | Where-Object { $_.name -like "*.zip.sha256" } | Select-Object -First 1
-  if (-not $zipA) { throw "No .zip asset on the latest release of $Repo." }
+  if (-not $zipA) { throw "No hay asset .zip en la ultima release de $Repo." }
   $zip = Join-Path $tmp $zipA.name
   Invoke-WebRequest -Uri $zipA.browser_download_url -OutFile $zip
   if ($shaA) {
@@ -76,66 +127,57 @@ if ($LocalSource) {
     Invoke-WebRequest -Uri $shaA.browser_download_url -OutFile $sha
     $expected = ((Get-Content $sha -Raw).Trim().Split()[0]).ToLower()
     $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
-    if ($expected -ne $actual) { throw "Checksum mismatch - refusing to install." }
-    Ok "Checksum verified"
-  } else { Warn "No .sha256 on release - installing unverified (add checksums to releases!)." }
+    if ($expected -ne $actual) { throw "Checksum no coincide - instalacion abortada." }
+    Ok "Checksum verificado."
+  } else { Warn "La release no trae .sha256 - instalando sin verificar." }
   Expand-Archive -Path $zip -DestinationPath $tmp -Force
   Copy-Item -Recurse -Force (Join-Path $tmp "src") $InstallDir
   Copy-Item -Recurse -Force (Join-Path $tmp "templates") $InstallDir
   Copy-Item -Force (Join-Path $tmp "VERSION") $InstallDir
 }
-Ok "Code installed to $InstallDir  (v$(Get-Content (Join-Path $InstallDir 'VERSION')))"
+Ok "olivaw instalado en $InstallDir (v$(Get-Content (Join-Path $InstallDir 'VERSION')))"
 
-# 3) updater.config.json -----------------------------------------------------
-New-Item -ItemType Directory -Force -Path $Workspace | Out-Null
-if ($UseWizard) {
-  Info "Final setup (token, owner, agent personality) happens in the browser wizard."
-} else {
+# headless config (only when a token was passed) -----------------------------
+if (-not $UseWizard) {
   $cfg = [ordered]@{
     repo = $Repo; auto_update = $true
-    bridge_cmd = @($py, "src\claude_bridge.py"); bridge_cwd = $InstallDir
+    bridge_cmd = @($py, "src\claude_bridge.py", "--port", "8790"); bridge_cwd = $InstallDir
     bridge_url = "http://127.0.0.1:8790"
     env = @{ CLAUDE_BRIDGE_CLAUDE = $claude; CLAUDE_BRIDGE_WORKSPACE = $Workspace }
     telegram_bot_token = $BotToken; telegram_chat_id = $ChatId; maintainer_chat_id = $MaintainerId
     poll_minutes = 45; idle_seconds = 300; nightly_hour = 4; lang = $Lang
   }
   ($cfg | ConvertTo-Json -Depth 6) | Out-File -Encoding utf8 (Join-Path $InstallDir "updater.config.json")
-  Ok "Wrote updater.config.json"
+  Ok "Escrito updater.config.json"
+} else {
+  Info "La configuracion final se hara en el asistente del navegador."
 }
 
-# 4) Point Hermes at the bridge (best-effort) --------------------------------
-$hcfg = Get-ChildItem -Path @("$env:LOCALAPPDATA\hermes","$env:APPDATA\hermes","$env:USERPROFILE\.config\hermes") -Filter config.yaml -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($hcfg) {
-  Copy-Item $hcfg.FullName "$($hcfg.FullName).bak" -Force
-  Warn "Found Hermes config at $($hcfg.FullName) - backup saved. The wizard writes a personalized snippet to paste in."
-} else { Warn "Hermes config.yaml not found - the wizard will generate the model block to apply after installing Hermes." }
-
-# 5) Auto-start the SUPERVISOR at login + (headless) start now ----------------
-$pyw = $py -replace "python\.exe$","pythonw.exe"; if (-not (Test-Path $pyw)) { $pyw = $py }
-$vbs = Join-Path ([Environment]::GetFolderPath('Startup')) "HermesBridge.vbs"
+# register supervisor at login (runs with the uv-managed Python) -------------
+$vbs = Join-Path ([Environment]::GetFolderPath('Startup')) "Olivaw.vbs"
 $launch = Join-Path $InstallDir "src\launcher.py"
 @"
 Set s = CreateObject("Wscript.Shell")
 s.Run """$pyw"" ""$launch""", 0, False
 "@ | Out-File -Encoding ascii $vbs
-Ok "Registered auto-start: $vbs"
+Ok "Auto-arranque registrado."
 if (-not $UseWizard) {
   Start-Process -FilePath $pyw -ArgumentList "`"$launch`"" -WindowStyle Hidden
-  Ok "Supervisor started (it launches the bridge and handles all future updates)."
+  Ok "Supervisor iniciado."
 }
 
-# 6) Finish - launch the wizard (non-technical path) or print guidance -------
+# finish ---------------------------------------------------------------------
 if ($UseWizard) {
   $wiz = Join-Path $InstallDir "src\wizard\wizard_server.py"
-  Write-Host "`n=== Opening the setup wizard ===" -ForegroundColor White
-  Info "It opens in your browser. Pick the brain, connect Hermes, give your agent a"
-  Info "personality, and link it to your Telegram. The wizard activates everything at the end."
+  Write-Host "`n=== Abriendo el asistente de configuracion ===" -ForegroundColor White
+  Info "Sigue los pasos en el navegador: probar el cerebro, conectar Hermes, ponerle nombre"
+  Info "a tu agente y vincularlo a tu Telegram. El asistente activa todo al final."
   Start-Process -FilePath $py -ArgumentList "`"$wiz`"" -WorkingDirectory $InstallDir
-  Write-Host "`nIf the browser does not open, run:  python `"$wiz`"`n" -ForegroundColor Green
+  Write-Host "`nSi el navegador no abre solo, ejecuta:  `"$py`" `"$wiz`"`n" -ForegroundColor Green
 } else {
-  Write-Host "`n=== Almost done ===" -ForegroundColor White
-  Info "1) Log into Claude Code once (subscription):  claude"
-  Info "2) Make sure Hermes is installed and its gateway is running (hermes gateway start)."
-  Info "3) Message the Telegram bot to test."
-  Write-Host "`nUpdates from now on are automatic and silent - the bot will just say 'updated to vX'.`n" -ForegroundColor Green
+  Write-Host "`n=== Casi listo ===" -ForegroundColor White
+  Info "1) Inicia sesion en Claude una vez:  claude"
+  Info "2) Asegurate de que Hermes este configurado (hermes setup) y su gateway corriendo."
+  Info "3) Escribe a tu bot de Telegram para probar."
+  Write-Host "`nLas actualizaciones son automaticas y silenciosas.`n" -ForegroundColor Green
 }
