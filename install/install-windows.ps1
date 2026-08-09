@@ -60,7 +60,8 @@ if (Have hermes) {
   Warn "Hermes no encontrado y auto-install desactivado."
 } else {
   Info "Instalando Hermes (trae Python, Node y utilidades)... esto tarda un poco."
-  try { iex (irm https://hermes-agent.nousresearch.com/install.ps1) } catch { Warn "El instalador de Hermes reporto: $($_.Exception.Message)" }
+  # Run in a child PowerShell so an `exit` inside Hermes' installer can't abort ours.
+  try { powershell -NoProfile -ExecutionPolicy Bypass -Command "iex (irm https://hermes-agent.nousresearch.com/install.ps1)" } catch { Warn "El instalador de Hermes reporto: $($_.Exception.Message)" }
   Refresh-Path
   if (Have hermes) { Ok "Hermes instalado." } else { Warn "No pude confirmar Hermes en PATH; el asistente lo revisara." }
 }
@@ -71,7 +72,7 @@ $uv = Have uv
 if (-not $uv -and (Test-Path "$env:LOCALAPPDATA\hermes\bin\uv.exe")) { $uv = "$env:LOCALAPPDATA\hermes\bin\uv.exe" }
 if (-not $uv -and -not $NoAutoInstall) {
   Info "Instalando uv..."
-  try { powershell -ExecutionPolicy Bypass -Command "irm https://astral.sh/uv/install.ps1 | iex" | Out-Null } catch { Warn "uv install: $($_.Exception.Message)" }
+  try { powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://astral.sh/uv/install.ps1 | iex" | Out-Null } catch { Warn "uv install: $($_.Exception.Message)" }
   Refresh-Path
   $uv = (Have uv)
   if (-not $uv -and (Test-Path "$env:USERPROFILE\.local\bin\uv.exe")) { $uv = "$env:USERPROFILE\.local\bin\uv.exe" }
@@ -98,7 +99,7 @@ if ($claude) {
   Warn "Claude Code no encontrado y auto-install desactivado."
 } else {
   Info "Instalando Claude Code (instalador nativo)..."
-  try { powershell -ExecutionPolicy Bypass -Command "irm https://claude.ai/install.ps1 | iex" | Out-Null } catch { Warn "Claude install: $($_.Exception.Message)" }
+  try { powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://claude.ai/install.ps1 | iex" | Out-Null } catch { Warn "Claude install: $($_.Exception.Message)" }
   Refresh-Path
   $claude = Have claude
   if (-not $claude -and (Test-Path "$env:USERPROFILE\.local\bin\claude.exe")) { $claude = "$env:USERPROFILE\.local\bin\claude.exe" }
