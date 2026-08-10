@@ -34,30 +34,65 @@ def validate(token):
             "detail": "Bot válido: @%s" % r.get("username", "?")}
 
 
-def capture_owner(token):
+def capture_owner(token, code=None):
     """
-    getUpdates -> find the most recent person who wrote to the bot. That person is
-    the OWNER: the only account allowed to command the agent. In a private chat the
-    user id and chat id are the same; we lock on the user id.
+    getUpdates -> identify the OWNER (the only account allowed to command the agent).
+
+    Security: a plain "most recent sender wins" is hijackable — a stranger who messages the bot
+    during the setup window could be captured as owner. So the wizard shows a one-time CODE and
+    the operator must send exactly that code; we bind ownership ONLY to the sender whose message
+    text equals the code. Without a code we fall back to "single distinct sender only" and refuse
+    if more than one person has written (ambiguous), never silently picking the latest.
     """
-    ok, data = _call(token, "getUpdates", {"timeout": 0, "limit": 20}, timeout=25)
+    ok, data = _call(token, "getUpdates", {"timeout": 0, "limit": 50}, timeout=25)
     if not ok:
         return {"ok": False,
                 "detail": "No pudimos leer los mensajes. Si configuraste un webhook, "
                           "quítalo. Detalle: "
                           + (data.get("description") if isinstance(data, dict) else "")}
     updates = data.get("result", []) or []
-    picked = None
-    for upd in reversed(updates):
+    humans = {}   # user_id -> (msg, matched_code_bool)
+    for upd in updates:
         msg = upd.get("message") or upd.get("edited_message")
-        if msg and msg.get("from") and not msg["from"].get("is_bot"):
-            picked = msg
-            break
-    if not picked:
-        return {"ok": False, "waiting": True,
-                "detail": "Aún no veo tu mensaje. Abre el bot en Telegram, pulsa "
-                          "«Start» (o escríbele «hola») y vuelve a probar."}
+        frm = msg.get("from") if msg else None
+        if not frm or frm.get("is_bot"):
+            continue
+        text = (msg.get("text") or "").strip()
+        matched = bool(code) and text == str(code).strip()
+        # prefer a code-matching message; otherwise keep the latest per sender
+        prev = humans.get(frm["id"])
+        if matched or not prev or not prev[1]:
+            humans[frm["id"]] = (msg, matched)
+
+    def _valid_id(x):
+        try:
+            return int(x) > 0
+        except (TypeError, ValueError):
+            return False
+
+    picked = None
+    if code:
+        matches = [m for (m, ok2) in humans.values() if ok2]
+        if not matches:
+            return {"ok": False, "waiting": True,
+                    "detail": "Aún no veo tu código. Abre el bot en Telegram y envíale exactamente: %s" % code}
+        if len({m["from"]["id"] for m in matches}) > 1:
+            return {"ok": False,
+                    "detail": "Más de una cuenta envió el código. Usa un código nuevo y no lo compartas."}
+        picked = matches[0]
+    else:
+        if not humans:
+            return {"ok": False, "waiting": True,
+                    "detail": "Aún no veo tu mensaje. Abre el bot en Telegram, pulsa «Start» y vuelve a probar."}
+        if len(humans) > 1:
+            return {"ok": False,
+                    "detail": "Varias personas escribieron al bot. Reinicia el bot o usa un código de verificación "
+                              "para asegurar que TÚ quedes como dueño."}
+        picked = next(iter(humans.values()))[0]
+
     frm = picked["from"]
+    if not _valid_id(frm.get("id")):
+        return {"ok": False, "detail": "No pude leer un id de usuario válido."}
     chat = picked.get("chat", {})
     name = " ".join(x for x in [frm.get("first_name"), frm.get("last_name")] if x)
     return {"ok": True,

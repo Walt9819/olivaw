@@ -153,6 +153,10 @@ def set_env_vars(updates, hermes=None, profile=None):
         try:
             import shutil
             shutil.copy2(path, path + ".bak")
+            try:
+                os.chmod(path + ".bak", 0o600)   # backup of a secret .env is still a secret
+            except Exception:  # noqa: BLE001
+                pass
         except Exception:  # noqa: BLE001
             pass
     seen = set()
@@ -167,7 +171,15 @@ def set_env_vars(updates, hermes=None, profile=None):
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines) + "\n")
+    try:
+        os.chmod(tmp, 0o600)
+    except Exception:  # noqa: BLE001
+        pass
     os.replace(tmp, path)
+    try:
+        os.chmod(path, 0o600)
+    except Exception:  # noqa: BLE001
+        pass
     return {"ok": True, "detail": "Actualizado %s" % ", ".join(updates.keys()), "path": path}
 
 

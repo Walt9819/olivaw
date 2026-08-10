@@ -52,6 +52,13 @@ except Exception:  # noqa: BLE001
     _hctl = None
 
 
+# The update source is PINNED into the distributed code. A mutable `repo` in updater.config.json
+# must never be able to repoint the auto-updater at an attacker-controlled repo (that would turn
+# any one-time config write into persistent, reboot-surviving RCE). Env override exists only so a
+# fork can rebuild with its own repo; it is NOT read from the runtime config.
+PINNED_REPO = os.environ.get("OLIVAW_REPO", "Walt9819/olivaw").strip()
+
+
 def log(msg):
     line = f"{datetime.datetime.now().isoformat(timespec='seconds')} {msg}"
     print(line, flush=True)
@@ -435,10 +442,14 @@ def _friendly_note(cfg, ver, changelog):
 
 
 def maybe_update(cfg, state):
-    if not cfg.get("auto_update") or not cfg.get("repo"):
+    if not cfg.get("auto_update"):
         return
+    # Ignore any `repo` from the (mutable) config; always update from the pinned repo.
+    cfg_repo = (cfg.get("repo") or "").strip()
+    if cfg_repo and cfg_repo != PINNED_REPO:
+        log(f"config repo '{cfg_repo}' != pinned '{PINNED_REPO}'; using pinned source")
     try:
-        rel = latest_release(cfg["repo"])
+        rel = latest_release(PINNED_REPO)
     except Exception as e:
         log(f"release check failed: {e}"); return
     if not rel.get("version") or not rel.get("zip_url"):

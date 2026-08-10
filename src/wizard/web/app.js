@@ -26,6 +26,12 @@
   };
   if (!S.agent) S.agent = { mode: "default", slug: "default" };
   if (!S.smtp) S.smtp = { provider: "gmail", port: 587, secure: "starttls" };
+  // One-time code used to bind ownership to the exact account that sends it (anti-hijack).
+  if (!S.owner_code) {
+    var _cs = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789", _c = "OLIVAW-";
+    for (var _i = 0; _i < 4; _i++) _c += _cs[Math.floor(Math.random() * _cs.length)];
+    S.owner_code = _c;
+  }
   var META = { providers: [], usecases: [], default_provider: "claude-code", hermes: {},
     agents: { default: null, extra: [] }, smtp_providers: [], image_options: [] };
 
@@ -281,7 +287,7 @@
 
     var p = provider();
     var steps = (p.steps || []).map(function (g) {
-      var link = g.link ? ' <a href="' + esc(g.link) + '" target="_blank" rel="noopener">abrir</a>' : "";
+      var link = g.link ? ' <a href="' + esc(g.link) + '" target="_blank" rel="noopener noreferrer">abrir</a>' : "";
       return '<div class="g"><div class="gn"></div><div class="gt"><b>' + esc(g.title) +
         "</b> — " + esc(g.body) + link + "</div></div>";
     }).join("");
@@ -293,8 +299,8 @@
       'Claude Code: usa tu suscripción de Claude, sin claves de API.</p>' +
       '<div class="opt-grid" id="provOpts">' + opts + '</div>' +
       '<div class="callout"><b>Necesitas una cuenta de pago.</b> ' + esc(p.paid_note) +
-      ' &nbsp;<a href="' + esc(p.download_url) + '" target="_blank" rel="noopener">Descargar</a> · ' +
-      '<a href="' + esc(p.help_url) + '" target="_blank" rel="noopener">Ayuda oficial</a></div>' +
+      ' &nbsp;<a href="' + esc(p.download_url) + '" target="_blank" rel="noopener noreferrer">Descargar</a> · ' +
+      '<a href="' + esc(p.help_url) + '" target="_blank" rel="noopener noreferrer">Ayuda oficial</a></div>' +
       '<div class="guide">' + steps + '</div>' +
       '<div class="card pad">' +
       '<b>1 · Conecta tu cuenta de Claude</b>' +
@@ -467,7 +473,7 @@
       '<h2>1 · Crea tu bot con BotFather</h2>' +
       '<div class="guide">' +
       '<div class="g"><div class="gn"></div><div class="gt"><b>Abre BotFather</b> en Telegram ' +
-      '<a href="https://t.me/BotFather" target="_blank" rel="noopener">t.me/BotFather</a></div></div>' +
+      '<a href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer">t.me/BotFather</a></div></div>' +
       '<div class="g"><div class="gn"></div><div class="gt">Envía <code>/newbot</code> y sigue las dos ' +
       'preguntas: un nombre y un usuario que termine en <code>bot</code>.</div></div>' +
       '<div class="g"><div class="gn"></div><div class="gt">Copia el <b>token</b> que te da (algo como ' +
@@ -480,10 +486,11 @@
 
       '<h2>2 · Vincula tu cuenta como dueño</h2>' +
       '<div class="card"><p class="small muted" style="margin-top:0">' +
-      'Abre tu bot y pulsa <b>Start</b> (o escríbele “hola”). Luego pulsa capturar: ' +
-      'la cuenta que escribió quedará como dueña.</p>' +
-      (botLink ? '<a class="btn btn-soft btn-sm" href="' + botLink + '" target="_blank" rel="noopener">Abrir mi bot</a> ' : "") +
-      '<div class="row" style="margin-top:8px"><button class="btn btn-primary" id="btnCapture">Capturar mi cuenta</button>' +
+      'Para asegurar que <b>solo tú</b> quedes como dueño, abre tu bot y envíale este código exacto:</p>' +
+      '<div class="callout" style="text-align:center;font-size:22px;letter-spacing:3px"><b>' + esc(S.owner_code) + '</b></div>' +
+      '<p class="small muted">Luego pulsa «Vincularme». Solo la cuenta que envíe este código quedará como dueña.</p>' +
+      (botLink ? '<a class="btn btn-soft btn-sm" href="' + botLink + '" target="_blank" rel="noopener noreferrer">Abrir mi bot</a> ' : "") +
+      '<div class="row" style="margin-top:8px"><button class="btn btn-primary" id="btnCapture">Vincularme como dueño</button>' +
       '<span id="pillOwner" class="pill" style="display:none"></span></div>' +
       (S.owner_id ? '<div class="callout small" style="margin-top:12px">🔒 Dueño: <b>' + esc(S.owner_username || S.owner_id) +
         '</b> (id ' + esc(S.owner_id) + '). Será el único con control del agente.</div>' : "") +
@@ -521,7 +528,7 @@
     var pillOwner = el("pillOwner");
     el("btnCapture").onclick = function () {
       pillOwner.style.display = "inline-flex";
-      runTest(this, pillOwner, function () { return api("telegram/capture", { token: S.token }); }).then(function (r) {
+      runTest(this, pillOwner, function () { return api("telegram/capture", { token: S.token, code: S.owner_code }); }).then(function (r) {
         if (r && r.ok) {
           S.owner_id = String(r.owner_id); S.chat_id = String(r.chat_id);
           S.owner_username = r.name || r.username || "";
@@ -618,7 +625,7 @@
       newNote + isoNote +
       (botLink ? '<div class="card pad" style="text-align:center"><b>Habla con tu agente ahora</b>' +
         '<p class="muted small">Abre tu bot en Telegram y salúdalo.</p>' +
-        '<a class="btn btn-primary" href="' + botLink + '" target="_blank" rel="noopener">Abrir ' +
+        '<a class="btn btn-primary" href="' + botLink + '" target="_blank" rel="noopener noreferrer">Abrir ' +
         esc(S.identity.agent_name || "mi agente") + ' en Telegram</a></div>' : "") +
       '<h2>Últimos detalles</h2>' +
       lock +
@@ -710,7 +717,7 @@
         return '<div class="row" style="gap:8px;align-items:flex-start;margin-bottom:6px">' +
           '<span>' + (o.free ? '🆓' : '💳') + '</span><div class="grow"><b class="small">' +
           esc(o.label) + '</b><div class="muted small">' + esc(o.note) +
-          (o.link ? ' <a href="' + esc(o.link) + '" target="_blank" rel="noopener">abrir</a>' : '') +
+          (o.link ? ' <a href="' + esc(o.link) + '" target="_blank" rel="noopener noreferrer">abrir</a>' : '') +
           '</div></div></div>';
       }).join("") +
       '<div class="row" style="margin-top:8px"><button class="btn btn-soft btn-sm" id="capImg">Configurar imágenes en Hermes</button></div>' +
@@ -742,7 +749,7 @@
       // Slack
       '<details><summary>🟣 Slack</summary>' +
       '<p class="small muted">Genera el manifest, crea la app en ' +
-      '<a href="https://api.slack.com/apps" target="_blank" rel="noopener">api.slack.com/apps</a> ' +
+      '<a href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer">api.slack.com/apps</a> ' +
       '(«From an app manifest»), y termina la configuración en la terminal.</p>' +
       '<div class="row"><button class="btn btn-soft btn-sm" id="slackMan">Ver manifest</button>' +
       '<button class="btn btn-soft btn-sm" id="slackSetup">Configurar en terminal</button></div>' +
@@ -907,7 +914,7 @@
       if (el("smtpHost")) el("smtpHost").value = S.smtp.host || "";
       if (el("smtpPort")) el("smtpPort").value = S.smtp.port || 587;
       var note = el("smtpNote");
-      if (note) note.innerHTML = esc(p.note || "") + (p.link ? ' <a href="' + esc(p.link) + '" target="_blank" rel="noopener">obtener contraseña</a>' : "");
+      if (note) note.innerHTML = esc(p.note || "") + (p.link ? ' <a href="' + esc(p.link) + '" target="_blank" rel="noopener noreferrer">obtener contraseña</a>' : "");
       save();
     }
     if (prov) { prov.onchange = function () { S.smtp.provider = prov.value; applyProvider(); }; applyProvider(); }

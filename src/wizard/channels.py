@@ -9,10 +9,13 @@ its wrapper, so channels for agent B never touch agent A.
 
 import os
 import re
+import secrets
+import shlex
 import smtplib
 import ssl
 import subprocess
 import sys
+import urllib.parse
 
 from . import hermes_ctl
 from .procutil import run, which
@@ -38,48 +41,53 @@ SMTP_PROVIDERS = [
 ]
 
 
-def _profile_cmd_str(profile, subargs):
-    """A shell command string that runs `hermes <subargs>` against the right profile.
+CREATE_NEW_CONSOLE = 0x00000010  # Windows: spawn in its own console window
 
-    `subargs` is composed ONLY from static, code-defined strings in this module (never from
-    request/user input), so there is no injection surface here. The one dynamic input that can
-    reach a command — a custom MCP name/URL — is strictly validated in mcp_install / mcp_add
-    before it is ever passed in.
-    """
+
+def _profile_argv(profile, subargs):
+    """Argument VECTOR that runs `hermes <subargs>` against the right profile.
+    `subargs` is a list. Returns [exe, *subargs] — never a shell string."""
     if not profile or profile == "default":
         exe = hermes_ctl.hermes_path() or "hermes"
     else:
         exe = hermes_ctl.wrapper_path(profile)
-    return '"%s" %s' % (exe, subargs)
+    return [exe] + list(subargs)
 
 
-def _open_terminal(cmdstr, title="Olivaw"):
-    """Open a visible terminal running a (possibly interactive) command string.
+def _open_terminal(argv, title="Olivaw"):
+    """Open a visible terminal running an argument VECTOR (an interactive flow the user must
+    finish in a console: Claude login, WhatsApp QR, Hermes setup).
 
-    `cmdstr` must be built from trusted/validated pieces by the caller — this helper does not
-    sanitize it. Used for interactive flows (Claude login, WhatsApp QR, Hermes setup) the user
-    must complete in a real console."""
+    Security: `argv` is a list and is NEVER concatenated into a shell command on Windows
+    (we use cmd /k with a real argv + CREATE_NEW_CONSOLE, shell=False). On macOS/Linux the
+    terminal apps require a command string, so each element is shell-quoted with shlex.quote,
+    which neutralises metacharacters — so even an attacker-influenced value (e.g. an MCP URL)
+    cannot break out of the argument.
+    """
+    argv = [str(a) for a in argv]
     try:
         if IS_WIN:
-            subprocess.Popen('start "%s" cmd /k %s' % (title, cmdstr), shell=True)
+            subprocess.Popen(["cmd", "/k"] + argv, creationflags=CREATE_NEW_CONSOLE,
+                             close_fds=True)
         elif sys.platform == "darwin":
-            subprocess.Popen(["osascript", "-e",
-                              'tell application "Terminal" to do script "%s"' % cmdstr.replace('"', '\\"')])
+            quoted = " ".join(shlex.quote(a) for a in argv)
+            script = 'tell application "Terminal" to do script "%s"' % quoted.replace("\\", "\\\\").replace('"', '\\"')
+            subprocess.Popen(["osascript", "-e", script])
         else:
+            quoted = " ".join(shlex.quote(a) for a in argv)
             for term in ("x-terminal-emulator", "gnome-terminal", "konsole", "xterm"):
                 if which(term):
-                    subprocess.Popen([term, "-e", "bash", "-lc", cmdstr]); break
+                    subprocess.Popen([term, "-e", "bash", "-lc", quoted]); break
             else:
-                return {"ok": False, "detail": "Ejecuta en una terminal: %s" % cmdstr, "command": cmdstr}
-        return {"ok": True, "detail": "Abrí una terminal. Sigue los pasos ahí.", "command": cmdstr}
+                return {"ok": False, "detail": "Ejecútalo en una terminal.", "command": quoted}
+        return {"ok": True, "detail": "Abrí una terminal. Sigue los pasos ahí."}
     except Exception as e:  # noqa: BLE001
-        return {"ok": False, "detail": "No pude abrir la terminal. Ejecuta: %s (%s)" % (cmdstr, e),
-                "command": cmdstr}
+        return {"ok": False, "detail": "No pude abrir la terminal (%s)." % e}
 
 
 def launch_terminal(profile, subargs, title="Hermes"):
-    """Open a visible terminal running a hermes subcommand for the given profile."""
-    return _open_terminal(_profile_cmd_str(profile, subargs), title)
+    """Open a visible terminal running a hermes subcommand (subargs = list) for the profile."""
+    return _open_terminal(_profile_argv(profile, subargs), title)
 
 
 # ── Claude Code sign-in (one click) ────────────────────────────────────────────
@@ -87,7 +95,7 @@ def claude_login(claude_path=None):
     """Open a terminal running `claude auth login` so the user signs in with one click
     (the CLI opens the browser OAuth flow). No user input goes into the command."""
     exe = claude_path or which("claude") or "claude"
-    return _open_terminal('"%s" auth login' % exe, title="Iniciar sesion en Claude")
+    return _open_terminal([exe, "auth", "login"], title="Iniciar sesion en Claude")
 
 
 def claude_status(claude_path=None):
@@ -105,7 +113,7 @@ def claude_status(claude_path=None):
 
 # ── WhatsApp ─────────────────────────────────────────────────────────────────
 def whatsapp_pair(profile=None, cloud=False):
-    return launch_terminal(profile, "whatsapp-cloud" if cloud else "whatsapp",
+    return launch_terminal(profile, ["whatsapp-cloud" if cloud else "whatsapp"],
                            title="Hermes WhatsApp")
 
 
@@ -118,20 +126,33 @@ def slack_manifest(profile=None, hermes=None):
 
 
 def slack_setup(profile=None):
-    return launch_terminal(profile, "gateway setup", title="Hermes Slack")
+    return launch_terminal(profile, ["gateway", "setup"], title="Hermes Slack")
 
 
 # ── Webhook / Google Chat / generic inbound ────────────────────────────────────
+_ROUTE_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+
+
 def webhook_add(name, description="", deliver="telegram", prompt="", profile=None, hermes=None):
-    args = ["webhook", "subscribe", name]
+    # Route name must be a safe slug (it becomes part of a URL path and a CLI arg).
+    if not _ROUTE_RE.fullmatch(name or ""):
+        return {"ok": False, "detail": "El nombre de la ruta debe ser letras/números/guiones (máx 40)."}
+    if deliver not in ("telegram", "discord", "slack", "whatsapp", "signal", "log"):
+        return {"ok": False, "detail": "Destino de entrega no válido."}
+    # Always attach a high-entropy HMAC secret so the endpoint is not world-triggerable.
+    secret = secrets.token_hex(24)
+    args = ["webhook", "subscribe", name, "--secret", secret]
     if description:
         args += ["--description", description]
-    if deliver:
-        args += ["--deliver", deliver]
+    args += ["--deliver", deliver]
     if prompt:
         args += ["--prompt", prompt]
     r = hermes_ctl._run(args, hermes, timeout=60, profile=profile)
-    return {"ok": r["ok"], "detail": (r["out"] or r["err"])[:800]}
+    out = {"ok": r["ok"], "detail": (r["out"] or r["err"])[:800]}
+    if r["ok"]:
+        out["secret"] = secret
+        out["detail"] += ("\n\nGuarda este secreto (se pide al llamar el webhook, cabecera HMAC): %s" % secret)
+    return out
 
 
 def webhook_test(name, profile=None, hermes=None):
@@ -207,7 +228,7 @@ IMAGE_OPTIONS = [
 def tools_setup(profile=None):
     """Open Hermes' interactive tool configurator (enables image/video/vision toolsets per
     platform AND captures the provider + API key — the correct place for that)."""
-    return launch_terminal(profile, "setup tools", title="Hermes - Capacidades")
+    return launch_terminal(profile, ["setup", "tools"], title="Hermes - Capacidades")
 
 
 # ── Conversation memory / history (resume past conversations) ──────────────────
@@ -231,7 +252,7 @@ def history_status(profile=None, hermes=None):
 def history_enable(profile=None):
     """Open Hermes' tool configurator so the user can turn on Session Search for their
     channel (Session Search is item ~16 under each platform). Sanctioned + safe."""
-    return launch_terminal(profile, "setup tools", title="Hermes - Memoria de conversaciones")
+    return launch_terminal(profile, ["setup", "tools"], title="Hermes - Memoria de conversaciones")
 
 
 def sessions_recent(profile=None, hermes=None, limit=10):
@@ -263,15 +284,32 @@ def mcp_list(profile=None, hermes=None):
     return {"ok": r["ok"], "detail": (r["out"] or r["err"])[:800]}
 
 
+_MCP_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+
+
+def _valid_mcp_url(url):
+    """A real http(s) URL with a host and no control/space characters. Belt-and-suspenders
+    on top of the argv-vector launcher (which already prevents shell injection)."""
+    try:
+        u = urllib.parse.urlparse(url or "")
+    except ValueError:
+        return False
+    if u.scheme not in ("http", "https") or not u.netloc:
+        return False
+    return not any(c.isspace() or ord(c) < 0x20 for c in url)
+
+
 def mcp_install(name, profile=None):
     """Install a catalog MCP server (may require OAuth login -> runs in a terminal)."""
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+", name or ""):
-        return {"ok": False, "detail": "Nombre de conector invalido."}
-    return launch_terminal(profile, "mcp install " + name, title="Hermes MCP: " + name)
+    if not _MCP_NAME_RE.fullmatch(name or ""):
+        return {"ok": False, "detail": "Nombre de conector inválido."}
+    return launch_terminal(profile, ["mcp", "install", name], title="Hermes MCP: " + name)
 
 
 def mcp_add(name, url, profile=None):
     """Add a custom remote MCP server by URL (may require OAuth -> runs in a terminal)."""
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+", name or "") or not (url or "").startswith("http"):
-        return {"ok": False, "detail": "Nombre o URL invalidos."}
-    return launch_terminal(profile, 'mcp add %s --url %s' % (name, url), title="Hermes MCP: " + name)
+    if not _MCP_NAME_RE.fullmatch(name or ""):
+        return {"ok": False, "detail": "Nombre de conector inválido."}
+    if not _valid_mcp_url(url):
+        return {"ok": False, "detail": "URL inválida (debe ser http(s):// y sin espacios)."}
+    return launch_terminal(profile, ["mcp", "add", name, "--url", url], title="Hermes MCP: " + name)

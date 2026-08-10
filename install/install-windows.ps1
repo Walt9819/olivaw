@@ -136,7 +136,7 @@ if ($LocalSource) {
     $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
     if ($expected -ne $actual) { throw "Checksum no coincide - instalacion abortada." }
     Ok "Checksum verificado."
-  } else { Warn "La release no trae .sha256 - instalando sin verificar." }
+  } else { throw "La release no incluye .sha256 - instalacion abortada (no se ejecuta codigo sin verificar)." }
   Expand-Archive -Path $zip -DestinationPath $tmp -Force
   Copy-Item -Recurse -Force (Join-Path $tmp "src") $InstallDir
   Copy-Item -Recurse -Force (Join-Path $tmp "templates") $InstallDir

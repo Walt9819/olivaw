@@ -48,6 +48,22 @@ TEST_URL = "http://127.0.0.1:%d" % TEST_PORT
 TOKEN = secrets.token_urlsafe(24)
 _test_bridge = None  # Popen of the throwaway bridge used by "probar el cerebro"
 
+import re as _re
+_SLUG_RE = _re.compile(r"^[a-z0-9]{1,24}$")
+
+
+def _safe_slug(slug):
+    """Accept only a strict lowercase-alnum slug (<=24). Rejects path traversal / injection
+    for the reconfigure + agent-action paths, which take a slug straight from the request."""
+    return bool(slug) and slug != "default" and _SLUG_RE.fullmatch(slug) is not None
+
+
+def _under_agents(path):
+    """True iff `path` resolves inside INSTALL_DIR/agents (containment guard for rmtree/writes)."""
+    base = os.path.realpath(os.path.join(INSTALL_DIR, "agents"))
+    rp = os.path.realpath(path)
+    return rp == base or rp.startswith(base + os.sep)
+
 _CTYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
            ".js": "application/javascript; charset=utf-8",
            ".svg": "image/svg+xml", ".ico": "image/x-icon",
@@ -254,13 +270,17 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")  # never leak the ?t= token via Referer
         self.end_headers()
         self.wfile.write(body)
 
     def _static(self, rel):
         rel = rel.split("?", 1)[0].lstrip("/") or "index.html"
         path = os.path.normpath(os.path.join(WEB_DIR, rel))
-        if not path.startswith(WEB_DIR) or not os.path.isfile(path):
+        # Containment: require the resolved path to sit strictly under WEB_DIR (trailing sep
+        # so "/web_evil" can't pass a bare startswith on "/web").
+        base = os.path.normpath(WEB_DIR)
+        if not (path == base or path.startswith(base + os.sep)) or not os.path.isfile(path):
             self.send_error(404)
             return
         with open(path, "rb") as fh:
@@ -269,8 +289,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", _CTYPES.get(ext, "application/octet-stream"))
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Referrer-Policy", "no-referrer")
         self.end_headers()
         self.wfile.write(data)
+
+    def _local_host(self):
+        """Reject requests whose Host isn't loopback — kills DNS-rebinding (an attacker page
+        resolving its own hostname to 127.0.0.1 sends its hostname in Host, not localhost)."""
+        host = (self.headers.get("Host", "") or "").rsplit(":", 1)[0].strip("[]")
+        return host in ("127.0.0.1", "localhost", "::1", "")
 
     def _authed(self):
         tok = self.headers.get("X-Wizard-Token", "")
@@ -286,6 +313,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.path.startswith("/api/"):
             self.send_error(404)
+            return
+        if not self._local_host():
+            self._json({"ok": False, "detail": "host no permitido"}, 403)
             return
         if not self._authed():
             self._json({"ok": False, "detail": "no autorizado"}, 403)
@@ -362,7 +392,7 @@ class Handler(BaseHTTPRequestHandler):
             return telegram_setup.validate(body.get("token", ""))
 
         if route == "telegram/capture":
-            return telegram_setup.capture_owner(body.get("token", ""))
+            return telegram_setup.capture_owner(body.get("token", ""), body.get("code") or None)
 
         if route == "telegram/brand":
             name = body.get("agent_name") or "Hermes"
@@ -436,6 +466,8 @@ class Handler(BaseHTTPRequestHandler):
                            "bot_username": body.get("bot_username", "")}
         elif mode == "reconfigure" and agent.get("slug") and agent.get("slug") != "default":
             slug = agent["slug"]
+            if not _safe_slug(slug):
+                return {"ok": False, "detail": "Identificador de agente inválido."}
             rec = agents_registry.get(slug, INSTALL_DIR) or {}
             profile, is_default, gateway_action = slug, False, None
             port = int(rec.get("port") or agents_registry.next_port(INSTALL_DIR))
@@ -535,6 +567,8 @@ class Handler(BaseHTTPRequestHandler):
                 r = hermes_ctl.gateway(action, hp)
                 return {"ok": r["ok"], "detail": r["detail"]}
             return {"ok": False, "detail": "Esa acción no aplica al agente principal."}
+        if not _safe_slug(slug):
+            return {"ok": False, "detail": "Identificador de agente inválido."}
         rec = agents_registry.get(slug, INSTALL_DIR)
         if not rec:
             return {"ok": False, "detail": "Agente no encontrado."}
@@ -557,10 +591,12 @@ class Handler(BaseHTTPRequestHandler):
         if action == "reset":
             if hp:
                 hermes_ctl.profile_delete(slug, hp)
-            try:
-                shutil.rmtree(agents_registry.agent_dir(slug, INSTALL_DIR), ignore_errors=True)
-            except Exception:  # noqa: BLE001
-                pass
+            adir = agents_registry.agent_dir(slug, INSTALL_DIR)
+            if _under_agents(adir):   # containment guard: never rmtree outside INSTALL_DIR/agents
+                try:
+                    shutil.rmtree(adir, ignore_errors=True)
+                except Exception:  # noqa: BLE001
+                    pass
             agents_registry.remove(slug, INSTALL_DIR)
             return {"ok": True, "detail": "Agente eliminado por completo."}
         return {"ok": False, "detail": "Acción desconocida."}

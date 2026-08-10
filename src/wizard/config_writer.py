@@ -68,18 +68,33 @@ You keep a persistent, searchable history of your past conversations, plus durab
 """
 
 
-def _atomic_write(path, text):
+def _restrict(path):
+    """Restrict a secret file to the owner only (0600). On Windows os.chmod is limited but
+    harmless; the installers additionally apply a user-only ACL to the install dir."""
+    try:
+        os.chmod(path, 0o600)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _atomic_write(path, text, secret=False):
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(text)
+    if secret:
+        _restrict(tmp)              # tighten before it lands at the final name
     os.replace(tmp, path)
+    if secret:
+        _restrict(path)
 
 
-def _backup(path):
+def _backup(path, secret=False):
     if os.path.exists(path):
         try:
             shutil.copy2(path, path + ".bak")
+            if secret:
+                _restrict(path + ".bak")   # a backup of a secret is still a secret
         except Exception:  # noqa: BLE001
             pass
 
@@ -219,8 +234,8 @@ def write_all(cfg):
             "nightly_hour": 4,
             "lang": cfg.get("lang", "es"),
         }
-        _backup(updater_path)
-        _atomic_write(updater_path, json.dumps(updater, indent=2, ensure_ascii=False))
+        _backup(updater_path, secret=True)
+        _atomic_write(updater_path, json.dumps(updater, indent=2, ensure_ascii=False), secret=True)
         written.append(updater_path)
 
     # 3) Configure Hermes. Preferred: drive Hermes' OWN CLI (safe, no YAML merge, and
@@ -256,8 +271,8 @@ def write_all(cfg):
             env_lines.append("TAVILY_API_KEY=%s" % cfg["tavily_key"])
         env_lines.append("HERMES_YOLO_MODE=1")
         env_path = os.path.join(install_dir, ".env")
-        _backup(env_path)
-        _atomic_write(env_path, "\n".join(env_lines) + "\n")
+        _backup(env_path, secret=True)
+        _atomic_write(env_path, "\n".join(env_lines) + "\n", secret=True)
         written.append(env_path)
 
     return {"ok": True, "written": written, "warnings": warnings,

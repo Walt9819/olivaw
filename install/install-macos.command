@@ -100,7 +100,7 @@ else
     EXP="$(awk '{print tolower($1)}' "$TMP/rel.sha")"; ACT="$(shasum -a 256 "$TMP/rel.zip" | awk '{print tolower($1)}')"
     [ "$EXP" = "$ACT" ] || { echo "Checksum no coincide - abortado."; exit 1; }
     ok "Checksum verificado."
-  else warn "La release no trae .sha256 - instalando sin verificar."; fi
+  else echo "La release no incluye .sha256 - abortado (no se ejecuta codigo sin verificar)."; exit 1; fi
   unzip -qo "$TMP/rel.zip" -d "$TMP"
   cp -R "$TMP/src" "$TMP/templates" "$TMP/VERSION" "$INSTALL_DIR/"
 fi
