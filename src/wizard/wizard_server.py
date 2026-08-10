@@ -342,6 +342,12 @@ class Handler(BaseHTTPRequestHandler):
                 return {"ok": False, "detail": "proveedor desconocido"}
             return p.install({})
 
+        if route == "provider/login":
+            return channels.claude_login(body.get("claude") or which("claude"))
+
+        if route == "provider/login-status":
+            return channels.claude_status(body.get("claude") or which("claude"))
+
         if route == "test-brain":
             claude = body.get("claude") or which("claude")
             ws = body.get("workspace") or os.path.join(

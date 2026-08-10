@@ -28,28 +28,29 @@ Telegram ⇄ Hermes gateway ⇄ bridge (localhost:8790) ⇄ claude -p  (Claude C
 
 Todo lo demás (Python, Node, Claude Code y el propio Hermes) **se descarga e instala solo** — tú no instalas nada técnico a mano. La primera vez puede tardar varios minutos.
 
-**Paso 1 — Instálalo.** En **Windows**, busca “PowerShell” en el menú de inicio, ábrelo, pega esto y pulsa Enter:
-```powershell
-powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/Walt9819/olivaw/main/install/install-windows.ps1 -OutFile $env:TEMP\olivaw.ps1; & $env:TEMP\olivaw.ps1"
-```
-En **Mac**, abre la app “Terminal”, pega esto y pulsa Enter:
-```bash
-curl -fsSL https://raw.githubusercontent.com/Walt9819/olivaw/main/install/install-macos.command -o ~/olivaw.command && HB_REPO=Walt9819/olivaw bash ~/olivaw.command
-```
-Se descarga solo, verifica que todo esté bien y abre un **asistente en tu navegador**.
+**Paso 1 — Enciéndelo.** Copia la línea de tu sistema, pégala y pulsa Enter. Con eso se instala **todo solo** y se abre un asistente en tu navegador. (La primera vez tarda unos minutos: descarga varias cosas.)
 
-**Paso 2 — Sigue el asistente** (te lleva de la mano y prueba cada paso):
-1. Elige el cerebro (**Claude Code**) y pulsa **“Probar el cerebro”**.
-2. Conecta **Hermes**.
-3. Ponle **nombre** a tu agente y dile **para qué** lo quieres.
-4. Conéctalo a tu **Telegram** (te ayuda a crear el bot con BotFather y te deja como su único dueño).
-5. Pulsa **“Aplicar y activar”**.
+- **Windows** — abre *PowerShell* (búscalo en el menú de inicio) y pega:
+  ```powershell
+  irm https://raw.githubusercontent.com/Walt9819/olivaw/main/install/install-windows.ps1 | iex
+  ```
+- **Mac** — abre *Terminal* (en Aplicaciones → Utilidades) y pega:
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/Walt9819/olivaw/main/install/install-macos.command | bash
+  ```
+
+**Paso 2 — Sigue el asistente.** Te lleva de la mano y prueba cada paso; no tienes que escribir comandos:
+1. **Conecta tu cuenta de Claude** — un botón abre la ventana para iniciar sesión, y otro para probar que tu agente ya piensa.
+2. **Comprueba Hermes** — ya quedó listo; solo confirmas con un botón (no hay preguntas que responder).
+3. **Ponle nombre y propósito** a tu agente.
+4. **Conéctalo a tu Telegram** — te guía para crear el bot y te deja como su único dueño.
+5. **Pulsa “Aplicar y activar”.**
 
 **Paso 3 — Háblale.** Abre tu bot en Telegram y salúdalo. ¡Ya piensa por ti! 🎉
 
 **¿Y las actualizaciones?** No haces nada. Se actualiza **solo y en silencio** cuando no lo estás usando; solo te llega un aviso: *“🔄 se actualizó a la versión X”*.
 
-**¿Algo falló?** Escríbele a quien te compartió olivaw — casi siempre es un programa que faltó instalar, y el asistente te dice cuál.
+**¿Algo falló?** Escríbele a quien te compartió olivaw. El asistente te dirá si algo quedó pendiente.
 
 ---
 

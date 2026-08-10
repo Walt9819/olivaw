@@ -295,21 +295,28 @@
       '<div class="callout"><b>Necesitas una cuenta de pago.</b> ' + esc(p.paid_note) +
       ' &nbsp;<a href="' + esc(p.download_url) + '" target="_blank" rel="noopener">Descargar</a> · ' +
       '<a href="' + esc(p.help_url) + '" target="_blank" rel="noopener">Ayuda oficial</a></div>' +
-      '<h2>Cómo dejarlo listo</h2><div class="guide">' + steps + '</div>' +
-      '<div class="card">' +
-      '<label class="field"><span class="lab">Ruta de Claude Code <span class="hint">(la detectamos sola; edítala solo si hace falta)</span></span>' +
+      '<div class="guide">' + steps + '</div>' +
+      '<div class="card pad">' +
+      '<b>1 · Conecta tu cuenta de Claude</b>' +
+      '<p class="muted small">Un clic abre una ventana para iniciar sesión con tu cuenta. ' +
+      'Solo se hace una vez. ' + esc(p.login_hint) + '</p>' +
+      '<div class="row">' +
+      '<button class="btn btn-primary" id="btnLogin">Iniciar sesión en Claude</button>' +
+      '<button class="btn btn-soft btn-sm" id="btnLoginStatus">Ya inicié sesión</button>' +
+      '<span id="pillLogin" class="pill" style="display:none"></span></div>' +
+      '<details style="margin-top:12px"><summary>Opciones avanzadas</summary>' +
+      '<label class="field" style="margin-top:8px"><span class="lab">Ruta de Claude Code ' +
+      '<span class="hint">(la detectamos sola)</span></span>' +
       '<input type="text" id="claudePath" placeholder="claude" value="' + esc(S.claude) + '"></label>' +
       '<div class="row">' +
       '<button class="btn btn-soft btn-sm" id="btnNode">Verificar Node.js</button>' +
-      '<button class="btn btn-soft btn-sm" id="btnInstall">Instalar Claude Code</button>' +
+      '<button class="btn btn-soft btn-sm" id="btnInstall">Reinstalar Claude Code</button>' +
       '<button class="btn btn-soft btn-sm" id="btnCheckClaude">Verificar Claude Code</button>' +
-      '</div><div id="pillProv" class="pill load" style="display:none"></div>' +
-      '<div class="callout warn small" style="margin-top:14px">Después de instalar, abre una terminal, ' +
-      'escribe <code>claude</code> y completa el inicio de sesión (una sola vez). ' + esc(p.login_hint) + '</div>' +
+      '</div><div id="pillProv" class="pill load" style="display:none"></div></details>' +
       '</div>' +
       '<div class="card pad">' +
-      '<b>La prueba clave</b><p class="muted small">Enviamos un mensaje real a través del puente. ' +
-      'Si el cerebro responde, todo lo demás funcionará.</p>' +
+      '<b>2 · La prueba clave</b><p class="muted small">Enviamos un mensaje real a tu agente. ' +
+      'Si responde, todo lo demás funcionará.</p>' +
       '<div class="row"><button class="btn btn-primary" id="btnBrain">Probar el cerebro</button>' +
       '<span id="pillBrain" class="pill" style="display:none"></span></div></div>';
   }
@@ -327,16 +334,27 @@
       };
     });
     var cp = el("claudePath"); if (cp) cp.oninput = function () { S.claude = cp.value.trim(); save(); };
+    // One-click Claude sign-in (opens the OAuth flow in a terminal).
+    var pillLogin = el("pillLogin");
+    if (el("btnLogin")) el("btnLogin").onclick = function () {
+      pillLogin.style.display = "inline-flex";
+      runTest(this, pillLogin, function () { return api("provider/login", { claude: S.claude }); }, "Abriendo…")
+        .then(function (r) { if (r && r.ok) toast("Completa el inicio de sesión en la ventana, luego pulsa «Ya inicié sesión»."); });
+    };
+    if (el("btnLoginStatus")) el("btnLoginStatus").onclick = function () {
+      pillLogin.style.display = "inline-flex";
+      runTest(this, pillLogin, function () { return api("provider/login-status", { claude: S.claude }); }, "Comprobando…");
+    };
     var pill = el("pillProv");
-    el("btnNode").onclick = function () {
+    if (el("btnNode")) el("btnNode").onclick = function () {
       pill.style.display = "inline-flex";
       runTest(this, pill, function () { return api("check", { what: "node" }); });
     };
-    el("btnInstall").onclick = function () {
+    if (el("btnInstall")) el("btnInstall").onclick = function () {
       pill.style.display = "inline-flex";
       runTest(this, pill, function () { return api("provider/install", { provider: S.provider }); }, "Instalando…");
     };
-    el("btnCheckClaude").onclick = function () {
+    if (el("btnCheckClaude")) el("btnCheckClaude").onclick = function () {
       pill.style.display = "inline-flex";
       runTest(this, pill, function () {
         return api("provider/check", { provider: S.provider, claude: S.claude });
@@ -358,26 +376,20 @@
   function rHermes() {
     return '' +
       '<div class="eyebrow">Paso 2 · Hermes</div>' +
-      '<h1>Conecta el motor Hermes</h1>' +
-      '<p class="lead">Hermes es el cuerpo del agente: ejecuta las acciones (terminal, archivos, ' +
-      'web, recordatorios, mensajes) que el cerebro decide.</p>' +
-      '<div class="guide">' +
-      '<div class="g"><div class="gn"></div><div class="gt"><b>Instala Hermes</b> — sigue la guía oficial ' +
-      'de instalación para tu sistema. <a href="https://hermes.nousresearch.com" target="_blank" rel="noopener">Abrir guía</a></div></div>' +
-      '<div class="g"><div class="gn"></div><div class="gt"><b>Deja el gateway corriendo</b> — es lo que ' +
-      'mantiene a tu agente escuchando.</div></div>' +
-      '<div class="g"><div class="gn"></div><div class="gt"><b>Verifica aquí abajo</b> — comprobamos que ' +
-      'el comando <code>hermes</code> esté disponible.</div></div>' +
-      '</div>' +
-      '<div class="card"><div class="row">' +
-      '<button class="btn btn-primary" id="btnHermes">Verificar Hermes</button>' +
-      '<span id="pillHermes" class="pill" style="display:none"></span></div></div>' +
-      '<p class="muted small">¿Aún no lo instalas? Puedes continuar y hacerlo después; te dejaremos ' +
-      'preparado el bloque de configuración que Hermes necesita.</p>';
+      '<h1>El motor de tu agente</h1>' +
+      '<p class="lead">Hermes es lo que le da manos a tu agente: envía mensajes, maneja archivos, ' +
+      'busca en la web y más. <b>Ya quedó instalado y configurado por ti</b> durante la instalación — ' +
+      'no tienes que responder ninguna pregunta ni tocar ajustes.</p>' +
+      '<div class="card"><div class="row" style="justify-content:space-between">' +
+      '<div class="grow"><b>Comprobar que está listo</b>' +
+      '<div class="muted small">Solo confirmamos que responde. Este asistente se encarga del resto.</div></div>' +
+      '<button class="btn btn-primary" id="btnHermes">Comprobar</button></div>' +
+      '<div id="pillHermes" class="pill" style="display:none;margin-top:8px"></div></div>' +
+      '<p class="muted small">Todo lo técnico de Hermes lo ajusta este asistente al final. Continúa cuando el check esté en verde.</p>';
   }
   function eHermes() {
     var pill = el("pillHermes");
-    el("btnHermes").onclick = function () {
+    if (el("btnHermes")) el("btnHermes").onclick = function () {
       pill.style.display = "inline-flex";
       runTest(this, pill, function () { return api("check", { what: "hermes" }); }).then(function (r) {
         S.hermesOk = !!(r && r.ok); if (r && r.path) S.hermes = r.path; save(); renderStepper();

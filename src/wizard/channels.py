@@ -15,6 +15,7 @@ import subprocess
 import sys
 
 from . import hermes_ctl
+from .procutil import run, which
 
 IS_WIN = os.name == "nt"
 
@@ -38,7 +39,13 @@ SMTP_PROVIDERS = [
 
 
 def _profile_cmd_str(profile, subargs):
-    """A shell command string that runs `hermes <subargs>` against the right profile."""
+    """A shell command string that runs `hermes <subargs>` against the right profile.
+
+    `subargs` is composed ONLY from static, code-defined strings in this module (never from
+    request/user input), so there is no injection surface here. The one dynamic input that can
+    reach a command — a custom MCP name/URL — is strictly validated in mcp_install / mcp_add
+    before it is ever passed in.
+    """
     if not profile or profile == "default":
         exe = hermes_ctl.hermes_path() or "hermes"
     else:
@@ -46,9 +53,12 @@ def _profile_cmd_str(profile, subargs):
     return '"%s" %s' % (exe, subargs)
 
 
-def launch_terminal(profile, subargs, title="Hermes"):
-    """Open a visible terminal running a (possibly interactive) hermes subcommand."""
-    cmdstr = _profile_cmd_str(profile, subargs)
+def _open_terminal(cmdstr, title="Olivaw"):
+    """Open a visible terminal running a (possibly interactive) command string.
+
+    `cmdstr` must be built from trusted/validated pieces by the caller — this helper does not
+    sanitize it. Used for interactive flows (Claude login, WhatsApp QR, Hermes setup) the user
+    must complete in a real console."""
     try:
         if IS_WIN:
             subprocess.Popen('start "%s" cmd /k %s' % (title, cmdstr), shell=True)
@@ -57,15 +67,40 @@ def launch_terminal(profile, subargs, title="Hermes"):
                               'tell application "Terminal" to do script "%s"' % cmdstr.replace('"', '\\"')])
         else:
             for term in ("x-terminal-emulator", "gnome-terminal", "konsole", "xterm"):
-                if hermes_ctl.which(term) if hasattr(hermes_ctl, "which") else False:
+                if which(term):
                     subprocess.Popen([term, "-e", "bash", "-lc", cmdstr]); break
             else:
                 return {"ok": False, "detail": "Ejecuta en una terminal: %s" % cmdstr, "command": cmdstr}
-        return {"ok": True, "detail": "Abrí una terminal. Sigue las instrucciones ahí.",
-                "command": cmdstr}
+        return {"ok": True, "detail": "Abrí una terminal. Sigue los pasos ahí.", "command": cmdstr}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "detail": "No pude abrir la terminal. Ejecuta: %s (%s)" % (cmdstr, e),
                 "command": cmdstr}
+
+
+def launch_terminal(profile, subargs, title="Hermes"):
+    """Open a visible terminal running a hermes subcommand for the given profile."""
+    return _open_terminal(_profile_cmd_str(profile, subargs), title)
+
+
+# ── Claude Code sign-in (one click) ────────────────────────────────────────────
+def claude_login(claude_path=None):
+    """Open a terminal running `claude auth login` so the user signs in with one click
+    (the CLI opens the browser OAuth flow). No user input goes into the command."""
+    exe = claude_path or which("claude") or "claude"
+    return _open_terminal('"%s" auth login' % exe, title="Iniciar sesion en Claude")
+
+
+def claude_status(claude_path=None):
+    """Non-interactive check of whether Claude Code is signed in."""
+    exe = claude_path or which("claude")
+    if not exe:
+        return {"ok": False, "signed_in": False, "detail": "Claude Code aún no está instalado."}
+    r = run([exe, "auth", "status"], timeout=25)
+    blob = (r["out"] + " " + r["err"]).lower()
+    signed = r["ok"] and not any(w in blob for w in ("not logged", "not signed", "no auth", "logged out"))
+    return {"ok": signed, "signed_in": signed,
+            "detail": ("Sesión de Claude activa." if signed
+                       else "Aún no has iniciado sesión en Claude. Pulsa «Iniciar sesión».")}
 
 
 # ── WhatsApp ─────────────────────────────────────────────────────────────────

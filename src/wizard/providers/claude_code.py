@@ -55,19 +55,13 @@ INFO = ProviderInfo(
               "Con ella, tu agente piensa con los modelos de Anthropic sin costo por API.",
     download_url="https://claude.com/product/claude-code",
     help_url="https://docs.claude.com/en/docs/claude-code/overview",
-    login_hint="Cuando escribes 'claude' en la terminal y te saluda sin pedir una "
-               "clave, ya iniciaste sesión correctamente.",
+    login_hint="Se abrirá una ventana para conectar tu cuenta; cuando termine, vuelve aquí.",
     steps=[
-        {"title": "Instala Node.js",
-         "body": "Claude Code se instala con Node. Si el botón de abajo falla, "
-                 "descarga Node desde nodejs.org e instálalo con las opciones por defecto.",
-         "link": "https://nodejs.org"},
-        {"title": "Instala Claude Code",
-         "body": "Usa el botón «Instalar automáticamente». Corre "
-                 "'npm install -g @anthropic-ai/claude-code' por ti."},
-        {"title": "Inicia sesión una vez",
-         "body": "Abre una terminal, escribe 'claude' y sigue el inicio de sesión "
-                 "con tu cuenta de Claude. Solo se hace una vez."},
+        {"title": "Ya lo instalamos por ti",
+         "body": "Claude Code quedó instalado durante la instalación. No tienes que hacer nada."},
+        {"title": "Conecta tu cuenta (un clic)",
+         "body": "Pulsa «Iniciar sesión en Claude» abajo y sigue los pasos en la ventana que "
+                 "se abre. Solo se hace una vez."},
     ],
     check_fn=_check,
     install_fn=_install,

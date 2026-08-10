@@ -45,6 +45,9 @@ else
   export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
   have hermes >/dev/null && ok "Hermes instalado." || warn "No pude confirmar 'hermes' en PATH; el asistente lo revisara."
 fi
+# Seed a non-interactive baseline so the user is NEVER dropped into Hermes' question wizard.
+# Olivaw configures model/owner-lock itself later; defaults are fine. Best-effort.
+if have hermes >/dev/null; then hermes setup --non-interactive >/dev/null 2>&1 || true; fi
 
 # 2) uv
 step "2/5  uv (gestor de Python)"

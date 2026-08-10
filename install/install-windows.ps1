@@ -65,6 +65,12 @@ if (Have hermes) {
   Refresh-Path
   if (Have hermes) { Ok "Hermes instalado." } else { Warn "No pude confirmar Hermes en PATH; el asistente lo revisara." }
 }
+# Seed Hermes with a non-interactive baseline so the user is NEVER dropped into Hermes'
+# own question wizard. Olivaw configures the model/owner-lock itself later, so defaults
+# are fine here. Best-effort; failure is non-fatal (the wizard still opens).
+if (Have hermes) {
+  try { Start-Process -FilePath "hermes" -ArgumentList "setup","--non-interactive" -Wait -NoNewWindow -ErrorAction SilentlyContinue | Out-Null } catch {}
+}
 
 # 2) uv (Python manager) -----------------------------------------------------
 Step "2/5  uv (gestor de Python)"
