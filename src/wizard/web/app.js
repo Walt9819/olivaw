@@ -33,7 +33,7 @@
     S.owner_code = _c;
   }
   var META = { providers: [], usecases: [], default_provider: "claude-code", hermes: {},
-    agents: { default: null, extra: [] }, smtp_providers: [], image_options: [] };
+    agents: { default: null, extra: [] }, smtp_providers: [], image_options: [], google_presets: {} };
 
   function save() { try { localStorage.setItem(LS, JSON.stringify(S)); } catch (e) {} }
   function load() { try { return JSON.parse(localStorage.getItem(LS)); } catch (e) { return null; } }
@@ -65,7 +65,8 @@
     { id: "agent", label: "Tu agente", render: rAgent, enter: eAgent },
     { id: "channel", label: "Tu canal", render: rChannel, enter: eChannel },
     { id: "finish", label: "Activar", render: rFinish, enter: eFinish },
-    { id: "channels", label: "Más canales", render: rChannels, enter: eChannels }
+    { id: "channels", label: "Más canales", render: rChannels, enter: eChannels },
+    { id: "rescue", label: "Ayuda", render: rRescue, enter: eRescue }
   ];
 
   function stepDone(i) {
@@ -77,6 +78,7 @@
       case "channel": return !!S.owner_id;
       case "finish": return !!S.applied;
       case "channels": return !!S.applied;
+      case "rescue": return false;
     }
     return false;
   }
@@ -113,6 +115,15 @@
     document.querySelector(".panel-wrap").scrollTop = 0;
     render();
   }
+
+  // Always-available escape hatch to the rescue console (works even mid-setup / when broken).
+  (function () {
+    var hb = el("helpBtn");
+    if (hb) hb.onclick = function () {
+      var i = STEPS.map(function (x) { return x.id; }).indexOf("rescue");
+      if (i >= 0) { S._max = Math.max(S._max || 0, i); go(i); }
+    };
+  })();
 
   el("navBack").onclick = function () { go(S.step - 1); };
   el("navNext").onclick = function () {
@@ -738,13 +749,54 @@
       '<div class="row"><button class="btn btn-soft btn-sm" id="mcpAdd">Añadir</button></div>' +
       chLine("mcpPill") + '</details>' +
 
-      // WhatsApp
-      '<details open><summary>💬 WhatsApp</summary>' +
-      '<p class="small muted">Personal (Baileys, con QR) o Business (Cloud API de Meta). ' +
-      'El emparejamiento se hace en una ventana de terminal.</p>' +
-      '<div class="row"><button class="btn btn-soft btn-sm" id="waPair">Emparejar WhatsApp (QR)</button>' +
-      '<button class="btn btn-soft btn-sm" id="waCloud">WhatsApp Business (Cloud)</button></div>' +
+      // WhatsApp — connect, show the QR HERE, then lock it to the owner's number
+      '<details><summary>💬 WhatsApp</summary>' +
+      '<p class="small muted">1) Pulsa «Conectar». 2) Aparecerá aquí un código QR. ' +
+      '3) En tu teléfono: WhatsApp → Ajustes → <b>Dispositivos vinculados</b> → Vincular. ' +
+      'No necesitas terminal.</p>' +
+      '<div class="row"><button class="btn btn-primary btn-sm" id="waPair">Conectar WhatsApp</button>' +
+      '<button class="btn btn-soft btn-sm" id="waQr">Ver código QR</button>' +
+      '<button class="btn btn-soft btn-sm" id="waCloud">Usar WhatsApp Business (Cloud)</button></div>' +
+      '<div id="waQrBox" style="display:none;margin-top:10px"></div>' +
+      '<div class="hr"></div><b class="small">Quién puede darle órdenes (obligatorio)</b>' +
+      '<label class="field" style="margin-top:8px"><span class="lab">Tu número con código de país ' +
+      '<span class="hint">ej: 5215512345678</span></span>' +
+      '<input type="text" id="waUsers" placeholder="5215512345678" value="' + esc(S.wa_users || "") + '"></label>' +
+      '<div class="row"><button class="btn btn-soft btn-sm" id="waSave">Guardar y bloquear a mi número</button></div>' +
       chLine("waPill") + '</details>' +
+
+      // Google Workspace: Gmail (native email platform) + Google Chat
+      '<details><summary>🟦 Google Workspace (Gmail y Google Chat)</summary>' +
+      '<p class="small muted">Conecta tu cuenta de Google para que tu agente <b>reciba y responda ' +
+      'correos</b>, y opcionalmente hable por Google Chat. Usa una <b>contraseña de aplicación</b>, ' +
+      'nunca tu contraseña normal.</p>' +
+      '<b class="small">📧 Gmail / Workspace (correo)</b>' +
+      '<label class="field" style="margin-top:8px"><span class="lab">Proveedor</span>' +
+      '<select id="gwProv">' + Object.keys(META.google_presets || {}).map(function (k) {
+        var o = META.google_presets[k];
+        return '<option value="' + k + '"' + (S.gw_prov === k ? " selected" : "") + '>' + esc(o.label) + '</option>';
+      }).join("") + '</select></label>' +
+      '<div id="gwNote" class="callout small" style="margin:0 0 12px"></div>' +
+      '<label class="field"><span class="lab">Tu correo</span>' +
+      '<input type="text" id="gwAddr" placeholder="tu@empresa.com" value="' + esc(S.gw_addr || "") + '"></label>' +
+      '<label class="field"><span class="lab">Contraseña de aplicación</span>' +
+      '<input type="password" id="gwPass"></label>' +
+      '<div class="row"><label class="field grow"><span class="lab">SMTP (salida)</span>' +
+      '<input type="text" id="gwSmtp" value="' + esc(S.gw_smtp || "") + '"></label>' +
+      '<label class="field grow"><span class="lab">IMAP (entrada)</span>' +
+      '<input type="text" id="gwImap" value="' + esc(S.gw_imap || "") + '"></label></div>' +
+      '<label class="field"><span class="lab">Correos que pueden darle órdenes (obligatorio)' +
+      '<span class="hint"> — al menos el tuyo; los demás solo reciben respuestas</span></span>' +
+      '<input type="text" id="gwUsers" placeholder="tu@empresa.com, jefe@empresa.com" value="' + esc(S.gw_users || "") + '"></label>' +
+      '<div class="row"><button class="btn btn-primary btn-sm" id="gwSave">Conectar correo</button></div>' +
+      '<div class="hr"></div><b class="small">💬 Google Chat (opcional, avanzado)</b>' +
+      '<p class="small muted">Necesita un archivo JSON de «cuenta de servicio» de Google Cloud.</p>' +
+      '<label class="field"><span class="lab">Ruta del JSON</span>' +
+      '<input type="text" id="gcJson" placeholder="C:\ruta\service-account.json"></label>' +
+      '<label class="field"><span class="lab">Correos permitidos</span>' +
+      '<input type="text" id="gcUsers" placeholder="tu@empresa.com"></label>' +
+      '<div class="row"><button class="btn btn-soft btn-sm" id="gcSave">Conectar Google Chat</button></div>' +
+      chLine("gwPill") + '</details>' +
 
       // Slack
       '<details><summary>🟣 Slack</summary>' +
@@ -868,13 +920,78 @@
     };
 
     var wa = el("waPair"), waPill = el("waPill");
+    function pollQr(tries) {
+      api("channel/whatsapp-qr", { profile: prof }).then(function (r) {
+        var box = el("waQrBox"); if (!box) return;
+        if (r && r.connected) {
+          box.style.display = "block";
+          box.innerHTML = '<div class="callout small">✅ WhatsApp conectado. Ahora guarda tu número abajo.</div>';
+          return;
+        }
+        if (r && r.qr) {
+          box.style.display = "block";
+          box.innerHTML = '<div class="muted small" style="margin-bottom:6px">' + esc(r.detail || "") + '</div>' +
+            '<pre style="line-height:1;font-size:9px">' + esc(r.qr) + '</pre>';
+          return;
+        }
+        box.style.display = "block";
+        box.innerHTML = '<span class="muted small">' + esc((r && r.detail) || "Esperando el código…") + '</span>';
+        if ((tries || 0) < 12) setTimeout(function () { pollQr((tries || 0) + 1); }, 2500);
+      });
+    }
     if (wa) wa.onclick = function () {
       waPill.style.display = "inline-flex";
-      runTest(this, waPill, function () { return api("channel/whatsapp", { profile: prof, cloud: false }); }, "Abriendo…");
+      runTest(this, waPill, function () { return api("channel/whatsapp", { profile: prof, cloud: false }); }, "Iniciando…")
+        .then(function () { setTimeout(function () { pollQr(0); }, 2500); });
     };
+    if (el("waQr")) el("waQr").onclick = function () { pollQr(0); };
     if (el("waCloud")) el("waCloud").onclick = function () {
       waPill.style.display = "inline-flex";
       runTest(this, waPill, function () { return api("channel/whatsapp", { profile: prof, cloud: true }); }, "Abriendo…");
+    };
+    if (el("waUsers")) el("waUsers").oninput = function () { S.wa_users = this.value; save(); };
+    if (el("waSave")) el("waSave").onclick = function () {
+      waPill.style.display = "inline-flex";
+      runTest(this, waPill, function () {
+        return api("channel/whatsapp-save", { profile: prof, allowed_users: S.wa_users || "",
+                                              home_channel: (S.wa_users || "").split(",")[0].trim() });
+      }, "Guardando…");
+    };
+
+    // Google Workspace (Gmail platform + Google Chat)
+    var gwPill = el("gwPill"), gp = el("gwProv");
+    function applyGw() {
+      var o = (META.google_presets || {})[S.gw_prov || "gmail"];
+      if (!o) return;
+      if ((S.gw_prov || "gmail") !== "other") { S.gw_smtp = o.smtp_host; S.gw_imap = o.imap_host; }
+      if (el("gwSmtp")) el("gwSmtp").value = S.gw_smtp || "";
+      if (el("gwImap")) el("gwImap").value = S.gw_imap || "";
+      var n = el("gwNote");
+      if (n) n.innerHTML = esc(o.note || "") + (o.link ? ' <a href="' + esc(o.link) +
+        '" target="_blank" rel="noopener noreferrer">crear contraseña de aplicación</a>' : "");
+      save();
+    }
+    if (gp) { gp.onchange = function () { S.gw_prov = gp.value; applyGw(); }; if (!S.gw_prov) S.gw_prov = "gmail"; applyGw(); }
+    [["gwAddr", "gw_addr"], ["gwSmtp", "gw_smtp"], ["gwImap", "gw_imap"], ["gwUsers", "gw_users"]].forEach(function (pr) {
+      var i = el(pr[0]); if (i) i.oninput = function () { S[pr[1]] = i.value; save(); };
+    });
+    if (el("gwSave")) el("gwSave").onclick = function () {
+      gwPill.style.display = "inline-flex";
+      runTest(this, gwPill, function () {
+        return api("channel/email-platform-save", {
+          profile: prof, address: S.gw_addr || "", password: (el("gwPass") || {}).value || "",
+          smtp_host: S.gw_smtp || "", imap_host: S.gw_imap || "",
+          allowed_users: S.gw_users || S.gw_addr || ""
+        });
+      }, "Conectando…").then(function (r) { if (r && r.ok) toast("Correo conectado ✉️"); });
+    };
+    if (el("gcSave")) el("gcSave").onclick = function () {
+      gwPill.style.display = "inline-flex";
+      runTest(this, gwPill, function () {
+        return api("channel/gchat-save", { profile: prof,
+          service_account: (el("gcJson") || {}).value || "",
+          allowed_users: (el("gcUsers") || {}).value || "" });
+      }, "Conectando…");
     };
 
     var slackPill = el("slackPill");
@@ -937,6 +1054,87 @@
     };
   }
 
+  // ── step 7: rescue console (talk to Claude Code directly) ─────────────────
+  // This is the escape hatch: when the bridge/Hermes is down, Telegram is dead, so the
+  // owner can still reach Claude Code from here — with the installation snapshot attached.
+  function rRescue() {
+    var msgs = (S.rescue_history || []).map(function (m) {
+      var mine = m.role === "user";
+      return '<div class="row" style="justify-content:' + (mine ? "flex-end" : "flex-start") + '">' +
+        '<div class="card" style="max-width:82%;margin:0 0 10px;' +
+        (mine ? "background:var(--panel-2)" : "") + '">' +
+        '<div class="muted small" style="margin-bottom:4px">' + (mine ? "Tú" : "🤖 Claude") + '</div>' +
+        '<div style="white-space:pre-wrap">' + esc(m.content) + '</div></div></div>';
+    }).join("");
+    return '' +
+      '<div class="eyebrow">Ayuda directa</div>' +
+      '<h1>Habla con Claude sobre tu instalación</h1>' +
+      '<p class="lead">Esto habla con Claude <b>directamente</b> — sin pasar por Telegram ni por tu ' +
+      'agente. Úsalo cuando algo falle: ve el estado real de tu instalación (puente, Hermes, ' +
+      'registros) y te dice qué pasa y qué hacer. No necesitas abrir ninguna terminal.</p>' +
+      '<div id="rescueStatus" class="card"><span class="muted small">Revisando tu instalación…</span></div>' +
+      '<div id="rescueMsgs" style="margin:14px 0">' + msgs + '</div>' +
+      '<div class="card pad">' +
+      '<label class="field"><span class="lab">¿Qué está pasando?</span>' +
+      '<textarea id="rescueQ" rows="3" placeholder="Ej: mi agente dejó de responder en Telegram"></textarea></label>' +
+      '<div class="row" style="justify-content:space-between">' +
+      '<label class="row" style="gap:8px;font-size:13px;cursor:pointer">' +
+      '<input type="checkbox" id="rescueFix"> <span class="muted">Permitir que revise archivos y aplique arreglos</span></label>' +
+      '<div class="row"><button class="btn btn-primary" id="rescueSend">Preguntar</button>' +
+      '<button class="btn btn-ghost btn-sm" id="rescueClear">Limpiar</button></div></div>' +
+      '<div id="rescuePill" class="pill" style="display:none;margin-top:8px"></div></div>' +
+      '<p class="muted small">Tus claves y contraseñas se ocultan automáticamente antes de enviar nada.</p>';
+  }
+
+  function eRescue() {
+    var box = el("rescueStatus");
+    api("rescue/context", {}).then(function (c) {
+      if (!c || !c.ok) { box.innerHTML = '<span class="muted small">No pude leer el estado.</span>'; return; }
+      var b = (c.bridges || []).map(function (x) {
+        return '<span class="pill ' + (x.up ? "ok" : "err") + '" style="margin:0 6px 0 0">' +
+          (x.up ? "✓" : "✕") + " puente :" + esc(x.port) + '</span>';
+      }).join("");
+      box.innerHTML = '<div class="row" style="flex-wrap:wrap;gap:6px">' + b +
+        '<span class="pill ' + (c.hermes_installed ? "ok" : "err") + '" style="margin:0">' +
+        (c.hermes_installed ? "✓" : "✕") + ' Hermes</span>' +
+        '<span class="pill ' + (c.claude_installed ? "ok" : "err") + '" style="margin:0">' +
+        (c.claude_installed ? "✓" : "✕") + ' Claude</span>' +
+        '<span class="muted small" style="margin-left:auto">v' + esc(c.version || "?") + '</span></div>' +
+        (c.bridge_down ? '<div class="callout warn small" style="margin:10px 0 0">El puente no responde: ' +
+          'por eso tu agente no contesta en Telegram. Pregunta abajo y te digo cómo revivirlo.</div>' : "");
+    });
+
+    var send = el("rescueSend"), pill = el("rescuePill");
+    function ask() {
+      var q = (el("rescueQ") || {}).value || "";
+      if (!q.trim()) { toast("Escribe tu pregunta."); return; }
+      var fix = !!(el("rescueFix") && el("rescueFix").checked);
+      S.rescue_history = (S.rescue_history || []).concat([{ role: "user", content: q }]);
+      save(); render();
+      var p = el("rescuePill"); p.style.display = "inline-flex";
+      p.className = "pill load";
+      p.innerHTML = '<span class="spinner"></span>' + (fix ? "Revisando y arreglando…" : "Pensando…");
+      api("rescue/ask", { question: q, allow_fix: fix, history: S.rescue_history.slice(0, -1) })
+        .then(function (r) {
+          S.rescue_history = (S.rescue_history || []).concat([
+            { role: "assistant", content: (r && (r.reply || r.detail)) || "Sin respuesta." }]);
+          save(); render();
+        }).catch(function (e) {
+          S.rescue_history = (S.rescue_history || []).concat([
+            { role: "assistant", content: "Error: " + e }]);
+          save(); render();
+        });
+    }
+    if (send) send.onclick = ask;
+    var qbox = el("rescueQ");
+    if (qbox) qbox.onkeydown = function (ev) {
+      if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); ask(); }
+    };
+    if (el("rescueClear")) el("rescueClear").onclick = function () {
+      S.rescue_history = []; save(); render();
+    };
+  }
+
   // ── boot ──────────────────────────────────────────────────────────────
   function boot() {
     el("panel").innerHTML = '<div style="text-align:center;padding:60px 0;color:var(--muted)">' +
@@ -950,6 +1148,7 @@
         META.agents = st.agents || { default: null, extra: [] };
         META.smtp_providers = st.smtp_providers || [];
         META.image_options = st.image_options || [];
+        META.google_presets = st.google_presets || {};
         META.default_provider = st.default_provider || "claude-code";
         var d = st.defaults || {};
         // fill only empty fields (don't clobber a resumed session)

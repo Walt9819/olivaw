@@ -123,6 +123,18 @@ else
   say "La configuracion final se hara en el asistente del navegador."
 fi
 
+# App shortcut: a double-clickable "Olivaw" that reopens the setup/help UI.
+# Without it the user would need a terminal to get back into the wizard.
+APPDIR="$HOME/Applications"; mkdir -p "$APPDIR"
+OPENER="$APPDIR/Olivaw.command"
+cat > "$OPENER" <<OPENEOF
+#!/bin/bash
+# Abre la configuracion / ayuda de Olivaw en el navegador.
+cd "$INSTALL_DIR" && exec "$PY" "$INSTALL_DIR/src/wizard/wizard_server.py"
+OPENEOF
+chmod +x "$OPENER"
+ok "Acceso directo creado: $OPENER (doble clic para volver a la configuracion)"
+
 # supervisor at login (launchd), runs with the uv-managed Python
 PLIST="$HOME/Library/LaunchAgents/com.olivaw.supervisor.plist"
 if [ "$(uname)" = "Darwin" ]; then

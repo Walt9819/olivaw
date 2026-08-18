@@ -250,7 +250,9 @@ def write_all(cfg):
         hermes_result = apply_hermes(
             port=port, token=cfg.get("telegram_bot_token", ""),
             owner_id=str(cfg.get("owner_id", "")), tavily=cfg.get("tavily_key", ""),
-            hermes=hermes, gateway_action=gw_action, profile=cfg.get("profile"))
+            hermes=hermes, gateway_action=gw_action, profile=cfg.get("profile"),
+            chat_id=str(cfg.get("chat_id", "")),
+            agent_name=(cfg.get("identity", {}) or {}).get("agent_name", ""))
         for s in hermes_result["steps"]:
             if not s["ok"]:
                 warnings.append("Hermes (%s): %s" % (s["name"], s["detail"]))
@@ -266,6 +268,7 @@ def write_all(cfg):
             "OPENAI_API_KEY=sk-local-not-used",
             "TELEGRAM_BOT_TOKEN=%s" % cfg.get("telegram_bot_token", ""),
             "TELEGRAM_ALLOWED_USERS=%s" % str(cfg.get("owner_id", "")),
+            "TELEGRAM_HOME_CHANNEL=%s" % str(cfg.get("chat_id", "")),
         ]
         if cfg.get("tavily_key"):
             env_lines.append("TAVILY_API_KEY=%s" % cfg["tavily_key"])
@@ -282,7 +285,7 @@ def write_all(cfg):
 
 
 def apply_hermes(port, token, owner_id, tavily="", hermes=None, gateway_action="restart",
-                 profile=None):
+                 profile=None, chat_id="", agent_name=""):
     """Configure a Hermes profile via its own CLI. profile=None -> default (bare hermes),
     else the per-profile wrapper. gateway_action: 'restart' (default agent) | 'start'
     (new agent) | None (skip). Returns {ok, steps:[...]}. """
@@ -303,6 +306,14 @@ def apply_hermes(port, token, owner_id, tavily="", hermes=None, gateway_action="
         env_updates["TELEGRAM_BOT_TOKEN"] = token
     if owner_id:
         env_updates["TELEGRAM_ALLOWED_USERS"] = owner_id     # the real owner-lock
+    # HOME CHANNEL — this is what `/sethome` sets from inside the chat. Without it, cron jobs,
+    # reminders and proactive send_message have nowhere to go, so a fresh install looks "half
+    # working" until the user discovers /sethome. We already know the owner's chat id from the
+    # verified capture, so set it here and the user never has to run /sethome.
+    if chat_id:
+        env_updates["TELEGRAM_HOME_CHANNEL"] = str(chat_id)
+        if agent_name:
+            env_updates["TELEGRAM_HOME_CHANNEL_NAME"] = agent_name[:64]
     if tavily:
         env_updates["TAVILY_API_KEY"] = tavily
     step("owner-lock + token (.env)", hermes_ctl.set_env_vars(env_updates, hermes, profile))

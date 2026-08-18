@@ -112,7 +112,9 @@ user through, **testing each step live so nothing is left half-connected**:
 4. **Your channel (owner lock)** — guided BotFather flow → paste the token → the wizard validates
    it, auto-captures your Telegram id (you tap *Start*), brands the bot, and locks the agent so
    **only your account** can command it.
-5. **Activate** — writes `CLAUDE.md` + `updater.config.json`, then configures Hermes **through its
+5. **Activate** — writes `CLAUDE.md` + `updater.config.json`, sets the **home channel**
+   (`TELEGRAM_HOME_CHANNEL`) from the verified owner chat so cron jobs, reminders and proactive
+   messages work **without the user ever running `/sethome`**, then configures Hermes **through its
    own CLI**: `hermes config set model.*` points it at the bridge, the owner lock is written as
    `TELEGRAM_ALLOWED_USERS` in the profile `.env` (the real mechanism, plus `hermes pairing`), and
    the gateway is restarted. No YAML editing, no manual paste. (If the `hermes` CLI isn't found,
@@ -139,6 +141,21 @@ How it works:
 - **Gateways survive reboot:** the supervisor also keeps each extra agent's Hermes gateway alive
   (`<slug> gateway run --external-supervisor`), so channels come back after a restart.
 
+### Help console (works even when the bridge is down)
+
+A **🆘 sidebar button** (and an "Ayuda" step) opens a chat with **Claude Code directly** — not
+through Telegram, not through Hermes, not through the bridge. It attaches a live snapshot of the
+installation (bridge ports up/down, Hermes gateway, Claude auth, `launcher.log` / `bridge.log`
+tails, config with **secrets redacted**) so Claude can say what is broken and what to do, in plain
+language. Two modes: **diagnose** (tools off — cannot change anything) and an explicit
+**"permitir que aplique arreglos"** (tools on, scoped to the install dir). This is the escape hatch
+for exactly the case where the agent can't be reached through its normal channel.
+
+### App shortcut
+
+The installers create an **Olivaw** shortcut (Windows: Desktop + Start Menu; macOS:
+`~/Applications/Olivaw.command`) that reopens this setup/help UI at any time — no terminal.
+
 ### Extras: capabilities, connectors & channels (optional, per agent)
 
 A final optional step gives an agent more power — all Hermes-side, so it actually works through
@@ -158,7 +175,12 @@ the bridge (Claude Code MCP connectors do **not** work here — the bridge disab
 
 …and it connects an agent to more channels — each guided and testable:
 
-- **WhatsApp** — opens `hermes whatsapp` (personal, QR) or `whatsapp-cloud` (Business API) in a terminal.
+- **WhatsApp** — one click starts pairing and the **QR appears inside the wizard** (no terminal);
+  then you lock the channel to your own number (`WHATSAPP_ALLOWED_USERS`).
+- **Google Workspace** — **Gmail/Workspace mail** via Hermes' native `email` platform, so the agent
+  **receives and replies** to email (IMAP in + SMTP out, app password, presets for Gmail/Outlook),
+  plus **Google Chat** via a service account. Both require an allow-list, so a stranger who emails
+  or messages the agent cannot command it.
 - **Slack** — generates the app manifest (`hermes slack manifest`) to paste at api.slack.com, then
   finishes config in a terminal.
 - **Webhook / Google Chat** — creates a `hermes webhook subscribe` route for event-driven activation,

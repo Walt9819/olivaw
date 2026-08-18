@@ -111,10 +111,97 @@ def claude_status(claude_path=None):
                        else "Aún no has iniciado sesión en Claude. Pulsa «Iniciar sesión».")}
 
 
+# ── Hermes home / profile paths (for reading adapter logs) ─────────────────────
+def _hermes_home(profile=None):
+    home = os.environ.get("HERMES_HOME") or ""
+    if not home:
+        if IS_WIN:
+            home = os.path.join(os.environ.get("LOCALAPPDATA", ""), "hermes")
+        else:
+            home = os.path.join(os.path.expanduser("~"), ".hermes")
+    if profile and profile != "default":
+        p = os.path.join(home, "profiles", profile)
+        if os.path.isdir(p):
+            return p
+    return home
+
+
 # ── WhatsApp ─────────────────────────────────────────────────────────────────
+# Pairing is a QR the Node bridge prints into its log. Rather than making a non-technical
+# user read a terminal, we start the pairing and surface that QR inside the wizard.
 def whatsapp_pair(profile=None, cloud=False):
     return launch_terminal(profile, ["whatsapp-cloud" if cloud else "whatsapp"],
                            title="Hermes WhatsApp")
+
+
+def _whatsapp_logs(profile=None):
+    """Candidate Node-bridge logs where the pairing QR is written."""
+    base = _hermes_home(profile)
+    found = []
+    for root, dirs, files in os.walk(base):
+        # keep the walk cheap: only descend into whatsapp-ish trees
+        depth = root[len(base):].count(os.sep)
+        if depth > 3:
+            dirs[:] = []
+            continue
+        dirs[:] = [d for d in dirs
+                   if "whatsapp" in d.lower() or "wa" == d.lower() or depth == 0]
+        for f in files:
+            if f.endswith(".log") and ("whatsapp" in root.lower() or "whatsapp" in f.lower()):
+                found.append(os.path.join(root, f))
+    return sorted(found, key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0,
+                  reverse=True)[:3]
+
+
+def whatsapp_qr(profile=None):
+    """Return the most recent pairing QR (ASCII) + connection state from the bridge log."""
+    logs = _whatsapp_logs(profile)
+    if not logs:
+        return {"ok": False, "waiting": True,
+                "detail": "Aún no veo el proceso de WhatsApp. Pulsa «Conectar WhatsApp» primero."}
+    text = ""
+    for lg in logs:
+        try:
+            with open(lg, encoding="utf-8", errors="replace") as fh:
+                text = fh.read()[-20000:]
+        except Exception:  # noqa: BLE001
+            continue
+        if text:
+            break
+    low = text.lower()
+    if "status:connected" in low or "connected" in low.split("qr")[-1][:200]:
+        return {"ok": True, "connected": True, "detail": "¡WhatsApp conectado!"}
+    # QR codes are printed as blocks of block-drawing chars; grab the last such block.
+    blocks, cur = [], []
+    for line in text.splitlines():
+        if sum(ch in "█▀▄ " for ch in line) > max(8, len(line) * 0.8) and line.strip():
+            cur.append(line)
+        else:
+            if len(cur) > 8:
+                blocks.append("\n".join(cur))
+            cur = []
+    if len(cur) > 8:
+        blocks.append("\n".join(cur))
+    if blocks:
+        return {"ok": True, "connected": False, "qr": blocks[-1],
+                "detail": "Escanea este código con WhatsApp → Dispositivos vinculados."}
+    return {"ok": False, "waiting": True,
+            "detail": "El código todavía no aparece. Espera unos segundos y vuelve a intentar."}
+
+
+def whatsapp_save(profile=None, allowed_users="", home_channel=""):
+    """Enable WhatsApp with an OWNER-LOCK. Never leave the channel open to everyone:
+    WHATSAPP_ALLOWED_USERS is the allow-list, and we explicitly force ALLOW_ALL off."""
+    allowed = ",".join([u.strip() for u in re.split(r"[,\s]+", allowed_users or "") if u.strip()])
+    if not allowed:
+        return {"ok": False,
+                "detail": "Indica al menos tu número (con código de país) para que solo tú "
+                          "puedas darle órdenes por WhatsApp."}
+    updates = {"WHATSAPP_ENABLED": "1", "WHATSAPP_ALLOWED_USERS": allowed,
+               "WHATSAPP_ALLOW_ALL_USERS": "0"}
+    if home_channel:
+        updates["WHATSAPP_HOME_CHANNEL"] = home_channel.strip()
+    return hermes_ctl.set_env_vars(updates, profile=profile)
 
 
 # ── Slack ────────────────────────────────────────────────────────────────────
@@ -190,6 +277,65 @@ def email_test(host, port, user, password, from_addr, to_addr, secure):
         return {"ok": True, "detail": "¡Correo de prueba enviado a %s!" % to_addr}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "detail": "Error SMTP: %s" % e}
+
+
+# ── Google Workspace ──────────────────────────────────────────────────────────
+# Two native paths, both first-class Hermes platforms:
+#   • Gmail / Workspace mail  -> the `email` platform (IMAP in + SMTP out), app password
+#   • Google Chat             -> the `google_chat` platform, service-account JSON
+# Both get an ALLOW-LIST so a stranger who emails/messages the agent cannot command it.
+GOOGLE_PRESETS = {
+    "gmail": {"label": "Gmail / Google Workspace", "smtp_host": "smtp.gmail.com",
+              "smtp_port": 587, "imap_host": "imap.gmail.com",
+              "note": "Activa la verificación en 2 pasos y crea una «Contraseña de aplicación». "
+                      "Funciona igual con una cuenta de Google Workspace.",
+              "link": "https://myaccount.google.com/apppasswords"},
+    "outlook": {"label": "Outlook / Microsoft 365", "smtp_host": "smtp.office365.com",
+                "smtp_port": 587, "imap_host": "outlook.office365.com",
+                "note": "Usa tu correo y contraseña; con 2FA, crea una contraseña de aplicación.",
+                "link": "https://account.microsoft.com/security"},
+    "other": {"label": "Otro proveedor", "smtp_host": "", "smtp_port": 587, "imap_host": "",
+              "note": "Pide a tu proveedor el servidor SMTP y el IMAP.", "link": ""},
+}
+
+
+def email_platform_save(profile=None, address="", password="", smtp_host="", smtp_port=587,
+                        imap_host="", allowed_users="", home_address=""):
+    """Configure the NATIVE email platform: the agent can RECEIVE and REPLY to email.
+    (Different from the smtp_send.py tool, which only sends.)"""
+    if not (address and password and smtp_host and imap_host):
+        return {"ok": False, "detail": "Faltan datos: correo, contraseña de aplicación, SMTP e IMAP."}
+    allowed = ",".join([u.strip().lower() for u in re.split(r"[,\s]+", allowed_users or "")
+                        if u.strip()])
+    if not allowed:
+        return {"ok": False,
+                "detail": "Indica qué direcciones pueden darle órdenes (al menos la tuya). "
+                          "Sin esto, cualquiera que escriba a ese buzón podría mandar al agente."}
+    updates = {
+        "EMAIL_ADDRESS": address.strip(), "EMAIL_PASSWORD": password,
+        "EMAIL_SMTP_HOST": smtp_host.strip(), "EMAIL_SMTP_PORT": str(smtp_port or 587),
+        "EMAIL_IMAP_HOST": imap_host.strip(), "EMAIL_ALLOWED_USERS": allowed,
+        "EMAIL_HOME_ADDRESS": (home_address or address).strip(),
+    }
+    return hermes_ctl.set_env_vars(updates, profile=profile)
+
+
+def google_chat_save(profile=None, service_account="", allowed_users="", home_space=""):
+    """Configure Google Chat (Workspace). service_account = path to (or inline) SA JSON."""
+    if not service_account:
+        return {"ok": False, "detail": "Indica la ruta al archivo JSON de la cuenta de servicio."}
+    if os.path.sep in service_account and not os.path.exists(service_account):
+        return {"ok": False, "detail": "No encuentro ese archivo JSON: %s" % service_account}
+    allowed = ",".join([u.strip().lower() for u in re.split(r"[,\s]+", allowed_users or "")
+                        if u.strip()])
+    if not allowed:
+        return {"ok": False,
+                "detail": "Indica los correos que pueden darle órdenes (al menos el tuyo)."}
+    updates = {"GOOGLE_CHAT_SERVICE_ACCOUNT_JSON": service_account.strip(),
+               "GOOGLE_CHAT_ALLOWED_USERS": allowed}
+    if home_space:
+        updates["GOOGLE_CHAT_HOME_CHANNEL"] = home_space.strip()
+    return hermes_ctl.set_env_vars(updates, profile=profile)
 
 
 # ── generic outbound test (reuses configured platform creds) ────────────────────

@@ -160,6 +160,33 @@ if (-not $UseWizard) {
   Info "La configuracion final se hara en el asistente del navegador."
 }
 
+# App shortcut: "Olivaw" on the Desktop + Start Menu, reopens the setup UI ---
+# Without this the user has no way back into the wizard after the first run (they would
+# need a terminal), which is exactly what this kit is meant to avoid.
+$openVbs = Join-Path $InstallDir "Olivaw.vbs"
+$wizPy   = Join-Path $InstallDir "src\wizard\wizard_server.py"
+@"
+' Opens the Olivaw setup/help UI in the browser (no console window).
+Set s = CreateObject("Wscript.Shell")
+s.CurrentDirectory = "$InstallDir"
+s.Run """$pyw"" ""$wizPy""", 0, False
+"@ | Out-File -Encoding ascii $openVbs
+try {
+  $ws = New-Object -ComObject WScript.Shell
+  foreach ($dir in @([Environment]::GetFolderPath('Desktop'),
+                     (Join-Path ([Environment]::GetFolderPath('StartMenu')) 'Programs'))) {
+    if (-not (Test-Path $dir)) { continue }
+    $lnk = $ws.CreateShortcut((Join-Path $dir 'Olivaw.lnk'))
+    $lnk.TargetPath = $openVbs
+    $lnk.WorkingDirectory = $InstallDir
+    # wscript.exe carries a usable icon; harmless if the index is missing.
+    $lnk.IconLocation = "$env:SystemRoot\System32\wscript.exe,0"
+    $lnk.Description = "Abrir la configuracion / ayuda de Olivaw"
+    $lnk.Save()
+  }
+  Ok "Acceso directo 'Olivaw' creado (Escritorio y menu Inicio)."
+} catch { Warn "No pude crear el acceso directo: $($_.Exception.Message)" }
+
 # register supervisor at login (runs with the uv-managed Python) -------------
 $vbs = Join-Path ([Environment]::GetFolderPath('Startup')) "Olivaw.vbs"
 $launch = Join-Path $InstallDir "src\launcher.py"

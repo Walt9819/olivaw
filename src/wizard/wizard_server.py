@@ -29,11 +29,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from wizard import (agents_registry, channels, checks, config_writer, hermes_ctl,
-                        providers, telegram_setup, usecases)
+                        providers, rescue, telegram_setup, usecases)
     from wizard.procutil import http_json, which
 else:
     from . import (agents_registry, channels, checks, config_writer, hermes_ctl,
-                   providers, telegram_setup, usecases)
+                   providers, rescue, telegram_setup, usecases)
     from .procutil import http_json, which
 
 HERE = os.path.dirname(os.path.abspath(__file__))          # .../src/wizard
@@ -180,6 +180,7 @@ def initial_state():
         "usecases": usecases.public_list(),
         "smtp_providers": channels.SMTP_PROVIDERS,
         "image_options": channels.IMAGE_OPTIONS,
+        "google_presets": channels.GOOGLE_PRESETS,
     }
 
 
@@ -415,6 +416,15 @@ class Handler(BaseHTTPRequestHandler):
                 body.get("identity", {}), body.get("usecase_ids", []))
             return {"ok": True, "markdown": md}
 
+        if route == "rescue/context":
+            return {"ok": True, **rescue.collect_context(INSTALL_DIR)}
+
+        if route == "rescue/ask":
+            return rescue.ask(body.get("question", ""),
+                              allow_fix=bool(body.get("allow_fix")),
+                              install_dir=INSTALL_DIR,
+                              history=body.get("history") or [])
+
         if route.startswith("channel/"):
             return self._channel(route[len("channel/"):], body)
 
@@ -542,6 +552,21 @@ class Handler(BaseHTTPRequestHandler):
         if sub == "send-test":
             return channels.send_test(body.get("target", ""),
                                       body.get("text", "Prueba desde el asistente ✅"), profile)
+        if sub == "whatsapp-qr":
+            return channels.whatsapp_qr(profile)
+        if sub == "whatsapp-save":
+            return channels.whatsapp_save(profile, body.get("allowed_users", ""),
+                                          body.get("home_channel", ""))
+        if sub == "email-platform-save":
+            return channels.email_platform_save(
+                profile, body.get("address", ""), body.get("password", ""),
+                body.get("smtp_host", ""), body.get("smtp_port", 587),
+                body.get("imap_host", ""), body.get("allowed_users", ""),
+                body.get("home_address", ""))
+        if sub == "gchat-save":
+            return channels.google_chat_save(profile, body.get("service_account", ""),
+                                             body.get("allowed_users", ""),
+                                             body.get("home_space", ""))
         if sub == "tools-setup":
             return channels.tools_setup(profile)
         if sub == "history-status":
