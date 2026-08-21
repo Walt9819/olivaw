@@ -39,6 +39,60 @@
     </main>
   </div>
 
+  <!-- SOS console: an overlay, opened only by the 🆘 button (or #rescue). Not a wizard step:
+       it is support, not setup — and it must be reachable at any moment, even mid-install. -->
+  <div class="sos" id="sos" hidden>
+    <div class="sos-head">
+      <div class="sos-brand">
+        <span class="sos-mark">🆘</span>
+        <span>
+          <b>Ayuda directa</b>
+          <span class="muted small">Habla con Claude sobre tu instalación — sin pasar por tu agente</span>
+        </span>
+      </div>
+      <div class="row">
+        <button class="btn btn-soft btn-sm" id="sosNew">＋ Nueva conversación</button>
+        <button class="btn btn-ghost btn-sm" id="sosClose" title="Cerrar (Esc)">✕</button>
+      </div>
+    </div>
+    <div class="sos-body">
+      <aside class="sos-side">
+        <div class="sos-side-head">Conversaciones</div>
+        <div class="sos-list" id="sosList"></div>
+        <div class="sos-side-foot muted small">Se guardan en tu equipo y Claude mantiene el
+          contexto: puedes retomarlas cuando quieras.</div>
+      </aside>
+      <section class="sos-chat">
+        <div class="sos-chat-head">
+          <div>
+            <div class="sos-conv-title" id="sosConvTitle">Nueva conversación</div>
+            <div id="sosConvBadge"></div>
+          </div>
+        </div>
+        <div id="rescueStatus" class="card" style="margin:0 20px">
+          <span class="muted small">Revisando tu instalación…</span>
+        </div>
+        <div class="sos-scroll" id="sosScroll">
+          <div id="rescueMsgs"></div>
+          <div id="rescueLive"></div>
+        </div>
+        <div class="sos-compose" id="sosCompose">
+          <textarea id="rescueQ" rows="2"
+            placeholder="Ej: mi agente dejó de responder en Telegram"></textarea>
+          <div class="row" style="justify-content:space-between;margin-top:8px">
+            <label class="row" style="gap:8px;font-size:13px;cursor:pointer">
+              <input type="checkbox" id="rescueFix">
+              <span class="muted">Permitir que revise archivos y aplique arreglos</span>
+            </label>
+            <button class="btn btn-primary" id="rescueSend">Preguntar</button>
+          </div>
+          <div class="muted small" style="margin-top:6px">Ctrl+Enter para enviar ·
+            tus claves y contraseñas se ocultan automáticamente.</div>
+        </div>
+      </section>
+    </div>
+  </div>
+
   <div class="toast" id="toast"></div>
   <script src="app.js"></script>
 </body>

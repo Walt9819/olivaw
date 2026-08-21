@@ -26,6 +26,7 @@
   };
   if (!S.agent) S.agent = { mode: "default", slug: "default" };
   if (!S.smtp) S.smtp = { provider: "gmail", port: 587, secure: "starttls" };
+  delete S.rescue_history;   // conversations now live on disk, not in localStorage
   // One-time code used to bind ownership to the exact account that sends it (anti-hijack).
   if (!S.owner_code) {
     var _cs = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789", _c = "OLIVAW-";
@@ -65,8 +66,7 @@
     { id: "agent", label: "Tu agente", render: rAgent, enter: eAgent },
     { id: "channel", label: "Tu canal", render: rChannel, enter: eChannel },
     { id: "finish", label: "Activar", render: rFinish, enter: eFinish },
-    { id: "channels", label: "Más canales", render: rChannels, enter: eChannels },
-    { id: "rescue", label: "Ayuda", render: rRescue, enter: eRescue }
+    { id: "channels", label: "Más canales", render: rChannels, enter: eChannels }
   ];
 
   function stepDone(i) {
@@ -78,7 +78,6 @@
       case "channel": return !!S.owner_id;
       case "finish": return !!S.applied;
       case "channels": return !!S.applied;
-      case "rescue": return false;
     }
     return false;
   }
@@ -115,15 +114,6 @@
     document.querySelector(".panel-wrap").scrollTop = 0;
     render();
   }
-
-  // Always-available escape hatch to the rescue console (works even mid-setup / when broken).
-  (function () {
-    var hb = el("helpBtn");
-    if (hb) hb.onclick = function () {
-      var i = STEPS.map(function (x) { return x.id; }).indexOf("rescue");
-      if (i >= 0) { S._max = Math.max(S._max || 0, i); go(i); }
-    };
-  })();
 
   el("navBack").onclick = function () { go(S.step - 1); };
   el("navNext").onclick = function () {
@@ -1054,11 +1044,14 @@
     };
   }
 
-  // ── step 7: rescue console (talk to Claude Code directly, with live reasoning) ──
+  // ── SOS console (an overlay, NOT a wizard step) ─────────────────────────────
   // The escape hatch: when the bridge/Hermes is down, Telegram is dead, so the owner can
   // still reach Claude Code from here — with the installation snapshot attached. We stream
   // every event (thinking, tool calls, tool results) so it's visible that it IS working.
-  var LIVE = null;   // transient: {events:[], done:false, reply:"", cursor:0}
+  // Conversations live on the SERVER (each backed by a real Claude Code session), so they can
+  // be reopened later and continued with the context still in place.
+  var LIVE = null;   // transient: {question, events:[], done:false, reply:"", cursor:0}
+  var SOS = { open: false, conv: null, turns: [], list: [] };
 
   function evHtml(e) {
     var k = e.kind;
@@ -1109,31 +1102,112 @@
     return out;
   }
 
-  function rRescue() {
-    var hist = (S.rescue_history || []).map(turnHtml).join("");
-    return '' +
-      '<div class="eyebrow">Ayuda directa</div>' +
-      '<h1>Habla con Claude sobre tu instalación</h1>' +
-      '<p class="lead">Esto habla con Claude <b>directamente</b> — sin pasar por Telegram ni por tu ' +
-      'agente. Verás su razonamiento y cada acción que hace, en vivo. Úsalo cuando algo falle.</p>' +
-      '<div id="rescueStatus" class="card"><span class="muted small">Revisando tu instalación…</span></div>' +
-      '<div id="rescueMsgs" style="margin:14px 0">' + hist + '</div>' +
-      '<div id="rescueLive" style="margin:14px 0"></div>' +
-      '<div class="card pad">' +
-      '<label class="field"><span class="lab">¿Qué está pasando?</span>' +
-      '<textarea id="rescueQ" rows="3" placeholder="Ej: mi agente dejó de responder en Telegram"></textarea></label>' +
-      '<div class="row" style="justify-content:space-between">' +
-      '<label class="row" style="gap:8px;font-size:13px;cursor:pointer">' +
-      '<input type="checkbox" id="rescueFix"> <span class="muted">Permitir que revise archivos y aplique arreglos</span></label>' +
-      '<div class="row"><button class="btn btn-primary" id="rescueSend">Preguntar</button>' +
-      '<button class="btn btn-ghost btn-sm" id="rescueClear">Limpiar</button></div></div>' +
-      '<div class="muted small" style="margin-top:8px">Ctrl+Enter para enviar. ' +
-      'Tus claves y contraseñas se ocultan automáticamente.</div></div>';
+  function whenStr(ts) {
+    if (!ts) return "";
+    var d = new Date(ts * 1000), now = new Date();
+    var same = d.toDateString() === now.toDateString();
+    return same ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                : d.toLocaleDateString([], { day: "2-digit", month: "short" });
   }
 
-  function eRescue() {
+  function paintList() {
+    var host = el("sosList");
+    if (!host) return;
+    if (!SOS.list.length) {
+      host.innerHTML = '<div class="muted small" style="padding:14px 12px">Aún no hay ' +
+        'conversaciones. Pregunta algo y quedará guardada aquí.</div>';
+      return;
+    }
+    host.innerHTML = SOS.list.map(function (c) {
+      var active = SOS.conv && SOS.conv.id === c.id;
+      return '<div class="convo' + (active ? " active" : "") + '" data-id="' + esc(c.id) + '">' +
+        '<div class="convo-top"><span class="convo-title">' + esc(c.title) + '</span>' +
+        '<span class="convo-when">' + esc(whenStr(c.updated)) + '</span></div>' +
+        '<div class="convo-sub">' + (c.archived ? "📦 archivo · " : "") +
+        esc(String(c.turns)) + (c.turns === 1 ? " mensaje" : " mensajes") +
+        (c.preview ? ' · ' + esc(c.preview.slice(0, 46)) : '') + '</div>' +
+        '<button class="convo-del" data-del="' + esc(c.id) + '" title="Borrar">✕</button></div>';
+    }).join("");
+    Array.prototype.forEach.call(host.querySelectorAll(".convo"), function (node) {
+      node.onclick = function (ev) {
+        if (ev.target && ev.target.getAttribute("data-del")) return;
+        openConv(node.getAttribute("data-id"));
+      };
+    });
+    Array.prototype.forEach.call(host.querySelectorAll("[data-del]"), function (b) {
+      b.onclick = function (ev) {
+        ev.stopPropagation();
+        var id = b.getAttribute("data-del");
+        api("rescue/delete", { id: id }).then(function (r) {
+          if (!r || !r.ok) { toast((r && r.detail) || "No pude borrarla."); return; }
+          if (SOS.conv && SOS.conv.id === id) { SOS.conv = null; SOS.turns = []; paintMsgs(); }
+          loadList();
+        });
+      };
+    });
+  }
+
+  function loadList() {
+    return api("rescue/conversations", { limit: 40 }).then(function (r) {
+      SOS.list = (r && r.ok && r.conversations) || [];
+      paintList();
+      return SOS.list;
+    });
+  }
+
+  function paintMsgs() {
+    var msgs = el("rescueMsgs");
+    if (msgs) msgs.innerHTML = (SOS.turns || []).map(turnHtml).join("");
+    var head = el("sosConvTitle");
+    if (head) {
+      head.textContent = SOS.conv ? (SOS.conv.title || "Conversación")
+                                  : "Nueva conversación";
+    }
+    var badge = el("sosConvBadge");
+    if (badge) {
+      var arch = SOS.conv && SOS.conv.archived;
+      badge.innerHTML = SOS.conv
+        ? (arch ? '<span class="badge">solo lectura</span>'
+                : '<span class="muted small">Claude recuerda esta conversación</span>')
+        : '<span class="muted small">Cuéntame qué está pasando</span>';
+    }
+    var comp = el("sosCompose");
+    if (comp) comp.style.display = (SOS.conv && SOS.conv.archived) ? "none" : "";
+    paintLive();
+  }
+
+  function paintLive() {
+    var host = el("rescueLive");
+    if (!host) return;
+    host.innerHTML = LIVE ? turnHtml(LIVE) : "";
+    scrollDown();
+  }
+
+  function scrollDown() {
+    var sc = el("sosScroll");
+    if (sc) sc.scrollTop = sc.scrollHeight;
+  }
+
+  function openConv(id) {
+    api("rescue/conversation", { id: id }).then(function (r) {
+      if (!r || !r.ok) { toast((r && r.detail) || "No pude abrirla."); loadList(); return; }
+      SOS.conv = r.conversation;
+      SOS.turns = r.conversation.turns || [];
+      paintList(); paintMsgs(); scrollDown();
+    });
+  }
+
+  function newConv() {
+    SOS.conv = null; SOS.turns = [];
+    paintList(); paintMsgs();
+    var q = el("rescueQ"); if (q) { q.value = ""; q.focus(); }
+  }
+
+  function loadStatus() {
     var box = el("rescueStatus");
+    if (!box) return;
     api("rescue/context", {}).then(function (c) {
+      if (!box) return;
       if (!c || !c.ok) { box.innerHTML = '<span class="muted small">No pude leer el estado.</span>'; return; }
       var b = (c.bridges || []).map(function (x) {
         return '<span class="pill ' + (x.up ? "ok" : "err") + '" style="margin:0 6px 0 0">' +
@@ -1148,90 +1222,125 @@
         (c.bridge_down ? '<div class="callout warn small" style="margin:10px 0 0">El puente no responde: ' +
           'por eso tu agente no contesta en Telegram. Pregunta abajo y te digo cómo revivirlo.</div>' : "");
     });
-
-    function paintLive() {
-      var host = el("rescueLive");
-      if (!host) return;
-      host.innerHTML = LIVE ? turnHtml(LIVE) : "";
-      var wrap = document.querySelector(".panel-wrap");
-      if (wrap) wrap.scrollTop = wrap.scrollHeight;
-    }
-
-    function poll() {
-      if (!LIVE || !LIVE.job_id) return;
-      api("rescue/poll", { job_id: LIVE.job_id, cursor: LIVE.cursor || 0 }).then(function (r) {
-        if (!r || !r.ok) {
-          LIVE.events.push({ kind: "error", text: (r && r.detail) || "Se perdió la consulta." });
-          LIVE.done = true; paintLive(); finish(); return;
-        }
-        (r.events || []).forEach(function (e) { LIVE.events.push(e); });
-        LIVE.cursor = r.cursor || LIVE.cursor;
-        if (r.reply) LIVE.reply = r.reply;
-        LIVE.done = !!r.done;
-        paintLive();
-        if (!LIVE.done) setTimeout(poll, 800); else finish();
-      }).catch(function (e) {
-        LIVE.events.push({ kind: "error", text: String(e) });
-        LIVE.done = true; paintLive(); finish();
-      });
-    }
-
-    function finish() {
-      if (!LIVE) return;
-      // Persist a compact copy so the transcript survives navigation.
-      var keep = (LIVE.events || []).slice(-60).map(function (e) {
-        return { kind: e.kind, name: e.name, text: String(e.text || "").slice(0, 1200) };
-      });
-      S.rescue_history = (S.rescue_history || []).concat([{
-        question: LIVE.question, mode: LIVE.mode, reply: LIVE.reply, events: keep, done: true
-      }]).slice(-12);
-      LIVE = null;
-      save();
-      var host = el("rescueLive"); if (host) host.innerHTML = "";
-      var msgs = el("rescueMsgs");
-      if (msgs) msgs.innerHTML = (S.rescue_history || []).map(turnHtml).join("");
-      var sb = el("rescueSend"); if (sb) { sb.disabled = false; sb.textContent = "Preguntar"; }
-    }
-
-    function ask() {
-      var qEl = el("rescueQ");
-      var q = (qEl && qEl.value) || "";
-      if (!q.trim()) { toast("Escribe tu pregunta."); return; }
-      if (LIVE) { toast("Espera a que termine la consulta anterior."); return; }
-      var fix = !!(el("rescueFix") && el("rescueFix").checked);
-      var sb = el("rescueSend");
-      if (sb) { sb.disabled = true; sb.textContent = "Trabajando…"; }
-      LIVE = { question: q, mode: fix ? "fix" : "diagnose", events: [], cursor: 0,
-               reply: "", done: false, job_id: null };
-      paintLive();
-      if (qEl) qEl.value = "";
-      api("rescue/start", { question: q, allow_fix: fix,
-                            history: (S.rescue_history || []).slice(-4).map(function (t) {
-                              return [{ role: "user", content: t.question },
-                                      { role: "assistant", content: t.reply || "" }];
-                            }).reduce(function (a, b) { return a.concat(b); }, []) })
-        .then(function (r) {
-          if (!r || !r.ok) {
-            LIVE.events.push({ kind: "error", text: (r && r.detail) || "No pude iniciar." });
-            LIVE.done = true; paintLive(); finish(); return;
-          }
-          LIVE.job_id = r.job_id; LIVE.mode = r.mode || LIVE.mode;
-          poll();
-        });
-    }
-
-    var send = el("rescueSend");
-    if (send) send.onclick = ask;
-    var qbox = el("rescueQ");
-    if (qbox) qbox.onkeydown = function (ev) {
-      if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); ask(); }
-    };
-    if (el("rescueClear")) el("rescueClear").onclick = function () {
-      S.rescue_history = []; LIVE = null; save(); render();
-    };
-    paintLive();
   }
 
+  function pollLive() {
+    if (!LIVE || !LIVE.job_id) return;
+    api("rescue/poll", { job_id: LIVE.job_id, cursor: LIVE.cursor || 0 }).then(function (r) {
+      if (!LIVE) return;
+      if (!r || !r.ok) {
+        LIVE.events.push({ kind: "error", text: (r && r.detail) || "Se perdió la consulta." });
+        LIVE.done = true; paintLive(); finishLive(); return;
+      }
+      (r.events || []).forEach(function (e) { LIVE.events.push(e); });
+      LIVE.cursor = r.cursor || LIVE.cursor;
+      if (r.reply) LIVE.reply = r.reply;
+      LIVE.done = !!r.done;
+      paintLive();
+      if (!LIVE.done) setTimeout(pollLive, 800); else finishLive();
+    }).catch(function (e) {
+      if (!LIVE) return;
+      LIVE.events.push({ kind: "error", text: String(e) });
+      LIVE.done = true; paintLive(); finishLive();
+    });
+  }
+
+  function finishLive() {
+    if (!LIVE) return;
+    var cid = LIVE.conversation_id;
+    LIVE = null;
+    var sb = el("rescueSend"); if (sb) { sb.disabled = false; sb.textContent = "Preguntar"; }
+    // The server owns the transcript now: reload the conversation so what we show is exactly
+    // what was persisted (and will still be there tomorrow).
+    if (cid) {
+      api("rescue/conversation", { id: cid }).then(function (r) {
+        if (r && r.ok) { SOS.conv = r.conversation; SOS.turns = r.conversation.turns || []; }
+        paintMsgs(); loadList(); scrollDown();
+      });
+    } else {
+      paintMsgs(); loadList();
+    }
+  }
+
+  function askSos() {
+    var qEl = el("rescueQ");
+    var q = (qEl && qEl.value) || "";
+    if (!q.trim()) { toast("Escribe tu pregunta."); return; }
+    if (LIVE) { toast("Espera a que termine la consulta anterior."); return; }
+    var fix = !!(el("rescueFix") && el("rescueFix").checked);
+    var sb = el("rescueSend");
+    if (sb) { sb.disabled = true; sb.textContent = "Trabajando…"; }
+    LIVE = { question: q, mode: fix ? "fix" : "diagnose", events: [], cursor: 0,
+             reply: "", done: false, job_id: null,
+             conversation_id: SOS.conv ? SOS.conv.id : "" };
+    paintLive();
+    if (qEl) qEl.value = "";
+    api("rescue/start", { question: q, allow_fix: fix,
+                          conversation_id: SOS.conv ? SOS.conv.id : "" })
+      .then(function (r) {
+        if (!LIVE) return;
+        if (!r || !r.ok) {
+          LIVE.events.push({ kind: "error", text: (r && r.detail) || "No pude iniciar." });
+          LIVE.done = true; paintLive(); finishLive(); return;
+        }
+        LIVE.job_id = r.job_id;
+        LIVE.mode = r.mode || LIVE.mode;
+        LIVE.conversation_id = r.conversation_id || LIVE.conversation_id;
+        if (!SOS.conv || SOS.conv.id !== r.conversation_id) {
+          SOS.conv = { id: r.conversation_id, title: r.title || "Conversación" };
+          SOS.turns = SOS.turns || [];
+          paintMsgs(); loadList();
+        }
+        pollLive();
+      });
+  }
+
+  function openSos(convId) {
+    var sos = el("sos");
+    if (!sos) return;
+    SOS.open = true;
+    sos.hidden = false;
+    document.body.classList.add("sos-open");
+    document.documentElement.style.overflow = "hidden";
+    loadStatus();
+    loadList().then(function (list) {
+      var want = convId || (SOS.conv && SOS.conv.id);
+      if (want) { openConv(want); return; }
+      // Reopen where the owner left off — like coming back to a Claude Code session.
+      var first = list.filter(function (c) { return !c.archived; })[0];
+      if (first) openConv(first.id); else { paintMsgs(); }
+    });
+    var q = el("rescueQ"); if (q) setTimeout(function () { q.focus(); }, 60);
+  }
+
+  function closeSos() {
+    var sos = el("sos");
+    if (!sos) return;
+    SOS.open = false;
+    sos.hidden = true;
+    document.body.classList.remove("sos-open");
+    document.documentElement.style.overflow = "";
+    if (location.hash) {
+      try { history.replaceState(null, "", location.pathname + location.search); }
+      catch (e) { location.hash = ""; }
+    }
+  }
+
+  (function wireSos() {
+    var hb = el("helpBtn");
+    if (hb) hb.onclick = function () { openSos(); };
+    if (el("sosClose")) el("sosClose").onclick = closeSos;
+    if (el("sosNew")) el("sosNew").onclick = newConv;
+    var send = el("rescueSend");
+    if (send) send.onclick = askSos;
+    var qbox = el("rescueQ");
+    if (qbox) qbox.onkeydown = function (ev) {
+      if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); askSos(); }
+    };
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && SOS.open) closeSos();
+    });
+  })();
   // ── boot ──────────────────────────────────────────────────────────────
   function boot() {
     el("panel").innerHTML = '<div style="text-align:center;padding:60px 0;color:var(--muted)">' +
@@ -1257,14 +1366,17 @@
         if (!S.repo || S.repo === "Walt9819/olivaw") S.repo = d.repo || S.repo;
       }
       S._max = Math.max(S._max || 0, S.step || 0);
-      // Deep link: #rescue / #channels / #agent … opens straight to that view. The desktop
-      // shortcut and support links can point right at the help console.
-      var want = (location.hash || "").replace(/^#/, "").trim();
-      if (want) {
+      // Deep link: #channels / #agent … opens straight to that step, and #rescue (or #sos)
+      // opens the help console over whatever step you were on. The desktop shortcut and
+      // support links can point right at the help console.
+      var want = (location.hash || "").replace(/^#/, "").trim().toLowerCase();
+      var wantSos = (want === "rescue" || want === "sos" || want === "ayuda" || want === "help");
+      if (want && !wantSos) {
         var idx = STEPS.map(function (x) { return x.id; }).indexOf(want);
         if (idx >= 0) { S.step = idx; S._max = Math.max(S._max || 0, idx); }
       }
       render();
+      if (wantSos) openSos();
     }).catch(function () {
       el("panel").innerHTML = '<h1>No pude conectar con el asistente.</h1>' +
         '<p class="muted">Cierra esta pestaña y vuelve a ejecutar el instalador.</p>';

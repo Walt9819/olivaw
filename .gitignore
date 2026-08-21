@@ -24,6 +24,8 @@ agents.json
 agents/
 # generated fallback snippet (may contain owner id)
 hermes-config-snippet.yaml
+# per-machine app shortcut written by the launcher
+Olivaw.vbs
 *.bak
 *.bak-*
 *.bak.*
@@ -38,5 +40,6 @@ node_modules/
 # Security audit report (private — do not publish weaknesses of a distributed tool)
 SECURITY_REVIEW.md
 
-# Rescue console transcript (local conversation data)
+# SOS console conversations (local, private — transcripts of the owner's own machine)
 rescue-console.jsonl
+console/

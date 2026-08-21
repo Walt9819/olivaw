@@ -422,11 +422,24 @@ class Handler(BaseHTTPRequestHandler):
         if route == "rescue/log":
             return rescue.read_log(body.get("limit", 20), INSTALL_DIR)
 
+        if route == "rescue/conversations":
+            return rescue.list_conversations(INSTALL_DIR, body.get("limit", 40))
+
+        if route == "rescue/conversation":
+            return rescue.get_conversation(body.get("id", ""), INSTALL_DIR)
+
+        if route == "rescue/delete":
+            return rescue.delete_conversation(body.get("id", ""), INSTALL_DIR)
+
+        if route == "rescue/rename":
+            return rescue.rename_conversation(body.get("id", ""), body.get("title", ""),
+                                              INSTALL_DIR)
+
         if route == "rescue/start":
             return rescue.start_job(body.get("question", ""),
                                     allow_fix=bool(body.get("allow_fix")),
                                     install_dir=INSTALL_DIR,
-                                    history=body.get("history") or [])
+                                    conversation_id=body.get("conversation_id") or None)
 
         if route == "rescue/poll":
             return rescue.poll_job(body.get("job_id", ""), body.get("cursor", 0))

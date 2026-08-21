@@ -219,3 +219,51 @@ details[open] summary{color:var(--ink)}
 .ev-text{white-space:pre-wrap}
 .ev-final{white-space:pre-wrap;border-top:1px solid var(--line);margin-top:8px;padding-top:10px}
 .ev .spinner{display:inline-block;vertical-align:-2px;margin-right:6px;color:var(--accent)}
+
+/* ── SOS console overlay (support, not a setup step) ───────────────────────── */
+body.sos-open{overflow:hidden}
+.sos{position:fixed; inset:0; z-index:60; background:var(--bg);
+  display:flex; flex-direction:column; animation:sosIn .18s ease-out}
+@keyframes sosIn{from{opacity:0; transform:scale(.99)} to{opacity:1; transform:none}}
+.sos[hidden]{display:none}
+.sos-head{display:flex; align-items:center; justify-content:space-between; gap:16px;
+  padding:14px 22px; border-bottom:1px solid var(--line); background:var(--panel)}
+.sos-brand{display:flex; align-items:center; gap:12px; min-width:0}
+.sos-brand>span{display:flex; flex-direction:column; min-width:0}
+.sos-brand b{font-size:15px}
+.sos-mark{width:34px;height:34px;border-radius:11px;display:grid;place-items:center;flex:0 0 34px;
+  background:var(--panel-2); border:1px solid var(--line); font-size:17px}
+.sos-body{flex:1; display:grid; grid-template-columns:274px 1fr; min-height:0}
+.sos-side{border-right:1px solid var(--line); background:var(--panel);
+  display:flex; flex-direction:column; min-height:0}
+.sos-side-head{padding:14px 16px 8px; font-size:12px; font-weight:800; letter-spacing:.08em;
+  text-transform:uppercase; color:var(--muted)}
+.sos-list{flex:1; overflow:auto; padding:0 8px 8px}
+.sos-side-foot{padding:12px 16px; border-top:1px solid var(--line-2); line-height:1.45}
+.convo{position:relative; padding:10px 30px 10px 12px; border-radius:12px; cursor:pointer;
+  border:1px solid transparent}
+.convo:hover{background:var(--panel-2)}
+.convo.active{background:var(--panel-2); border-color:var(--line)}
+.convo-top{display:flex; align-items:baseline; gap:8px}
+.convo-title{font-size:13.5px; font-weight:600; flex:1; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap}
+.convo-when{font-size:11px; color:var(--muted); flex:0 0 auto}
+.convo-sub{font-size:11.5px; color:var(--muted); margin-top:2px; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap}
+.convo-del{position:absolute; top:8px; right:6px; border:none; background:transparent;
+  color:var(--muted); cursor:pointer; font-size:12px; opacity:0; border-radius:6px; padding:2px 5px}
+.convo:hover .convo-del{opacity:1}
+.convo-del:hover{background:var(--err-bg); color:var(--err)}
+.sos-chat{display:flex; flex-direction:column; min-height:0}
+.sos-chat-head{padding:16px 20px 10px}
+.sos-conv-title{font-size:17px; font-weight:700; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap}
+.sos-scroll{flex:1; overflow:auto; padding:16px 20px 4px; min-height:0}
+.sos-compose{padding:12px 20px 16px; border-top:1px solid var(--line); background:var(--panel)}
+.sos-compose textarea{width:100%; resize:vertical}
+.sos .badge, .ev-list ~ .badge{font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;
+  background:var(--warn-bg); color:var(--warn)}
+@media(max-width:860px){
+  .sos-body{grid-template-columns:1fr}
+  .sos-side{display:none}
+}

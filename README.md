@@ -143,13 +143,20 @@ How it works:
 
 ### Help console (works even when the bridge is down)
 
-A **🆘 sidebar button** (and an "Ayuda" step) opens a chat with **Claude Code directly** — not
-through Telegram, not through Hermes, not through the bridge. It attaches a live snapshot of the
-installation (bridge ports up/down, Hermes gateway, Claude auth, `launcher.log` / `bridge.log`
-tails, config with **secrets redacted**) so Claude can say what is broken and what to do, in plain
-language. Two modes: **diagnose** (tools off — cannot change anything) and an explicit
-**"permitir que aplique arreglos"** (tools on, scoped to the install dir). This is the escape hatch
-for exactly the case where the agent can't be reached through its normal channel.
+The **🆘 button** in the sidebar opens a full-screen console — an overlay, not a setup step, so it
+is one click away at any moment — that talks to **Claude Code directly**: not through Telegram, not
+through Hermes, not through the bridge. It attaches a live snapshot of the installation (bridge
+ports up/down, Hermes gateway, Claude auth, `launcher.log` / `bridge.log` tails, config with
+**secrets redacted**) so Claude can say what is broken and what to do, in plain language. Two
+modes: **diagnose** (tools off — cannot change anything) and an explicit **"permitir que aplique
+arreglos"** (tools on, scoped to the install dir). This is the escape hatch for exactly the case
+where the agent can't be reached through its normal channel.
+
+**Conversations are saved and resumable.** Each console conversation is backed by a real Claude
+Code session (olivaw mints the session id and resumes it), so reopening one from the left-hand list
+continues it with the context genuinely still in place — Claude remembers what you already told it,
+nothing is re-pasted. They live in `console/*.json` inside the install dir (mode 600, already
+redacted), the newest 60 are kept, and you can rename or delete any of them.
 
 ### App shortcut
 
