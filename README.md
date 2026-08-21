@@ -152,6 +152,18 @@ modes: **diagnose** (tools off — cannot change anything) and an explicit **"pe
 arreglos"** (tools on, scoped to the install dir). This is the escape hatch for exactly the case
 where the agent can't be reached through its normal channel.
 
+**Answers are rendered, not dumped.** Replies come back as markdown and are rendered as HTML —
+bold, lists, headings, links, and commands in real code blocks instead of literal `**asterisks**`
+and triple backticks. The renderer escapes the source first and passes no raw HTML through, so a
+log line or config value quoted inside an answer can never inject markup, and links are limited to
+`http(s)`.
+
+**When Claude needs a decision, you click it.** If a reply ends in a question, the console shows
+the options as buttons (single or multi-select, plus a free-text box) and sends your pick back as
+the exact wording of the option — no retyping, nothing to spell right. Claude emits a fenced
+`ask` block for this; a plain question followed by a numbered list is also recognised, and older
+questions stay in the transcript as a read-only record.
+
 **Conversations are saved and resumable.** Each console conversation is backed by a real Claude
 Code session (olivaw mints the session id and resumes it), so reopening one from the left-hand list
 continues it with the context genuinely still in place — Claude remembers what you already told it,

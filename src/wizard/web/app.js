@@ -1053,6 +1053,161 @@
   var LIVE = null;   // transient: {question, events:[], done:false, reply:"", cursor:0}
   var SOS = { open: false, conv: null, turns: [], list: [] };
 
+  // ── markdown → HTML ─────────────────────────────────────────────────────────
+  // Claude answers in markdown; showing it raw ("**Terminus-8823**", ``` fences) reads as
+  // broken to a non-technical owner. This is a deliberately small renderer: the source is
+  // HTML-escaped FIRST and no raw HTML is ever passed through, so a reply — or a log line
+  // quoted inside one — cannot inject markup. Links are limited to http(s).
+  function mdHtml(src) {
+    var text = String(src == null ? "" : src).replace(/\r\n/g, "\n");
+    var fences = [], codes = [];
+
+    // fenced blocks first, so nothing inside them gets markdown treatment
+    text = text.replace(/```[ \t]*[\w+#.-]*[ \t]*\n([\s\S]*?)```/g, function (m, code) {
+      fences.push('<pre class="md-pre"><code>' + esc(code.replace(/\n+$/, "")) + "</code></pre>");
+      return "\u0001F" + (fences.length - 1) + "\u0001";
+    });
+    text = esc(text);                       // everything below operates on safe text
+    text = text.replace(/`([^`\n]+)`/g, function (m, c) {
+      codes.push("<code>" + c + "</code>");
+      return "\u0001C" + (codes.length - 1) + "\u0001";
+    });
+
+    function inline(s) {
+      return s
+        .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
+          '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+        .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g,
+          '$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>')
+        .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+        .replace(/__([^_\n]+)__/g, "<strong>$1</strong>")
+        .replace(/(^|[\s(])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+        .replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
+    }
+
+    var lines = text.split("\n"), out = [], para = [], i = 0;
+    function flush() {
+      if (para.length) out.push("<p>" + inline(para.join("<br>")) + "</p>");
+      para = [];
+    }
+    while (i < lines.length) {
+      var ln = lines[i], t = ln.trim();
+      if (/^\u0001F\d+\u0001$/.test(t)) { flush(); out.push(t); i++; continue; }
+      var h = /^(#{1,6})\s+(.*)$/.exec(t);
+      if (h) {
+        flush();
+        var lvl = h[1].length <= 1 ? 3 : 4;
+        out.push("<h" + lvl + ">" + inline(h[2]) + "</h" + lvl + ">");
+        i++; continue;
+      }
+      if (/^(?:[-*_]\s*){3,}$/.test(t)) { flush(); out.push("<hr>"); i++; continue; }
+      if (/^&gt;\s?/.test(t)) {
+        flush();
+        var quote = [];
+        while (i < lines.length && /^\s*&gt;\s?/.test(lines[i])) {
+          quote.push(lines[i].replace(/^\s*&gt;\s?/, "")); i++;
+        }
+        out.push("<blockquote>" + inline(quote.join("<br>")) + "</blockquote>");
+        continue;
+      }
+      var isUl = /^[-*•]\s+\S/.test(t), isOl = /^\d{1,2}[.)]\s+\S/.test(t);
+      if (isUl || isOl) {
+        flush();
+        var items = [], tag = isUl ? "ul" : "ol";
+        while (i < lines.length) {
+          var lt = lines[i].trim();
+          var m = isUl ? /^[-*•]\s+(.*)$/.exec(lt) : /^\d{1,2}[.)]\s+(.*)$/.exec(lt);
+          if (!m) {
+            // a wrapped continuation line belongs to the item above it
+            if (items.length && lt && !/^([-*•]|\d{1,2}[.)])\s/.test(lt) &&
+                /^\s{2,}/.test(lines[i])) {
+              items[items.length - 1] += " " + lt; i++; continue;
+            }
+            break;
+          }
+          items.push(m[1]); i++;
+        }
+        out.push("<" + tag + ">" + items.map(function (x) {
+          return "<li>" + inline(x) + "</li>";
+        }).join("") + "</" + tag + ">");
+        continue;
+      }
+      if (!t) { flush(); i++; continue; }
+      para.push(t); i++;
+    }
+    flush();
+
+    return out.join("")
+      .replace(/\u0001C(\d+)\u0001/g, function (m, n) { return codes[+n] || ""; })
+      .replace(/\u0001F(\d+)\u0001/g, function (m, n) { return fences[+n] || ""; });
+  }
+
+  // ── "Claude is asking you something" → buttons ───────────────────────────────
+  // When a reply ends in a decision, the server hands us {question, options, multi,
+  // allow_free} (see rescue.parse_ask). Rendering it as buttons means the owner picks instead
+  // of retyping — and Claude gets the exact wording of the option back.
+  function askHtml(a, interactive) {
+    if (!a || !(a.options || []).length) return "";
+    var opts = (a.options || []).map(function (o, i) {
+      return '<button type="button" class="ask-opt" data-i="' + i + '"' +
+        (interactive ? "" : " disabled") + '>' +
+        '<span class="ask-opt-lbl">' + esc(o.label) + '</span>' +
+        (o.detail ? '<span class="ask-opt-detail">' + esc(o.detail) + '</span>' : '') +
+        '</button>';
+    }).join("");
+    return '<div class="ask-tool' + (interactive ? '' : ' ask-done') + '"' +
+      ' data-multi="' + (a.multi ? 1 : 0) + '">' +
+      '<div class="ask-head">🤔 <b>' + esc(a.question || "¿Cómo quieres seguir?") + '</b>' +
+      (a.multi && interactive ? ' <span class="muted small">· puedes elegir varias</span>' : '') +
+      '</div><div class="ask-opts">' + opts + '</div>' +
+      (interactive ? (
+        (a.allow_free === false ? '' :
+          '<input class="ask-free" type="text" placeholder="…o escribe otra respuesta">') +
+        '<div class="ask-actions">' +
+        '<button class="btn ' + (a.multi ? 'btn-primary' : 'btn-soft') +
+        ' btn-sm ask-send">Enviar respuesta</button>' +
+        '<span class="muted small">' + (a.multi ? "Marca las que quieras y envía."
+                                                : "Toca una opción para enviarla.") +
+        '</span></div>') : '') +
+      '</div>';
+  }
+
+  function wireAsk() {
+    var tool = document.querySelector("#rescueMsgs .ask-tool:not(.ask-done)");
+    if (!tool) return;
+    var multi = tool.getAttribute("data-multi") === "1";
+    var free = tool.querySelector(".ask-free");
+
+    function send() {
+      if (tool.classList.contains("ask-done")) return;
+      var picked = Array.prototype.map.call(tool.querySelectorAll(".ask-opt.sel"),
+        function (b) { return b.querySelector(".ask-opt-lbl").textContent; });
+      var extra = (free && free.value.trim()) || "";
+      if (!picked.length && !extra) { toast("Elige una opción o escribe tu respuesta."); return; }
+      var msg = picked.join(" · ");
+      if (extra) msg = msg ? msg + " · " + extra : extra;
+      tool.classList.add("ask-done");
+      Array.prototype.forEach.call(tool.querySelectorAll("button,input"),
+        function (n) { n.disabled = true; });
+      sendTurn(msg);
+    }
+
+    Array.prototype.forEach.call(tool.querySelectorAll(".ask-opt"), function (b) {
+      b.onclick = function () {
+        if (multi) { b.classList.toggle("sel"); return; }
+        Array.prototype.forEach.call(tool.querySelectorAll(".ask-opt"),
+          function (x) { x.classList.remove("sel"); });
+        b.classList.add("sel");
+        send();                    // one click answers: pick it, send it
+      };
+    });
+    var sb = tool.querySelector(".ask-send");
+    if (sb) sb.onclick = send;
+    if (free) free.onkeydown = function (ev) {
+      if (ev.key === "Enter") { ev.preventDefault(); send(); }
+    };
+  }
+
   function evHtml(e) {
     var k = e.kind;
     if (k === "system") {
@@ -1071,14 +1226,14 @@
         '<pre class="ev-body">' + esc(e.text) + '</pre></details>';
     }
     if (k === "text") {
-      return '<div class="ev ev-text">' + esc(e.text) + '</div>';
+      return '<div class="ev ev-text md">' + mdHtml(e.text) + '</div>';
     }
     if (k === "done") { return '<div class="ev ev-sys">✓ ' + esc(e.text) + '</div>'; }
     if (k === "error") { return '<div class="ev ev-err">✕ ' + esc(e.text) + '</div>'; }
     return '';
   }
 
-  function turnHtml(t) {
+  function turnHtml(t, interactive) {
     var out = '<div class="row" style="justify-content:flex-end">' +
       '<div class="card" style="max-width:82%;margin:0 0 10px;background:var(--panel-2)">' +
       '<div class="muted small" style="margin-bottom:4px">Tú</div>' +
@@ -1096,8 +1251,9 @@
       '<div class="muted small" style="margin-bottom:6px">🤖 Claude' +
       (t.mode === "fix" ? ' <span class="badge">modo arreglo</span>' : '') + '</div>' +
       (evs ? '<div class="ev-list">' + evs + '</div>' : '') +
-      (t.reply ? '<div class="ev-final">' + esc(t.reply) + '</div>' :
+      (t.reply ? '<div class="ev-final md">' + mdHtml(t.reply) + '</div>' :
         (t.done ? '' : '<div class="ev ev-sys"><span class="spinner"></span> trabajando…</div>')) +
+      askHtml(t.ask, !!interactive) +
       '</div>';
     return out;
   }
@@ -1157,7 +1313,13 @@
 
   function paintMsgs() {
     var msgs = el("rescueMsgs");
-    if (msgs) msgs.innerHTML = (SOS.turns || []).map(turnHtml).join("");
+    var turns = SOS.turns || [];
+    var live = !!LIVE, archived = !!(SOS.conv && SOS.conv.archived);
+    if (msgs) {
+      msgs.innerHTML = turns.map(function (t, i) {
+        return turnHtml(t, i === turns.length - 1 && !live && !archived);
+      }).join("");
+    }
     var head = el("sosConvTitle");
     if (head) {
       head.textContent = SOS.conv ? (SOS.conv.title || "Conversación")
@@ -1173,6 +1335,7 @@
     }
     var comp = el("sosCompose");
     if (comp) comp.style.display = (SOS.conv && SOS.conv.archived) ? "none" : "";
+    wireAsk();
     paintLive();
   }
 
@@ -1235,6 +1398,7 @@
       (r.events || []).forEach(function (e) { LIVE.events.push(e); });
       LIVE.cursor = r.cursor || LIVE.cursor;
       if (r.reply) LIVE.reply = r.reply;
+      if (r.ask) LIVE.ask = r.ask;
       LIVE.done = !!r.done;
       paintLive();
       if (!LIVE.done) setTimeout(pollLive, 800); else finishLive();
@@ -1266,6 +1430,12 @@
     var qEl = el("rescueQ");
     var q = (qEl && qEl.value) || "";
     if (!q.trim()) { toast("Escribe tu pregunta."); return; }
+    if (qEl) qEl.value = "";
+    sendTurn(q);
+  }
+
+  function sendTurn(q) {
+    if (!q || !q.trim()) return;
     if (LIVE) { toast("Espera a que termine la consulta anterior."); return; }
     var fix = !!(el("rescueFix") && el("rescueFix").checked);
     var sb = el("rescueSend");
@@ -1274,7 +1444,6 @@
              reply: "", done: false, job_id: null,
              conversation_id: SOS.conv ? SOS.conv.id : "" };
     paintLive();
-    if (qEl) qEl.value = "";
     api("rescue/start", { question: q, allow_fix: fix,
                           conversation_id: SOS.conv ? SOS.conv.id : "" })
       .then(function (r) {

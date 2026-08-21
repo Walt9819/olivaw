@@ -216,8 +216,9 @@ details[open] summary{color:var(--ink)}
 .ev-res{border:1px solid var(--line);border-radius:8px;padding:2px 10px;background:var(--panel-2)}
 .ev-res>summary{cursor:pointer;color:var(--muted);font-size:12.5px;padding:4px 0}
 .ev-res pre{margin:0 0 6px;max-height:200px;font-size:11.5px;background:transparent;border:none;padding:0}
-.ev-text{white-space:pre-wrap}
-.ev-final{white-space:pre-wrap;border-top:1px solid var(--line);margin-top:8px;padding-top:10px}
+.ev-final{border-top:1px solid var(--line);margin-top:8px;padding-top:10px}
+.ev-final:not(.md){white-space:pre-wrap}
+.ev-text:not(.md){white-space:pre-wrap}
 .ev .spinner{display:inline-block;vertical-align:-2px;margin-right:6px;color:var(--accent)}
 
 /* ── SOS console overlay (support, not a setup step) ───────────────────────── */
@@ -267,3 +268,42 @@ body.sos-open{overflow:hidden}
   .sos-body{grid-template-columns:1fr}
   .sos-side{display:none}
 }
+
+/* -- rendered markdown inside console answers -------------------------------- */
+.md{white-space:normal}
+.md>*:first-child{margin-top:0}
+.md>*:last-child{margin-bottom:0}
+.md p{margin:0 0 9px}
+.md h3{font-size:15px; margin:14px 0 6px}
+.md h4{font-size:13.5px; margin:12px 0 5px; color:var(--muted)}
+.md ul,.md ol{margin:6px 0 10px; padding-left:22px}
+.md li{margin:3px 0}
+.md li::marker{color:var(--accent-2)}
+.md hr{border:none; border-top:1px solid var(--line); margin:12px 0}
+.md blockquote{margin:8px 0; padding:2px 0 2px 12px; border-left:3px solid var(--line);
+  color:var(--muted)}
+.md a{color:var(--accent); text-decoration:underline; text-underline-offset:2px;
+  overflow-wrap:anywhere}
+.md code{font-size:12.5px}
+.md .md-pre{margin:8px 0 10px; max-height:260px}
+.md .md-pre code{background:transparent; padding:0; font-size:12.5px}
+.md strong{font-weight:700}
+.md del{opacity:.65}
+
+/* -- Claude is asking: answer it with buttons -------------------------------- */
+.ask-tool{margin:12px 0 2px; padding:12px 14px; border:1px solid var(--accent);
+  border-radius:14px; background:var(--panel-2)}
+.ask-tool.ask-done{border-color:var(--line); opacity:.72}
+.ask-head{font-size:13.5px; margin-bottom:9px}
+.ask-opts{display:flex; flex-wrap:wrap; gap:8px}
+.ask-opt{display:flex; flex-direction:column; gap:2px; align-items:flex-start; text-align:left;
+  padding:8px 13px; border-radius:11px; border:1.5px solid var(--line); background:var(--panel);
+  color:var(--ink); font:inherit; font-size:13px; cursor:pointer; transition:.14s;
+  white-space:normal; max-width:100%}
+.ask-opt:hover:not(:disabled){border-color:var(--accent); transform:translateY(-1px)}
+.ask-opt:disabled{cursor:default}
+.ask-opt.sel{border-color:var(--accent); background:var(--accent); color:var(--accent-ink)}
+.ask-opt-lbl{font-weight:600}
+.ask-opt-detail{font-size:11.5px; opacity:.72}
+.ask-free{margin-top:10px; width:100%}
+.ask-actions{display:flex; align-items:center; gap:12px; margin-top:10px; flex-wrap:wrap}
