@@ -59,9 +59,27 @@ except Exception:  # noqa: BLE001
 PINNED_REPO = os.environ.get("OLIVAW_REPO", "Walt9819/olivaw").strip()
 
 
+_warned = set()          # keys already logged, so per-loop conditions log once
+LOG_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _rotate_log():
+    """Keep launcher.log bounded (one .1 backup). Without this a repeating per-loop
+    message can grow the file to megabytes."""
+    try:
+        if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > LOG_MAX_BYTES:
+            bak = LOG_FILE + ".1"
+            if os.path.exists(bak):
+                os.remove(bak)
+            os.replace(LOG_FILE, bak)
+    except Exception:
+        pass
+
+
 def log(msg):
     line = f"{datetime.datetime.now().isoformat(timespec='seconds')} {msg}"
     print(line, flush=True)
+    _rotate_log()
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as fh:
             fh.write(line + "\n")
@@ -91,10 +109,20 @@ def load_config():
     try:
         with open(CONFIG_PATH, encoding="utf-8") as fh:
             cfg = json.load(fh)
+        _warned.discard("missing")
     except FileNotFoundError:
-        log(f"no {CONFIG_PATH}; running in supervise-only mode (no auto-update)")
+        # load_config() runs every supervisor loop (15s), so logging this unconditionally
+        # grew launcher.log by megabytes. Say it once per state change.
+        if "missing" not in _warned:
+            log(f"no {CONFIG_PATH}; running in supervise-only mode (no auto-update). "
+                f"Finish the wizard (Aplicar y activar) to enable updates.")
+            _warned.add("missing")
     except Exception as e:
-        log(f"bad config ({e}); supervise-only mode")
+        key = "bad:%s" % e
+        if key not in _warned:
+            log(f"bad config ({e}); supervise-only mode")
+            _warned.clear()
+            _warned.add(key)
     cfg.setdefault("bridge_cmd", [sys.executable, os.path.join("src", "claude_bridge.py")])
     cfg.setdefault("bridge_cwd", INSTALL_DIR)
     cfg.setdefault("bridge_url", "http://127.0.0.1:8790")
