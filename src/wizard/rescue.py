@@ -593,9 +593,7 @@ def _build_cmd(exe, allow_fix, inst, resume_id=None, session_id=None):
         # FIRST, deliberately: a malformed later argument must not be able to drop this.
         cmd += ["--tools", ""]      # diagnosis only: no tools, cannot change anything
     cmd += ["--output-format", "stream-json", "--verbose",
-            "--strict-mcp-config", "--mcp-config", EMPTY_MCP,
-            "--append-system-prompt",
-            _flat(CONSOLE_SYSTEM_PROMPT + (FIX_SUFFIX if allow_fix else DIAGNOSE_SUFFIX))]
+            "--strict-mcp-config", "--mcp-config", EMPTY_MCP]
     # Sessions are PERSISTED on purpose: that is what lets the owner reopen a console
     # conversation later and have Claude still hold the context.
     if resume_id:
@@ -605,6 +603,11 @@ def _build_cmd(exe, allow_fix, inst, resume_id=None, session_id=None):
     if allow_fix:
         # Explicit opt-in: let Claude actually inspect and repair the installation.
         cmd += ["--add-dir", inst, "--dangerously-skip-permissions"]
+    # The one long value goes LAST (and flattened): on Windows a newline inside an argv value
+    # truncates the command line, so anything behind it is silently dropped. Keeping it at the
+    # end means a future prompt edit cannot cost us --resume or the fix-mode permissions.
+    cmd += ["--append-system-prompt",
+            _flat(CONSOLE_SYSTEM_PROMPT + (FIX_SUFFIX if allow_fix else DIAGNOSE_SUFFIX))]
     assert not any("\n" in a or "\r" in a for a in cmd), "newline in argv would truncate the command"
     return cmd
 

@@ -567,6 +567,110 @@ def _strip_fences(text):
     return s.strip()
 
 
+# ── tolerant JSON for tool calls ─────────────────────────────────────────────
+_JSON_ESCAPES = set('"\\/bfnrtu')
+# A path inside a JSON string: "C:\Users\..." or "\\server\share\...", written with single
+# OR doubled separators. Everything up to the end of the string value is part of the run - safe,
+# because the only thing we change in it is backslashes.
+_WIN_PATH_RE = re.compile(r'(?:[A-Za-z]:|\\\\[^\\/:*?"<>|\r\n]+)(?:\\{1,2}[^"\r\n]*)+')
+_CTRL_ESCAPES = {"\n": "\\n", "\r": "\\r", "\t": "\\t", "\f": "\\f", "\b": "\\b"}
+
+
+def _relax_json(text):
+    r"""Rewrite almost-JSON into JSON without changing what it says.
+
+    The model writes file arguments the way a person would - `"path": "C:\Users\revol\x.txt"`
+    and content with real line breaks - and both are illegal in strict JSON, so the tool call
+    used to be thrown away. This repairs exactly those cases:
+
+      * a backslash that does not start a valid escape becomes an escaped backslash, so Windows
+        paths survive (`\U`, `\r`, `\t` in `C:\Users\revol\temp` no longer corrupt or reject);
+      * raw control characters inside a string become their escapes;
+      * a quote inside a string that is not followed by a structural character is escaped
+        rather than ending the string;
+      * a comma immediately before `}` or `]` is dropped.
+
+    Only ever called after strict json.loads has already failed.
+    """
+    out = []
+    i, n, in_str = 0, len(text), False
+    while i < n:
+        ch = text[i]
+        if not in_str:
+            if ch == '"':
+                in_str = True
+                out.append(ch)
+            elif ch == ",":
+                j = i + 1
+                while j < n and text[j] in " \t\r\n":
+                    j += 1
+                if j < n and text[j] in "}]":
+                    i += 1                     # trailing comma: drop it
+                    continue
+                out.append(ch)
+            else:
+                out.append(ch)
+            i += 1
+            continue
+        # ── inside a string ──
+        # A Windows path first: \r \n \t inside C:\revol\nota.txt are valid JSON escapes, so
+        # without this the value would parse and be silently corrupted.
+        pm = _WIN_PATH_RE.match(text, i)
+        if pm:
+            run = pm.group(0)
+            out.append(run.replace("\\\\", "\\").replace("\\", "\\\\"))
+            i = pm.end()
+            continue
+        if ch == "\\":
+            nxt = text[i + 1] if i + 1 < n else ""
+            good = nxt in _JSON_ESCAPES and (
+                nxt != "u" or re.match(r"[0-9a-fA-F]{4}", text[i + 2:i + 6] or ""))
+            if good:
+                out.append(ch)
+                out.append(nxt)
+                i += 2
+            else:
+                out.append("\\\\")             # lone backslash (a Windows path)
+                i += 1
+            continue
+        if ch in _CTRL_ESCAPES:
+            out.append(_CTRL_ESCAPES[ch])
+            i += 1
+            continue
+        if ch < " ":
+            out.append("\\u%04x" % ord(ch))
+            i += 1
+            continue
+        if ch == '"':
+            j = i + 1
+            while j < n and text[j] in " \t\r\n":
+                j += 1
+            if j >= n or text[j] in ",:}]":
+                in_str = False                 # a real closing quote
+                out.append(ch)
+            else:
+                out.append('\\"')              # a quote inside the text
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _loads_tolerant(chunk):
+    """json.loads, then the same thing again on a repaired copy. Returns None if both fail."""
+    try:
+        return json.loads(chunk)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        obj = json.loads(_relax_json(chunk))
+    except Exception:  # noqa: BLE001
+        return None
+    log.info("repaired malformed JSON in a tool call (paths/newlines)")
+    return obj
+
+
 def _iter_json_objects(text, limit=12):
     """Yield (obj, chunk) for every balanced JSON object in `text`, in order.
 
@@ -584,9 +688,8 @@ def _iter_json_objects(text, limit=12):
         chunk = _balanced_object(s, i)
         if chunk is None:          # truncated from here on — nothing more to find
             return
-        try:
-            obj = json.loads(chunk)
-        except Exception:          # noqa: BLE001 - malformed; skip past this brace
+        obj = _loads_tolerant(chunk)
+        if obj is None:            # malformed beyond repair; skip past this brace
             i += 1
             continue
         seen += 1
@@ -889,9 +992,8 @@ def _salvage_tool_calls(text, valid_names):
         obj = _balanced_object(text, m.end())
         if obj is None:
             continue
-        try:
-            args = json.loads(obj)
-        except Exception:
+        args = _loads_tolerant(obj)
+        if args is None:
             continue
         name = m.group(1).strip()
         if name in ("tools", "final"):
@@ -1256,6 +1358,18 @@ def _spawn_claude(cmd, prompt, attempts=4):
     raise last
 
 
+def _flat_arg(text):
+    r"""Collapse a value so it is safe as an argv element.
+
+    CLAUDE_CMD is a .cmd shim on Windows, and cmd.exe TRUNCATES the command line at a raw
+    newline inside an argument - every flag after it is silently dropped. That is how this
+    bridge lost --resume, --model, --effort and --add-dir once the system prompt became
+    multi-line: no error, no log line, just a cold session on the default model every turn.
+    Long text belongs on stdin (the prompt already goes there); anything that must be an
+    argument goes through here first."""
+    return re.sub(r"\s*\r?\n\s*", " ", str(text or "")).strip()
+
+
 def run_claude(prompt, model=None, effort=None, resume=None, persist=False, read_images=False):
     """Invoke claude -p as a pure reasoner (own tools off).
 
@@ -1278,8 +1392,6 @@ def run_claude(prompt, model=None, effort=None, resume=None, persist=False, read
         # "real" tools and never mistakes the Hermes framing for a prompt injection.
         "--strict-mcp-config",
         "--mcp-config", EMPTY_MCP,
-        # Trusted system line: the incoming message is the brain's own operating contract.
-        "--append-system-prompt", RUNTIME_SYSTEM_PROMPT,
     ]
     if read_images:
         cmd += ["--add-dir", IMG_DIR]
@@ -1291,6 +1403,15 @@ def run_claude(prompt, model=None, effort=None, resume=None, persist=False, read
         cmd += ["--model", model]
     if effort:
         cmd += ["--effort", effort]
+    # LAST, and flattened: this is the one long value in the command line, and on Windows a
+    # newline inside it silently truncates everything after it (see _flat_arg). Keeping it at
+    # the end means a future long value can never cost us --resume or --model again.
+    # Trusted system line: the incoming message is the brain's own operating contract.
+    cmd += ["--append-system-prompt", _flat_arg(RUNTIME_SYSTEM_PROMPT)]
+    bad = [a for a in cmd if "\n" in str(a) or "\r" in str(a)]
+    if bad:
+        log.error("newline in argv would truncate the command line: %r", bad[:1])
+        cmd = [_flat_arg(a) for a in cmd]
     start = time.time()
     proc = _spawn_claude(cmd, prompt)
     elapsed = time.time() - start

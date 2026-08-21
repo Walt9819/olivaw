@@ -227,6 +227,84 @@ for _lbl, _txt in (
         ("noleak/nested", '{"thought":"a","tool":"nope","arguments":{"b":1}}')):
     no_leak(_lbl, _txt)
 
+# ── file tool calls: windows paths and multi-line content ────────────────────
+# REAL failure (Aug 21 2026): "decision unrecovered; honest note (dropped=['file'])" every
+# time the owner asked to create or read a file. The arguments are what breaks strict JSON -
+# a path typed with single backslashes (\U is not a valid escape) and content with real line
+# breaks - so the whole envelope was thrown away. Values matter here, not just the parse:
+# a repaired call that mangles the path or the content is worse than no call.
+B = chr(92)
+NL = chr(10)
+FILE_TOOLS = TOOLS | {"file"}
+
+
+def args_of(label, text, name, want_args, names=FILE_TOOLS):
+    kind, value = cb.parse_decision(text, names)
+    if kind != "tools" or not value:
+        FAILS.append(f"{label}: no tool call ({kind!r}, {str(value)[:100]!r})")
+        return
+    call = value[0]
+    if call.get("name") != name:
+        FAILS.append(f"{label}: wrong tool {call.get('name')!r}")
+        return
+    got = call.get("arguments") or {}
+    for k, v in want_args.items():
+        if got.get(k) != v:
+            FAILS.append(f"{label}: {k} = {got.get(k)!r}, expected {v!r}")
+
+
+args_of("file/windows-path-single-backslashes",
+        '{"action":"tools","calls":[{"name":"file","arguments":{"action":"read",'
+        '"path":"C:' + B + 'Users' + B + 'revol' + B + 'VirtusVR' + B + 'README.md"}}]}',
+        "file", {"action": "read",
+                 "path": "C:" + B + "Users" + B + "revol" + B + "VirtusVR" + B + "README.md"})
+
+args_of("file/multiline-content",
+        '{"action":"tools","calls":[{"name":"file","arguments":{"action":"write",'
+        '"path":"nota.txt","content":"linea uno' + NL + 'linea dos"}}]}',
+        "file", {"path": "nota.txt", "content": "linea uno" + NL + "linea dos"})
+
+args_of("file/windows-path-and-multiline",
+        '{"action":"tools","calls":[{"name":"file","arguments":{"action":"write",'
+        '"path":"C:' + B + 'Users' + B + 'revol' + B + 'Documents' + B + 'nota.md",'
+        '"content":"# Titulo' + NL + NL + '- uno' + NL + '- dos"}}]}',
+        "file", {"path": "C:" + B + "Users" + B + "revol" + B + "Documents" + B + "nota.md",
+                 "content": "# Titulo" + NL + NL + "- uno" + NL + "- dos"})
+
+args_of("file/quotes-inside-content",
+        '{"action":"tools","calls":[{"name":"file","arguments":{"action":"write",'
+        '"path":"nota.txt","content":"el dijo "hola" y se fue"}}]}',
+        "file", {"content": 'el dijo "hola" y se fue'})
+
+args_of("file/trailing-comma",
+        '{"action":"tools","calls":[{"name":"file","arguments":{"action":"read",'
+        '"path":"nota.txt",}}]}',
+        "file", {"action": "read", "path": "nota.txt"})
+
+args_of("terminal/windows-path",
+        '{"action":"tools","calls":[{"name":"terminal","arguments":'
+        '{"command":"type C:' + B + 'Users' + B + 'revol' + B + 'nota.txt"}}]}',
+        "terminal", {"command": "type C:" + B + "Users" + B + "revol" + B + "nota.txt"})
+
+# prose first, then the call in a fence, with a raw path
+args_of("file/prose-then-fenced-call",
+        'Voy a crear el archivo ahora.' + NL + NL + '```json' + NL +
+        '{"action":"tools","calls":[{"name":"file","arguments":{"action":"write",'
+        '"path":"C:' + B + 'temp' + B + 'x.txt","content":"hola"}}]}' + NL + '```',
+        "file", {"path": "C:" + B + "temp" + B + "x.txt", "content": "hola"})
+
+# escaped JSON must be left exactly alone (the repair path must not touch valid input)
+args_of("file/already-escaped-untouched",
+        '{"action":"tools","calls":[{"name":"file","arguments":{"action":"write",'
+        '"path":"C:' + B + B + 'temp' + B + B + 'x.txt","content":"a' + B + 'nb"}}]}',
+        "file", {"path": "C:" + B + "temp" + B + "x.txt", "content": "a" + NL + "b"})
+
+# and the repair must NOT invent tool calls out of ordinary prose that quotes json
+check("file/prose-quoting-json-stays-final",
+      'Para leerlo se usa file con {"action": "read", "path": "x.txt"} — pero dime cual '
+      'archivo quieres antes de que lo haga.',
+      "final", "dime cual archivo")
+
 if FAILS:
     print("FAILED %d case(s):" % len(FAILS))
     for f in FAILS:
