@@ -35,3 +35,6 @@ node_modules/
 
 # Security audit report (private — do not publish weaknesses of a distributed tool)
 SECURITY_REVIEW.md
+
+# Rescue console transcript (local conversation data)
+rescue-console.jsonl

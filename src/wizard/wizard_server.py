@@ -419,6 +419,18 @@ class Handler(BaseHTTPRequestHandler):
         if route == "rescue/context":
             return {"ok": True, **rescue.collect_context(INSTALL_DIR)}
 
+        if route == "rescue/log":
+            return rescue.read_log(body.get("limit", 20), INSTALL_DIR)
+
+        if route == "rescue/start":
+            return rescue.start_job(body.get("question", ""),
+                                    allow_fix=bool(body.get("allow_fix")),
+                                    install_dir=INSTALL_DIR,
+                                    history=body.get("history") or [])
+
+        if route == "rescue/poll":
+            return rescue.poll_job(body.get("job_id", ""), body.get("cursor", 0))
+
         if route == "rescue/ask":
             return rescue.ask(body.get("question", ""),
                               allow_fix=bool(body.get("allow_fix")),

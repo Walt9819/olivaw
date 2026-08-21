@@ -22,6 +22,9 @@ import os
 import re
 import subprocess
 import sys
+import threading
+import time
+import uuid
 
 from .procutil import http_json, run, which
 
@@ -113,9 +116,20 @@ def collect_context(install_dir=None):
 
     hp = which("hermes")
     ctx["hermes_installed"] = bool(hp)
+    ctx["hermes_gateway_state"] = "unknown"
     if hp:
-        r = run([hp, "gateway", "status"], timeout=12)
-        ctx["hermes_gateway"] = redact((r["out"] or r["err"])[:400])
+        r = run([hp, "gateway", "status"], timeout=25)
+        blob = (r["out"] or "") + " " + (r["err"] or "")
+        ctx["hermes_gateway"] = redact(blob[:400])
+        low = blob.lower()
+        # Distinguish "we could not check" from "it is down". A slow/timed-out check used to
+        # read as an outage, which made the console wrongly tell the owner Hermes was broken.
+        if "timeout" in low and "process running" not in low:
+            ctx["hermes_gateway_state"] = "unknown (la comprobación tardó demasiado)"
+        elif re.search(r"process running|is running|active \(running\)", low):
+            ctx["hermes_gateway_state"] = "running"
+        elif re.search(r"not running|stopped|inactive|no gateway", low):
+            ctx["hermes_gateway_state"] = "stopped"
     cl = which("claude")
     ctx["claude_installed"] = bool(cl)
     if cl:
@@ -166,7 +180,10 @@ def _snapshot_text(ctx):
              "bridge_down: %s" % ctx.get("bridge_down"),
              "bridges: %s" % json.dumps(ctx.get("bridges", []), ensure_ascii=False),
              "hermes_installed: %s" % ctx.get("hermes_installed"),
-             "hermes_gateway: %s" % (ctx.get("hermes_gateway") or "(n/a)"),
+             "hermes_gateway_state: %s" % ctx.get("hermes_gateway_state"),
+             "hermes_gateway_raw: %s" % (ctx.get("hermes_gateway") or "(n/a)"),
+             "note: if hermes_gateway_state is 'unknown', the check merely timed out — do NOT "
+             "tell the owner the gateway is down; say it could not be verified.",
              "claude_installed: %s | auth: %s" % (ctx.get("claude_installed"),
                                                   ctx.get("claude_auth") or "(n/a)"),
              "updater_config(redacted): %s" % ctx.get("updater_config"),
@@ -235,3 +252,247 @@ def ask(question, allow_fix=False, install_dir=None, history=None):
         text = stdout
     return {"ok": True, "reply": (text or "").strip() or "(sin respuesta)",
             "mode": "fix" if allow_fix else "diagnose", "bridge_down": ctx.get("bridge_down")}
+
+
+# ── live streaming (see the reasoning + actions as they happen) ────────────────
+# `ask()` returns only the final answer. For the console we run the same command with
+# --output-format stream-json and turn each event into a friendly line, so the owner watches
+# Claude think, call tools and conclude — proof that it is actually working. Everything goes
+# through redact() before being stored: in fix mode a tool result can contain file contents.
+_JOBS = {}
+_JOBS_LOCK = threading.Lock()
+_JOB_TTL = 3600
+MAX_EVENTS = 400
+
+
+def _job_put(job_id, **fields):
+    with _JOBS_LOCK:
+        job = _JOBS.setdefault(job_id, {"events": [], "done": False, "reply": "",
+                                        "started": time.time()})
+        job.update(fields)
+
+
+def _job_event(job_id, kind, text="", name=""):
+    ev = {"kind": kind, "text": redact(text)[:4000], "name": name, "ts": time.time()}
+    with _JOBS_LOCK:
+        job = _JOBS.setdefault(job_id, {"events": [], "done": False, "reply": "",
+                                        "started": time.time()})
+        if len(job["events"]) < MAX_EVENTS:
+            job["events"].append(ev)
+
+
+def _prune_jobs():
+    now = time.time()
+    with _JOBS_LOCK:
+        for jid in [k for k, v in _JOBS.items() if now - v.get("started", 0) > _JOB_TTL]:
+            _JOBS.pop(jid, None)
+
+
+def _summarize_input(obj):
+    """One-line, readable summary of a tool's arguments."""
+    if not isinstance(obj, dict):
+        return str(obj)[:200]
+    for key in ("command", "file_path", "path", "pattern", "prompt", "description", "url"):
+        if obj.get(key):
+            return "%s: %s" % (key, str(obj[key])[:200])
+    return json.dumps(obj, ensure_ascii=False)[:200]
+
+
+def _handle_event(job_id, d):
+    """Map one stream-json event onto a UI line."""
+    t = d.get("type")
+    if t == "system" and d.get("subtype") == "init":
+        _job_event(job_id, "system", "Claude listo (modelo %s, permisos %s)"
+                   % (d.get("model", "?"), d.get("permissionMode", "?")))
+        return
+    if t == "assistant" and isinstance(d.get("message"), dict):
+        for c in d["message"].get("content") or []:
+            if not isinstance(c, dict):
+                continue
+            ct = c.get("type")
+            if ct == "thinking":
+                txt = c.get("thinking") or c.get("text") or ""
+                if txt.strip():
+                    _job_event(job_id, "thinking", txt)
+            elif ct == "text":
+                if (c.get("text") or "").strip():
+                    _job_event(job_id, "text", c["text"])
+            elif ct == "tool_use":
+                _job_event(job_id, "tool", _summarize_input(c.get("input")),
+                           name=c.get("name") or "tool")
+        return
+    if t == "user" and isinstance(d.get("message"), dict):
+        for c in d["message"].get("content") or []:
+            if isinstance(c, dict) and c.get("type") == "tool_result":
+                body = c.get("content")
+                if isinstance(body, list):
+                    body = " ".join(str(x.get("text", "")) if isinstance(x, dict) else str(x)
+                                    for x in body)
+                _job_event(job_id, "tool_result", str(body or "")[:1500])
+        return
+    if t == "result":
+        final = d.get("result") or ""
+        if isinstance(final, list):
+            final = "\n".join(str(x) for x in final)
+        _job_put(job_id, reply=redact(final).strip())
+        secs = (d.get("duration_ms") or 0) / 1000.0
+        _job_event(job_id, "done", "Terminado en %.1fs (%s turno/s)"
+                   % (secs, d.get("num_turns", "?")))
+        return
+
+
+def _run_job(job_id, question, allow_fix, install_dir, history, exe=None):
+    # exe is resolved by start_job (in the request thread) so a transient PATH lookup miss
+    # inside this worker thread can never make it look like Claude is "not installed".
+    exe = exe or which("claude")
+    if not exe:
+        _job_event(job_id, "error", "Claude Code no está instalado en este equipo.")
+        _job_put(job_id, done=True)
+        return
+    inst = install_dir or INSTALL_DIR
+    try:
+        _job_event(job_id, "system", "Revisando tu instalación…")
+        ctx = collect_context(inst)
+        bstate = ", ".join("puerto %s %s" % (x["port"], "OK" if x.get("up") else "caído")
+                           for x in ctx.get("bridges", []))
+        _job_event(job_id, "system", "Estado: %s | Hermes %s | Claude %s" % (
+            bstate or "sin puentes",
+            "OK" if ctx.get("hermes_installed") else "ausente",
+            "OK" if ctx.get("claude_installed") else "ausente"))
+
+        convo = ""
+        for turn in (history or [])[-6:]:
+            role = "Owner" if turn.get("role") == "user" else "You"
+            convo += "\n%s: %s" % (role, str(turn.get("content", ""))[:1500])
+        prompt = "%s\n\n%s\n%s\n\nOwner question: %s" % (
+            PREAMBLE, _snapshot_text(ctx),
+            ("\n<earlier_in_this_console>%s\n</earlier_in_this_console>" % convo) if convo else "",
+            question)
+
+        cmd = [exe, "-p", "--output-format", "stream-json", "--verbose",
+               "--strict-mcp-config", "--mcp-config", EMPTY_MCP,
+               "--append-system-prompt", CONSOLE_SYSTEM_PROMPT,
+               "--no-session-persistence"]
+        if allow_fix:
+            cmd += ["--add-dir", inst, "--dangerously-skip-permissions"]
+        else:
+            cmd += ["--tools", ""]
+
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, cwd=inst, shell=False)
+        _job_put(job_id, proc=proc)
+        try:
+            proc.stdin.write(prompt.encode("utf-8"))
+            proc.stdin.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+        deadline = time.time() + TIMEOUT
+        for raw in iter(proc.stdout.readline, b""):
+            if time.time() > deadline:
+                proc.kill()
+                _job_event(job_id, "error", "Se agotó el tiempo de espera.")
+                break
+            line = raw.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+            try:
+                d = json.loads(line)
+            except Exception:  # noqa: BLE001
+                continue
+            try:
+                _handle_event(job_id, d)
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            proc.wait(timeout=15)
+        except Exception:  # noqa: BLE001
+            pass
+        with _JOBS_LOCK:
+            has_reply = bool((_JOBS.get(job_id) or {}).get("reply"))
+        if proc.returncode not in (0, None) and not has_reply:
+            err = (proc.stderr.read() or b"").decode("utf-8", errors="replace")
+            _job_event(job_id, "error", redact(err)[:400] or "Claude terminó con error.")
+    except Exception as e:  # noqa: BLE001
+        _job_event(job_id, "error", "Fallo interno: %s" % e)
+    finally:
+        _job_put(job_id, done=True)
+        with _JOBS_LOCK:
+            job = dict(_JOBS.get(job_id) or {})
+        _log_turn(install_dir, question, "fix" if allow_fix else "diagnose",
+                  job.get("reply", ""), job.get("events", []))
+
+
+def _log_path(install_dir=None):
+    return os.path.join(install_dir or INSTALL_DIR, "rescue-console.jsonl")
+
+
+def _log_turn(install_dir, question, mode, reply, events):
+    """Append a REDACTED transcript of one console turn so it can be reviewed later.
+    (The UI keeps its own copy in the browser; this survives browser/state resets.)"""
+    try:
+        rec = {"ts": time.time(), "question": redact(question)[:2000], "mode": mode,
+               "reply": (reply or "")[:8000],
+               "events": [{"kind": e.get("kind"), "name": e.get("name"),
+                           "text": (e.get("text") or "")[:800]} for e in (events or [])[-60:]]}
+        path = _log_path(install_dir)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        try:
+            os.chmod(path, 0o600)
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def read_log(limit=20, install_dir=None):
+    """Return the most recent console turns (already redacted on write)."""
+    path = _log_path(install_dir)
+    if not os.path.exists(path):
+        return {"ok": True, "turns": [], "detail": "Aún no hay conversaciones guardadas."}
+    turns = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh.readlines()[-max(1, int(limit)):]:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    turns.append(json.loads(line))
+                except Exception:  # noqa: BLE001
+                    continue
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "detail": str(e)}
+    return {"ok": True, "turns": turns, "path": path}
+
+
+def start_job(question, allow_fix=False, install_dir=None, history=None):
+    """Kick off a streaming run. Returns {ok, job_id}."""
+    q = (question or "").strip()
+    if not q:
+        return {"ok": False, "detail": "Escribe tu pregunta."}
+    exe = which("claude")
+    if not exe:
+        return {"ok": False, "detail": "Claude Code no está instalado en este equipo."}
+    _prune_jobs()
+    job_id = uuid.uuid4().hex[:16]
+    _job_put(job_id, events=[], done=False, reply="", started=time.time())
+    threading.Thread(target=_run_job, daemon=True,
+                     args=(job_id, q, bool(allow_fix), install_dir, history or [], exe)).start()
+    return {"ok": True, "job_id": job_id, "mode": "fix" if allow_fix else "diagnose"}
+
+
+def poll_job(job_id, cursor=0):
+    """Return events after `cursor` plus completion state."""
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job:
+            return {"ok": False, "detail": "Esa consulta ya expiró."}
+        try:
+            cursor = max(0, int(cursor))
+        except (TypeError, ValueError):
+            cursor = 0
+        evs = job["events"][cursor:]
+        return {"ok": True, "events": evs, "cursor": cursor + len(evs),
+                "done": bool(job.get("done")), "reply": job.get("reply") or ""}

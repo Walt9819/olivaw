@@ -1054,26 +1054,63 @@
     };
   }
 
-  // ── step 7: rescue console (talk to Claude Code directly) ─────────────────
-  // This is the escape hatch: when the bridge/Hermes is down, Telegram is dead, so the
-  // owner can still reach Claude Code from here — with the installation snapshot attached.
+  // ── step 7: rescue console (talk to Claude Code directly, with live reasoning) ──
+  // The escape hatch: when the bridge/Hermes is down, Telegram is dead, so the owner can
+  // still reach Claude Code from here — with the installation snapshot attached. We stream
+  // every event (thinking, tool calls, tool results) so it's visible that it IS working.
+  var LIVE = null;   // transient: {events:[], done:false, reply:"", cursor:0}
+
+  function evHtml(e) {
+    var k = e.kind;
+    if (k === "system") {
+      return '<div class="ev ev-sys">⚙️ ' + esc(e.text) + '</div>';
+    }
+    if (k === "thinking") {
+      return '<details class="ev ev-think" open><summary>💭 Razonando…</summary>' +
+        '<div class="ev-body">' + esc(e.text) + '</div></details>';
+    }
+    if (k === "tool") {
+      return '<div class="ev ev-tool">🔧 <b>' + esc(e.name || "herramienta") + '</b> ' +
+        '<code>' + esc(e.text) + '</code></div>';
+    }
+    if (k === "tool_result") {
+      return '<details class="ev ev-res"><summary>📄 resultado</summary>' +
+        '<pre class="ev-body">' + esc(e.text) + '</pre></details>';
+    }
+    if (k === "text") {
+      return '<div class="ev ev-text">' + esc(e.text) + '</div>';
+    }
+    if (k === "done") { return '<div class="ev ev-sys">✓ ' + esc(e.text) + '</div>'; }
+    if (k === "error") { return '<div class="ev ev-err">✕ ' + esc(e.text) + '</div>'; }
+    return '';
+  }
+
+  function turnHtml(t) {
+    var out = '<div class="row" style="justify-content:flex-end">' +
+      '<div class="card" style="max-width:82%;margin:0 0 10px;background:var(--panel-2)">' +
+      '<div class="muted small" style="margin-bottom:4px">Tú</div>' +
+      '<div style="white-space:pre-wrap">' + esc(t.question) + '</div></div></div>';
+    var evs = (t.events || []).map(evHtml).join("");
+    out += '<div class="card" style="margin:0 0 14px">' +
+      '<div class="muted small" style="margin-bottom:6px">🤖 Claude' +
+      (t.mode === "fix" ? ' <span class="badge">modo arreglo</span>' : '') + '</div>' +
+      (evs ? '<div class="ev-list">' + evs + '</div>' : '') +
+      (t.reply ? '<div class="ev-final">' + esc(t.reply) + '</div>' :
+        (t.done ? '' : '<div class="ev ev-sys"><span class="spinner"></span> trabajando…</div>')) +
+      '</div>';
+    return out;
+  }
+
   function rRescue() {
-    var msgs = (S.rescue_history || []).map(function (m) {
-      var mine = m.role === "user";
-      return '<div class="row" style="justify-content:' + (mine ? "flex-end" : "flex-start") + '">' +
-        '<div class="card" style="max-width:82%;margin:0 0 10px;' +
-        (mine ? "background:var(--panel-2)" : "") + '">' +
-        '<div class="muted small" style="margin-bottom:4px">' + (mine ? "Tú" : "🤖 Claude") + '</div>' +
-        '<div style="white-space:pre-wrap">' + esc(m.content) + '</div></div></div>';
-    }).join("");
+    var hist = (S.rescue_history || []).map(turnHtml).join("");
     return '' +
       '<div class="eyebrow">Ayuda directa</div>' +
       '<h1>Habla con Claude sobre tu instalación</h1>' +
       '<p class="lead">Esto habla con Claude <b>directamente</b> — sin pasar por Telegram ni por tu ' +
-      'agente. Úsalo cuando algo falle: ve el estado real de tu instalación (puente, Hermes, ' +
-      'registros) y te dice qué pasa y qué hacer. No necesitas abrir ninguna terminal.</p>' +
+      'agente. Verás su razonamiento y cada acción que hace, en vivo. Úsalo cuando algo falle.</p>' +
       '<div id="rescueStatus" class="card"><span class="muted small">Revisando tu instalación…</span></div>' +
-      '<div id="rescueMsgs" style="margin:14px 0">' + msgs + '</div>' +
+      '<div id="rescueMsgs" style="margin:14px 0">' + hist + '</div>' +
+      '<div id="rescueLive" style="margin:14px 0"></div>' +
       '<div class="card pad">' +
       '<label class="field"><span class="lab">¿Qué está pasando?</span>' +
       '<textarea id="rescueQ" rows="3" placeholder="Ej: mi agente dejó de responder en Telegram"></textarea></label>' +
@@ -1082,8 +1119,8 @@
       '<input type="checkbox" id="rescueFix"> <span class="muted">Permitir que revise archivos y aplique arreglos</span></label>' +
       '<div class="row"><button class="btn btn-primary" id="rescueSend">Preguntar</button>' +
       '<button class="btn btn-ghost btn-sm" id="rescueClear">Limpiar</button></div></div>' +
-      '<div id="rescuePill" class="pill" style="display:none;margin-top:8px"></div></div>' +
-      '<p class="muted small">Tus claves y contraseñas se ocultan automáticamente antes de enviar nada.</p>';
+      '<div class="muted small" style="margin-top:8px">Ctrl+Enter para enviar. ' +
+      'Tus claves y contraseñas se ocultan automáticamente.</div></div>';
   }
 
   function eRescue() {
@@ -1104,35 +1141,87 @@
           'por eso tu agente no contesta en Telegram. Pregunta abajo y te digo cómo revivirlo.</div>' : "");
     });
 
-    var send = el("rescueSend"), pill = el("rescuePill");
+    function paintLive() {
+      var host = el("rescueLive");
+      if (!host) return;
+      host.innerHTML = LIVE ? turnHtml(LIVE) : "";
+      var wrap = document.querySelector(".panel-wrap");
+      if (wrap) wrap.scrollTop = wrap.scrollHeight;
+    }
+
+    function poll() {
+      if (!LIVE || !LIVE.job_id) return;
+      api("rescue/poll", { job_id: LIVE.job_id, cursor: LIVE.cursor || 0 }).then(function (r) {
+        if (!r || !r.ok) {
+          LIVE.events.push({ kind: "error", text: (r && r.detail) || "Se perdió la consulta." });
+          LIVE.done = true; paintLive(); finish(); return;
+        }
+        (r.events || []).forEach(function (e) { LIVE.events.push(e); });
+        LIVE.cursor = r.cursor || LIVE.cursor;
+        if (r.reply) LIVE.reply = r.reply;
+        LIVE.done = !!r.done;
+        paintLive();
+        if (!LIVE.done) setTimeout(poll, 800); else finish();
+      }).catch(function (e) {
+        LIVE.events.push({ kind: "error", text: String(e) });
+        LIVE.done = true; paintLive(); finish();
+      });
+    }
+
+    function finish() {
+      if (!LIVE) return;
+      // Persist a compact copy so the transcript survives navigation.
+      var keep = (LIVE.events || []).slice(-60).map(function (e) {
+        return { kind: e.kind, name: e.name, text: String(e.text || "").slice(0, 1200) };
+      });
+      S.rescue_history = (S.rescue_history || []).concat([{
+        question: LIVE.question, mode: LIVE.mode, reply: LIVE.reply, events: keep, done: true
+      }]).slice(-12);
+      LIVE = null;
+      save();
+      var host = el("rescueLive"); if (host) host.innerHTML = "";
+      var msgs = el("rescueMsgs");
+      if (msgs) msgs.innerHTML = (S.rescue_history || []).map(turnHtml).join("");
+      var sb = el("rescueSend"); if (sb) { sb.disabled = false; sb.textContent = "Preguntar"; }
+    }
+
     function ask() {
-      var q = (el("rescueQ") || {}).value || "";
+      var qEl = el("rescueQ");
+      var q = (qEl && qEl.value) || "";
       if (!q.trim()) { toast("Escribe tu pregunta."); return; }
+      if (LIVE) { toast("Espera a que termine la consulta anterior."); return; }
       var fix = !!(el("rescueFix") && el("rescueFix").checked);
-      S.rescue_history = (S.rescue_history || []).concat([{ role: "user", content: q }]);
-      save(); render();
-      var p = el("rescuePill"); p.style.display = "inline-flex";
-      p.className = "pill load";
-      p.innerHTML = '<span class="spinner"></span>' + (fix ? "Revisando y arreglando…" : "Pensando…");
-      api("rescue/ask", { question: q, allow_fix: fix, history: S.rescue_history.slice(0, -1) })
+      var sb = el("rescueSend");
+      if (sb) { sb.disabled = true; sb.textContent = "Trabajando…"; }
+      LIVE = { question: q, mode: fix ? "fix" : "diagnose", events: [], cursor: 0,
+               reply: "", done: false, job_id: null };
+      paintLive();
+      if (qEl) qEl.value = "";
+      api("rescue/start", { question: q, allow_fix: fix,
+                            history: (S.rescue_history || []).slice(-4).map(function (t) {
+                              return [{ role: "user", content: t.question },
+                                      { role: "assistant", content: t.reply || "" }];
+                            }).reduce(function (a, b) { return a.concat(b); }, []) })
         .then(function (r) {
-          S.rescue_history = (S.rescue_history || []).concat([
-            { role: "assistant", content: (r && (r.reply || r.detail)) || "Sin respuesta." }]);
-          save(); render();
-        }).catch(function (e) {
-          S.rescue_history = (S.rescue_history || []).concat([
-            { role: "assistant", content: "Error: " + e }]);
-          save(); render();
+          if (!r || !r.ok) {
+            LIVE.events.push({ kind: "error", text: (r && r.detail) || "No pude iniciar." });
+            LIVE.done = true; paintLive(); finish(); return;
+          }
+          LIVE.job_id = r.job_id; LIVE.mode = r.mode || LIVE.mode;
+          poll();
         });
     }
+
+    var send = el("rescueSend");
     if (send) send.onclick = ask;
     var qbox = el("rescueQ");
     if (qbox) qbox.onkeydown = function (ev) {
       if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); ask(); }
     };
     if (el("rescueClear")) el("rescueClear").onclick = function () {
-      S.rescue_history = []; save(); render();
+      S.rescue_history = []; LIVE = null; save(); render();
     };
+    paintLive();
   }
 
   // ── boot ──────────────────────────────────────────────────────────────
