@@ -1090,7 +1090,15 @@
       '<div class="card" style="max-width:82%;margin:0 0 10px;background:var(--panel-2)">' +
       '<div class="muted small" style="margin-bottom:4px">Tú</div>' +
       '<div style="white-space:pre-wrap">' + esc(t.question) + '</div></div></div>';
-    var evs = (t.events || []).map(evHtml).join("");
+    // The model's answer arrives twice: streamed as `text` events, then again as the final
+    // `reply`. Render it once — while streaming show the text events; once the reply is in,
+    // drop the text events it already contains so the answer isn't duplicated.
+    var reply = (t.reply || "").trim();
+    var evs = (t.events || []).filter(function (e) {
+      if (!reply || e.kind !== "text") return true;
+      var txt = (e.text || "").trim();
+      return !txt || reply.indexOf(txt) < 0;
+    }).map(evHtml).join("");
     out += '<div class="card" style="margin:0 0 14px">' +
       '<div class="muted small" style="margin-bottom:6px">🤖 Claude' +
       (t.mode === "fix" ? ' <span class="badge">modo arreglo</span>' : '') + '</div>' +
