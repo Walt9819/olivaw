@@ -294,7 +294,32 @@ body.sos-open{overflow:hidden}
 .ask-tool{margin:12px 0 2px; padding:12px 14px; border:1px solid var(--accent);
   border-radius:14px; background:var(--panel-2)}
 .ask-tool.ask-done{border-color:var(--line); opacity:.72}
-.ask-head{font-size:13.5px; margin-bottom:9px}
+.ask-head{font-size:13.5px; margin-bottom:10px}
+
+/* one card per question */
+.ask-q{padding:10px 0; border-top:1px solid var(--line-2)}
+.ask-q:first-of-type{border-top:none; padding-top:2px}
+.ask-q-head{display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; margin-bottom:8px;
+  font-size:13.5px}
+.ask-num{width:20px;height:20px;flex:0 0 20px; border-radius:50%; display:grid; place-items:center;
+  background:var(--accent); color:var(--accent-ink); font-size:11.5px; font-weight:800}
+.ask-chip{padding:1px 8px; border-radius:999px; background:var(--panel); border:1px solid var(--line);
+  font-size:11px; font-weight:700; color:var(--accent-2); text-transform:uppercase;
+  letter-spacing:.04em}
+
+/* a comment attached to one chosen option */
+.ask-notes{display:flex; flex-direction:column; gap:6px; margin:8px 0 0}
+.ask-note{display:flex; align-items:center; gap:8px}
+.ask-note[hidden]{display:none}
+.ask-note-for{flex:0 0 auto; max-width:38%; font-size:11.5px; font-weight:700; color:var(--muted);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.ask-note-for::before{content:"↳ "}
+.ask-note input{flex:1; padding:6px 10px; font-size:12.5px}
+
+.ask-general{display:block; margin-top:12px}
+.ask-general .lab{display:block; margin-bottom:4px}
+.ask-general textarea{width:100%; min-height:46px; font-size:13px}
+.ask-send.ask-ready{box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 26%, transparent)}
 .ask-opts{display:flex; flex-wrap:wrap; gap:8px}
 .ask-opt{display:flex; flex-direction:column; gap:2px; align-items:flex-start; text-align:left;
   padding:8px 13px; border-radius:11px; border:1.5px solid var(--line); background:var(--panel);

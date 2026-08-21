@@ -158,11 +158,26 @@ and triple backticks. The renderer escapes the source first and passes no raw HT
 log line or config value quoted inside an answer can never inject markup, and links are limited to
 `http(s)`.
 
-**When Claude needs a decision, you click it.** If a reply ends in a question, the console shows
-the options as buttons (single or multi-select, plus a free-text box) and sends your pick back as
-the exact wording of the option — no retyping, nothing to spell right. Claude emits a fenced
-`ask` block for this; a plain question followed by a numbered list is also recognised, and older
-questions stay in the transcript as a read-only record.
+**When Claude needs decisions, you click them.** A reply can end in **up to four questions** at
+once (Claude is told to ask everything in one go instead of dripping one question per turn), and
+the console renders them as an answer form:
+
+- **buttons per question** — single-select, or **multi-select** where several answers apply;
+- **a comment on any option you picked** — a note row appears under each pick, so "yes, but after
+  6pm" travels with the choice it belongs to;
+- **your own answer** — a free-text field per question when none of the options fit;
+- **one general comment** covering the whole set;
+- questions you skip are reported back as `(sin responder)` rather than silently dropped.
+
+What gets sent is the exact wording of each option plus your comments, so nothing has to be
+retyped or spelled right. A single pick with no comments still sends as a plain one-line answer.
+Claude emits a fenced `ask` block for this (several blocks in one reply are merged); a plain
+question followed by a numbered list is also recognised, and answered questions stay in the
+transcript as a read-only record.
+
+**The view follows you, not the stream.** New events only scroll the console down when you are
+already parked at the bottom — scroll up to re-read something mid-answer and it stays where you
+put it. Opening a conversation or sending a message jumps to the newest message on purpose.
 
 **Conversations are saved and resumable.** Each console conversation is backed by a real Claude
 Code session (olivaw mints the session id and resumes it), so reopening one from the left-hand list

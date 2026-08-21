@@ -102,6 +102,8 @@ def load_config():
         "poll_minutes": 45,
         "idle_seconds": 300,                  # "quiet for this long" == idle
         "nightly_hour": 4,                    # local hour for the fallback window
+        "update_from_hour": null,             # only update at/after this local hour
+        "update_until_hour": null,            # ...and before this one (null = any time)
         "lang": "es",                         # notification language: es | en
         "auto_update": true
       }
@@ -224,6 +226,28 @@ def is_idle(cfg):
 
 def in_nightly_window(cfg):
     return datetime.datetime.now().hour == int(cfg.get("nightly_hour", 4))
+
+
+def in_update_window(cfg):
+    """Hours the owner allows updates to land at all (e.g. only after 18:00). Absent keys
+    mean "any time"; a range may wrap past midnight (from 22 until 6)."""
+    frm, until = cfg.get("update_from_hour"), cfg.get("update_until_hour")
+    if frm is None and until is None:
+        return True
+    hour = datetime.datetime.now().hour
+    frm = 0 if frm is None else int(frm)
+    until = 24 if until is None else int(until)
+    if frm <= until:
+        return frm <= hour < until
+    return hour >= frm or hour < until
+
+
+def _window_label(cfg):
+    frm, until = cfg.get("update_from_hour"), cfg.get("update_until_hour")
+    if frm is None and until is None:
+        return "any hour"
+    return "%02d:00-%02d:00" % (0 if frm is None else int(frm),
+                                24 if until is None else int(until))
 
 
 # ── additional agents (multi-agent) ──────────────────────────────────────────
@@ -487,6 +511,11 @@ def maybe_update(cfg, state):
     if vtuple(rel["version"]) <= vtuple(cur):
         return
     log(f"update available: v{cur} -> v{rel['version']}")
+    # The owner may restrict WHEN an update is allowed to land (a version swap
+    # restarts the bridge, so it must not happen in their working hours).
+    if not in_update_window(cfg):
+        log(f"deferring update: outside the update window ({_window_label(cfg)})")
+        return
     # Gate on idle across ALL agents (shared code), unless in the nightly fallback window;
     # never mid-turn on any agent.
     if _any_mid_turn(cfg, state) or (not _all_idle(cfg, state) and not in_nightly_window(cfg)):
@@ -569,7 +598,8 @@ def _ensure_app_shortcut():
 def main():
     cfg = load_config()
     log(f"supervisor up. install={INSTALL_DIR} version={read_version()} "
-        f"repo={cfg.get('repo')} auto_update={cfg.get('auto_update')}")
+        f"repo={cfg.get('repo')} auto_update={cfg.get('auto_update')} "
+        f"window={_window_label(cfg)}")
     _ensure_app_shortcut()
     state = {"child": start_bridge(cfg), "launcher_changed": False, "extra": {}}
     _reconcile_extras(cfg, state)

@@ -1142,69 +1142,195 @@
       .replace(/\u0001F(\d+)\u0001/g, function (m, n) { return fences[+n] || ""; });
   }
 
-  // ── "Claude is asking you something" → buttons ───────────────────────────────
-  // When a reply ends in a decision, the server hands us {question, options, multi,
-  // allow_free} (see rescue.parse_ask). Rendering it as buttons means the owner picks instead
-  // of retyping — and Claude gets the exact wording of the option back.
-  function askHtml(a, interactive) {
-    if (!a || !(a.options || []).length) return "";
-    var opts = (a.options || []).map(function (o, i) {
-      return '<button type="button" class="ask-opt" data-i="' + i + '"' +
-        (interactive ? "" : " disabled") + '>' +
-        '<span class="ask-opt-lbl">' + esc(o.label) + '</span>' +
-        (o.detail ? '<span class="ask-opt-detail">' + esc(o.detail) + '</span>' : '') +
-        '</button>';
+  // ── "Claude is asking you something" → an answer form ───────────────────────
+  // A reply can end in up to four questions (see rescue.parse_ask). Each becomes buttons —
+  // single- or multi-select — and the owner can go past just picking: type a different answer,
+  // attach a comment to any option they picked, and leave one general comment about the whole
+  // set. What we send back is the exact option wording plus those comments, so Claude gets an
+  // unambiguous answer and the owner never has to retype anything.
+  function normalizeAsk(a) {
+    if (!a) return null;
+    var qs = a.questions;
+    // turns stored before multi-question support carry the flat single-question shape
+    if (!qs && a.options) {
+      qs = [{ id: "q1", header: "", question: a.question, options: a.options,
+              multi: !!a.multi, allow_free: a.allow_free !== false }];
+    }
+    qs = (qs || []).filter(function (q) { return q && (q.options || []).length; });
+    if (!qs.length) return null;
+    return { questions: qs, allow_general: a.allow_general !== false };
+  }
+
+  function askHtml(ask, interactive) {
+    var a = normalizeAsk(ask);
+    if (!a) return "";
+    var many = a.questions.length > 1;
+    var body = a.questions.map(function (q, qi) {
+      var opts = (q.options || []).map(function (o, oi) {
+        return '<button type="button" class="ask-opt" data-oi="' + oi + '"' +
+          (interactive ? "" : " disabled") + '>' +
+          '<span class="ask-opt-lbl">' + esc(o.label) + '</span>' +
+          (o.detail ? '<span class="ask-opt-detail">' + esc(o.detail) + '</span>' : '') +
+          '</button>';
+      }).join("");
+      // One comment row per option, kept in the DOM and revealed when that option is picked,
+      // so switching selections never loses what was already typed.
+      var notes = (q.options || []).map(function (o, oi) {
+        return '<label class="ask-note" data-oi="' + oi + '" hidden>' +
+          '<span class="ask-note-for">' + esc(o.label) + '</span>' +
+          '<input type="text" placeholder="comentario sobre esta opción (opcional)"></label>';
+      }).join("");
+      return '<div class="ask-q" data-qi="' + qi + '" data-multi="' + (q.multi ? 1 : 0) + '">' +
+        '<div class="ask-q-head">' +
+        (many ? '<span class="ask-num">' + (qi + 1) + '</span>' : '') +
+        (q.header ? '<span class="ask-chip">' + esc(q.header) + '</span>' : '') +
+        '<b>' + esc(q.question || "¿Cómo quieres seguir?") + '</b>' +
+        (q.multi ? ' <span class="muted small">· puedes elegir varias</span>' : '') +
+        '</div><div class="ask-opts">' + opts + '</div>' +
+        (interactive ? '<div class="ask-notes">' + notes + '</div>' +
+          (q.allow_free === false ? '' :
+            '<input class="ask-free" type="text" placeholder="…o escribe otra respuesta">') : '') +
+        '</div>';
     }).join("");
-    return '<div class="ask-tool' + (interactive ? '' : ' ask-done') + '"' +
-      ' data-multi="' + (a.multi ? 1 : 0) + '">' +
-      '<div class="ask-head">🤔 <b>' + esc(a.question || "¿Cómo quieres seguir?") + '</b>' +
-      (a.multi && interactive ? ' <span class="muted small">· puedes elegir varias</span>' : '') +
-      '</div><div class="ask-opts">' + opts + '</div>' +
+
+    return '<div class="ask-tool' + (interactive ? '' : ' ask-done') + '">' +
+      '<div class="ask-head">🤔 <b>' +
+      (many ? "Claude te pregunta " + a.questions.length + " cosas" : "Claude te pregunta") +
+      '</b></div>' + body +
       (interactive ? (
-        (a.allow_free === false ? '' :
-          '<input class="ask-free" type="text" placeholder="…o escribe otra respuesta">') +
+        (a.allow_general ? '<label class="ask-general"><span class="lab muted small">' +
+          'Comentario general (opcional)</span>' +
+          '<textarea rows="2" placeholder="Algo que quieras añadir sobre todo esto…">' +
+          '</textarea></label>' : '') +
         '<div class="ask-actions">' +
-        '<button class="btn ' + (a.multi ? 'btn-primary' : 'btn-soft') +
-        ' btn-sm ask-send">Enviar respuesta</button>' +
-        '<span class="muted small">' + (a.multi ? "Marca las que quieras y envía."
-                                                : "Toca una opción para enviarla.") +
+        '<button class="btn btn-primary btn-sm ask-send">' +
+        (many ? "Enviar respuestas" : "Enviar respuesta") + '</button>' +
+        '<span class="muted small">Elige y, si quieres, añade comentarios. Ctrl+Enter envía.' +
         '</span></div>') : '') +
       '</div>';
   }
 
+  // Pure function (no DOM) so the exact text Claude receives is easy to reason about and test.
+  function composeAnswer(ask, answers) {
+    var a = normalizeAsk(ask);
+    if (!a) return "";
+    var general = (answers.general || "").trim();
+    var qs = a.questions;
+    var answered = qs.map(function (q, qi) { return answers.questions[qi] || {}; });
+
+    // The common case — one question, one option, nothing else — stays a plain sentence.
+    if (qs.length === 1 && !general) {
+      var one = answered[0];
+      var picks = one.picks || [];
+      if (picks.length === 1 && !(picks[0].note || "").trim() && !(one.free || "").trim()) {
+        return picks[0].label;
+      }
+    }
+
+    var lines = [qs.length > 1 ? "Respondo a tus preguntas:" : "Mi respuesta:"];
+    qs.forEach(function (q, qi) {
+      var ans = answered[qi];
+      var picks = (ans.picks || []).filter(function (p) { return p.label; });
+      var free = (ans.free || "").trim();
+      lines.push("");
+      lines.push((qs.length > 1 ? (qi + 1) + ") " : "") +
+        (q.header ? "[" + q.header + "] " : "") + q.question);
+      if (!picks.length && !free) {
+        lines.push("   (sin responder)");
+        return;
+      }
+      picks.forEach(function (p) {
+        var note = (p.note || "").trim();
+        lines.push("   - " + p.label + (note ? "  (comentario: " + note + ")" : ""));
+      });
+      if (free) lines.push("   - otra respuesta: " + free);
+    });
+    if (general) {
+      lines.push("");
+      lines.push("Comentario general: " + general);
+    }
+    return lines.join("\n");
+  }
+
   function wireAsk() {
     var tool = document.querySelector("#rescueMsgs .ask-tool:not(.ask-done)");
-    if (!tool) return;
-    var multi = tool.getAttribute("data-multi") === "1";
-    var free = tool.querySelector(".ask-free");
+    if (!tool || !SOS.conv) return;
+    var ask = normalizeAsk(LIVE ? LIVE.ask
+      : ((SOS.turns || []).length ? SOS.turns[SOS.turns.length - 1].ask : null));
+    if (!ask) return;
+
+    function syncNotes(qEl) {
+      Array.prototype.forEach.call(qEl.querySelectorAll(".ask-note"), function (n) {
+        var oi = n.getAttribute("data-oi");
+        var opt = qEl.querySelector('.ask-opt[data-oi="' + oi + '"]');
+        if (opt && opt.classList.contains("sel")) n.removeAttribute("hidden");
+        else n.setAttribute("hidden", "");      // text is kept, just not sent
+      });
+    }
+
+    function collect() {
+      var out = { questions: [], general: "" };
+      var gen = tool.querySelector(".ask-general textarea");
+      out.general = gen ? gen.value : "";
+      Array.prototype.forEach.call(tool.querySelectorAll(".ask-q"), function (qEl) {
+        var picks = [];
+        Array.prototype.forEach.call(qEl.querySelectorAll(".ask-opt.sel"), function (b) {
+          var oi = b.getAttribute("data-oi");
+          var note = qEl.querySelector('.ask-note[data-oi="' + oi + '"] input');
+          picks.push({ label: b.querySelector(".ask-opt-lbl").textContent,
+                       note: note ? note.value : "" });
+        });
+        var free = qEl.querySelector(".ask-free");
+        out.questions.push({ picks: picks, free: free ? free.value : "" });
+      });
+      return out;
+    }
 
     function send() {
       if (tool.classList.contains("ask-done")) return;
-      var picked = Array.prototype.map.call(tool.querySelectorAll(".ask-opt.sel"),
-        function (b) { return b.querySelector(".ask-opt-lbl").textContent; });
-      var extra = (free && free.value.trim()) || "";
-      if (!picked.length && !extra) { toast("Elige una opción o escribe tu respuesta."); return; }
-      var msg = picked.join(" · ");
-      if (extra) msg = msg ? msg + " · " + extra : extra;
+      var answers = collect();
+      var got = answers.questions.some(function (q) {
+        return (q.picks || []).length || (q.free || "").trim();
+      });
+      if (!got) { toast("Elige una opción o escribe tu respuesta."); return; }
+      var msg = composeAnswer(ask, answers);
+      if (!msg.trim()) { toast("No pude leer tu respuesta."); return; }
       tool.classList.add("ask-done");
-      Array.prototype.forEach.call(tool.querySelectorAll("button,input"),
+      Array.prototype.forEach.call(tool.querySelectorAll("button,input,textarea"),
         function (n) { n.disabled = true; });
       sendTurn(msg);
     }
 
-    Array.prototype.forEach.call(tool.querySelectorAll(".ask-opt"), function (b) {
-      b.onclick = function () {
-        if (multi) { b.classList.toggle("sel"); return; }
-        Array.prototype.forEach.call(tool.querySelectorAll(".ask-opt"),
-          function (x) { x.classList.remove("sel"); });
-        b.classList.add("sel");
-        send();                    // one click answers: pick it, send it
-      };
+    Array.prototype.forEach.call(tool.querySelectorAll(".ask-q"), function (qEl) {
+      var multi = qEl.getAttribute("data-multi") === "1";
+      Array.prototype.forEach.call(qEl.querySelectorAll(".ask-opt"), function (b) {
+        b.onclick = function () {
+          if (multi) {
+            b.classList.toggle("sel");
+          } else {
+            var was = b.classList.contains("sel");
+            Array.prototype.forEach.call(qEl.querySelectorAll(".ask-opt"),
+              function (x) { x.classList.remove("sel"); });
+            if (!was) b.classList.add("sel");     // clicking the pick again clears it
+          }
+          syncNotes(qEl);
+          var sb = tool.querySelector(".ask-send");
+          if (sb) sb.classList.add("ask-ready");
+        };
+      });
+      syncNotes(qEl);
     });
+
     var sb = tool.querySelector(".ask-send");
     if (sb) sb.onclick = send;
-    if (free) free.onkeydown = function (ev) {
-      if (ev.key === "Enter") { ev.preventDefault(); send(); }
+    // Enter on a one-line field sends; Ctrl+Enter sends from anywhere in the form.
+    Array.prototype.forEach.call(tool.querySelectorAll('input[type="text"]'), function (inp) {
+      inp.onkeydown = function (ev) {
+        if (ev.key === "Enter") { ev.preventDefault(); send(); }
+      };
+    });
+    tool.onkeydown = function (ev) {
+      if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); send(); }
     };
   }
 
@@ -1311,8 +1437,9 @@
     });
   }
 
-  function paintMsgs() {
+  function paintMsgs(force) {
     var msgs = el("rescueMsgs");
+    var stick = force || atBottom();
     var turns = SOS.turns || [];
     var live = !!LIVE, archived = !!(SOS.conv && SOS.conv.archived);
     if (msgs) {
@@ -1336,14 +1463,24 @@
     var comp = el("sosCompose");
     if (comp) comp.style.display = (SOS.conv && SOS.conv.archived) ? "none" : "";
     wireAsk();
-    paintLive();
+    paintLive(stick);
   }
 
-  function paintLive() {
+  function paintLive(force) {
     var host = el("rescueLive");
     if (!host) return;
+    var stick = force || atBottom();
     host.innerHTML = LIVE ? turnHtml(LIVE) : "";
-    scrollDown();
+    if (stick) scrollDown();
+  }
+
+  // "Following the conversation" means parked at (or within 1% of) the bottom. If the owner
+  // scrolled up to read something, new events must not drag them back down.
+  function atBottom() {
+    var sc = el("sosScroll");
+    if (!sc) return true;
+    var slack = Math.max(24, sc.scrollHeight * 0.01);
+    return (sc.scrollHeight - sc.scrollTop - sc.clientHeight) <= slack;
   }
 
   function scrollDown() {
@@ -1356,7 +1493,7 @@
       if (!r || !r.ok) { toast((r && r.detail) || "No pude abrirla."); loadList(); return; }
       SOS.conv = r.conversation;
       SOS.turns = r.conversation.turns || [];
-      paintList(); paintMsgs(); scrollDown();
+      paintList(); paintMsgs(true); scrollDown();
     });
   }
 
@@ -1418,8 +1555,9 @@
     // what was persisted (and will still be there tomorrow).
     if (cid) {
       api("rescue/conversation", { id: cid }).then(function (r) {
+        var stick = atBottom();
         if (r && r.ok) { SOS.conv = r.conversation; SOS.turns = r.conversation.turns || []; }
-        paintMsgs(); loadList(); scrollDown();
+        paintMsgs(stick); loadList(); if (stick) scrollDown();
       });
     } else {
       paintMsgs(); loadList();
@@ -1443,7 +1581,7 @@
     LIVE = { question: q, mode: fix ? "fix" : "diagnose", events: [], cursor: 0,
              reply: "", done: false, job_id: null,
              conversation_id: SOS.conv ? SOS.conv.id : "" };
-    paintLive();
+    paintLive(true);
     api("rescue/start", { question: q, allow_fix: fix,
                           conversation_id: SOS.conv ? SOS.conv.id : "" })
       .then(function (r) {

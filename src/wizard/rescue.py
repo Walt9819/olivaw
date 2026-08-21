@@ -186,7 +186,9 @@ CONSOLE_SYSTEM_PROMPT = (
     "```\n"
     "The console renders that as buttons the owner clicks, so keep options short (a handful at "
     "most, under ~80 characters each), do not repeat them as prose above the block, and ask only "
-    "when the answer genuinely changes what you would do."
+    "when the answer genuinely changes what you would do. Need more than one decision? Put up to "
+    'four questions in the same block as {"questions": [ {...}, {...} ]} instead of asking them '
+    "one turn at a time."
 )
 
 
@@ -206,10 +208,17 @@ FIX_SUFFIX = (
 # -- the "ask the owner" block ------------------------------------------------
 # Claude ends a reply with a fenced ```ask {...} block when it needs a decision; the console
 # turns that into buttons. Parsed here rather than in the browser so the live turn and the
-# stored transcript carry the same structured question.
-_ASK_FENCE_RE = re.compile(r"```(?:ask|olivaw-ask)\s*\n(.*?)```\s*$", re.S)
+# stored transcript carry the same structured questions.
+#
+# Accepted JSON shapes (all end up as {"questions": [...]}):
+#   {"question": "...", "options": [...]}                     one question (original shape)
+#   {"questions": [ {...}, {...} ], "general_comment": true}   several questions
+#   [ {...}, {...} ]                                          several questions, bare list
+# Several separate ```ask blocks in one reply are merged, in order.
+_ASK_FENCE_RE = re.compile(r"```(?:ask|olivaw-ask)[ \t]*\n(.*?)```", re.S)
 _OPTION_LINE_RE = re.compile(r"^\s*(?:[-*\u2022]|\d{1,2}[.)]|[a-eA-E][.)])\s+(\S.{1,118})\s*$")
 MAX_OPTIONS = 8
+MAX_QUESTIONS = 4
 
 
 def _clean_option(label):
@@ -218,13 +227,13 @@ def _clean_option(label):
     return txt[:120]
 
 
-def _normalize_ask(raw, source):
+def _normalize_question(raw, idx):
     """Accept only a small, well-formed shape - this drives UI buttons."""
     if not isinstance(raw, dict):
         return None
-    question = re.sub(r"\s+", " ", str(raw.get("question") or "").strip())[:400]
+    question = re.sub(r"\s+", " ", str(raw.get("question") or raw.get("text") or "").strip())[:400]
     opts = []
-    for o in (raw.get("options") or [])[:MAX_OPTIONS]:
+    for o in (raw.get("options") or raw.get("choices") or [])[:MAX_OPTIONS]:
         label = _clean_option(o.get("label") if isinstance(o, dict) else o)
         detail = _clean_option(o.get("detail") or o.get("hint") or "")[:160] \
             if isinstance(o, dict) else ""
@@ -232,10 +241,40 @@ def _normalize_ask(raw, source):
             opts.append({"label": label, "detail": detail})
     if len(opts) < 2:
         return None
-    return {"question": question, "options": opts,
-            "multi": bool(raw.get("multi") or raw.get("multiple")),
-            "allow_free": raw.get("allow_free") is not False,
-            "source": source}
+    return {"id": "q%d" % (idx + 1),
+            "header": _clean_option(raw.get("header") or raw.get("title") or "")[:24],
+            "question": question, "options": opts,
+            "multi": bool(raw.get("multi") or raw.get("multiple") or raw.get("multiSelect")),
+            "allow_free": raw.get("allow_free") is not False}
+
+
+def _questions_from(raw):
+    """Pull a question list out of whichever of the accepted shapes we got."""
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, dict):
+        for key in ("questions", "asks", "items"):
+            if isinstance(raw.get(key), list):
+                return raw[key]
+        if raw.get("question") or raw.get("options"):
+            return [raw]
+    return []
+
+
+def _normalize_ask(raws, source, allow_general=True):
+    questions = []
+    for raw in raws:
+        if len(questions) >= MAX_QUESTIONS:
+            break
+        q = _normalize_question(raw, len(questions))
+        if q:
+            questions.append(q)
+    if not questions:
+        return None
+    return {"questions": questions, "allow_general": bool(allow_general), "source": source,
+            # kept so an older UI (or an older stored turn read by a newer UI) still works
+            "question": questions[0]["question"], "options": questions[0]["options"],
+            "multi": questions[0]["multi"], "allow_free": questions[0]["allow_free"]}
 
 
 def _sniff_ask(text):
@@ -256,24 +295,29 @@ def _sniff_ask(text):
         question = stripped if stripped.endswith("?") else ""
     if not question or not (2 <= len(opts) <= 6):
         return None
-    return _normalize_ask({"question": question, "options": opts,
-                           "multi": False, "allow_free": True}, "sniffed")
+    return _normalize_ask([{"question": question, "options": opts,
+                            "multi": False, "allow_free": True}], "sniffed")
 
 
 def parse_ask(text):
-    """Return (reply_without_the_block, ask_or_None)."""
+    """Return (reply_without_the_blocks, ask_or_None)."""
     body = text or ""
-    m = _ASK_FENCE_RE.search(body)
-    if m:
+    raws, allow_general, found = [], True, False
+    for m in _ASK_FENCE_RE.finditer(body):
+        found = True
         try:
-            ask = _normalize_ask(json.loads(m.group(1)), "block")
+            data = json.loads(m.group(1))
         except Exception:  # noqa: BLE001
-            ask = None
-        if ask:
-            return body[:m.start()].rstrip(), ask
-        # A malformed block would otherwise be shown to the owner as raw JSON.
-        return (body[:m.start()].rstrip() or body), None
-    return body, _sniff_ask(body)
+            continue
+        if isinstance(data, dict) and data.get("general_comment") is False:
+            allow_general = False
+        raws.extend(_questions_from(data))
+    if not found:
+        return body, _sniff_ask(body)
+    ask = _normalize_ask(raws, "block", allow_general) if raws else None
+    # Strip every block: a malformed one must not reach the owner as raw JSON either.
+    clean = _ASK_FENCE_RE.sub("", body).strip()
+    return (clean or body if not ask else clean), ask
 
 
 def _snapshot_text(ctx):
@@ -454,14 +498,24 @@ def _handle_event(job_id, d):
 ASK_RULE = (
     "HOW TO ASK THE OWNER SOMETHING: if this reply asks them anything at all - which fix to "
     "apply, which of several things they meant, whether to go ahead - do not ask in prose. End "
-    "the reply with exactly one fenced block, nothing after it:\n"
+    "the reply with one fenced block, nothing after it:\n"
     "```ask\n"
-    '{"question": "<the question>", "options": ["<option>", "<option>"], "multi": false, '
-    '"allow_free": true}\n'
+    '{"questions": [\n'
+    '  {"header": "Actualizaciones", "question": "<question>", '
+    '"options": ["<option>", "<option>"], "multi": false},\n'
+    '  {"header": "Canales", "question": "<another question>", '
+    '"options": ["WhatsApp", "Correo", "Slack"], "multi": true}\n'
+    ']}\n'
     "```\n"
-    "The console turns that into buttons the owner clicks, so their answer comes back as the "
-    "exact wording of an option. Keep options short and do not also list them as prose. If you "
-    "are not asking anything, do not emit the block."
+    "The console renders that as buttons. Rules: up to 4 questions in the one block (ask "
+    "everything you need at once instead of dripping one question per turn); 2-5 short options "
+    'each; "multi": true when several answers can be picked together; "header" is a 1-2 word '
+    "label. Never list the same options as prose above the block, and if you are not asking "
+    "anything, do not emit a block at all.\n"
+    "The owner can, on top of picking: type a different answer for any question, attach a short "
+    "comment to any option they picked, and leave one general comment about the whole set. Their "
+    "reply comes back as the exact option wording plus those comments, so offer real choices "
+    "rather than asking them to describe things you could have listed."
 )
 
 
