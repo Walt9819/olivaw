@@ -21,6 +21,7 @@ import datetime
 import hashlib
 import json
 import os
+import re
 import shutil
 import ssl
 import subprocess
@@ -498,10 +499,78 @@ def maybe_update(cfg, state):
         os.execv(sys.executable, [sys.executable, SELF])  # new launcher will relaunch bridges
 
 
+def _ensure_app_shortcut():
+    """Keep the "Olivaw" icon working forever, with no manual maintenance.
+
+    The icon points at Olivaw.vbs -> <python> <install>/src/wizard/wizard_server.py. An update
+    only swaps src/, so the icon normally needs no attention at all. The one fragile part is the
+    interpreter path baked into the .vbs: a uv-managed Python can be pruned or replaced, which
+    would break the icon even though Olivaw itself is fine. So on each supervisor start we check
+    that path and, if the interpreter is gone, rewrite the .vbs with the interpreter we are
+    actually running under. Best-effort: a failure here is irrelevant to the agent and must
+    never stop the supervisor.
+    """
+    if os.name != "nt":
+        return
+    try:
+        vbs = os.path.join(INSTALL_DIR, "Olivaw.vbs")
+        wiz = os.path.join(INSTALL_DIR, "src", "wizard", "wizard_server.py")
+        if not os.path.isfile(wiz):
+            return
+        pyw = sys.executable.replace("python.exe", "pythonw.exe")
+        if not os.path.isfile(pyw):
+            pyw = sys.executable
+        needs = True
+        if os.path.isfile(vbs):
+            try:
+                with open(vbs, encoding="utf-8", errors="replace") as fh:
+                    cur = fh.read()
+                m = re.search(r'""([^"]+?python[w]?\.exe)""', cur)
+                needs = not (m and os.path.isfile(m.group(1)))
+            except Exception:
+                needs = True
+        if needs:
+            body = [
+                "' Opens the Olivaw setup/help UI (no console). Auto-repaired by the supervisor.",
+                'Set s = CreateObject("Wscript.Shell")',
+                's.CurrentDirectory = "%s"' % INSTALL_DIR,
+                's.Run """%s"" ""%s""", 0, False' % (pyw, wiz),
+            ]
+            with open(vbs, "w", encoding="ascii", errors="replace") as fh:
+                fh.write("\n".join(body) + "\n")
+            log("repaired the app-shortcut launcher (interpreter path had changed)")
+
+        # Recreate the desktop shortcut if the user lost it (WScript can make .lnk files).
+        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+        lnk = os.path.join(desktop, "Olivaw.lnk")
+        if os.path.isdir(desktop) and not os.path.exists(lnk):
+            mk = os.path.join(INSTALL_DIR, "_mklnk.vbs")
+            script = [
+                'Set s = CreateObject("WScript.Shell")',
+                'Set l = s.CreateShortcut("%s")' % lnk,
+                'l.TargetPath = "%s"' % vbs,
+                'l.WorkingDirectory = "%s"' % INSTALL_DIR,
+                'l.Description = "Abrir la configuracion / ayuda de Olivaw"',
+                "l.Save",
+            ]
+            with open(mk, "w", encoding="ascii", errors="replace") as fh:
+                fh.write("\n".join(script) + "\n")
+            subprocess.run(["wscript.exe", "//B", mk], timeout=30)
+            try:
+                os.remove(mk)
+            except Exception:
+                pass
+            if os.path.exists(lnk):
+                log("recreated the Olivaw desktop shortcut")
+    except Exception as e:
+        log(f"shortcut check skipped: {e}")
+
+
 def main():
     cfg = load_config()
     log(f"supervisor up. install={INSTALL_DIR} version={read_version()} "
         f"repo={cfg.get('repo')} auto_update={cfg.get('auto_update')}")
+    _ensure_app_shortcut()
     state = {"child": start_bridge(cfg), "launcher_changed": False, "extra": {}}
     _reconcile_extras(cfg, state)
     last_check = 0.0
