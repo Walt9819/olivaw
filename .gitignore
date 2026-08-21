@@ -25,6 +25,8 @@ agents/
 # generated fallback snippet (may contain owner id)
 hermes-config-snippet.yaml
 *.bak
+*.bak-*
+*.bak.*
 
 # Heavy/local
 models/
