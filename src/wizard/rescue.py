@@ -446,6 +446,28 @@ def _summarize_input(obj):
     return json.dumps(obj, ensure_ascii=False)[:200]
 
 
+def _tool_use_forbidden(job_id, name):
+    """Last line of defence. Diagnose mode promises the owner that nothing on the machine can
+    change; if a tool call appears anyway (a CLI change, a flag that stopped working), stop the
+    turn instead of trusting the promise. Cheap, and it fails closed."""
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id) or {}
+        if job.get("allow_fix") or job.get("blocked"):
+            return bool(job.get("blocked"))
+        job["blocked"] = True
+        proc = job.get("proc")
+    _job_event(job_id, "error",
+               "Bloqueado: en modo diagnóstico no puedo usar herramientas, y aun así se intentó "
+               "usar «%s». Detuve la consulta sin tocar nada. Si quieres que revise o repare "
+               "archivos, marca «Permitir que revise archivos y aplique arreglos»." % name)
+    try:
+        if proc:
+            proc.kill()
+    except Exception:  # noqa: BLE001
+        pass
+    return True
+
+
 def _handle_event(job_id, d):
     """Map one stream-json event onto a UI line."""
     t = d.get("type")
@@ -466,6 +488,8 @@ def _handle_event(job_id, d):
                 if (c.get("text") or "").strip():
                     _job_event(job_id, "text", c["text"])
             elif ct == "tool_use":
+                if _tool_use_forbidden(job_id, c.get("name") or "tool"):
+                    return
                 _job_event(job_id, "tool", _summarize_input(c.get("input")),
                            name=c.get("name") or "tool")
         return
@@ -479,6 +503,9 @@ def _handle_event(job_id, d):
                 _job_event(job_id, "tool_result", str(body or "")[:1500])
         return
     if t == "result":
+        with _JOBS_LOCK:
+            if (_JOBS.get(job_id) or {}).get("blocked"):
+                return
         final = d.get("result") or ""
         if isinstance(final, list):
             final = "\n".join(str(x) for x in final)
@@ -550,11 +577,25 @@ def _followup_prompt(ctx, question):
             % (ASK_RULE, _snapshot_text(ctx), question))
 
 
+def _flat(text):
+    """Collapse a value so it can safely be an argv element.
+
+    On Windows `claude` is a .CMD shim, and cmd.exe TRUNCATES the command line at a newline
+    inside an argument - every flag after it is silently lost. That is exactly how `--tools ""`
+    disappeared once this prompt became multi-line, handing a "diagnose" turn full tools.
+    Anything long or multi-line goes through stdin (the prompt) instead."""
+    return re.sub(r"\s*\r?\n\s*", " ", str(text or "")).strip()
+
+
 def _build_cmd(exe, allow_fix, inst, resume_id=None, session_id=None):
-    cmd = [exe, "-p", "--output-format", "stream-json", "--verbose",
-           "--strict-mcp-config", "--mcp-config", EMPTY_MCP,
-           "--append-system-prompt",
-           CONSOLE_SYSTEM_PROMPT + (FIX_SUFFIX if allow_fix else DIAGNOSE_SUFFIX)]
+    cmd = [exe, "-p"]
+    if not allow_fix:
+        # FIRST, deliberately: a malformed later argument must not be able to drop this.
+        cmd += ["--tools", ""]      # diagnosis only: no tools, cannot change anything
+    cmd += ["--output-format", "stream-json", "--verbose",
+            "--strict-mcp-config", "--mcp-config", EMPTY_MCP,
+            "--append-system-prompt",
+            _flat(CONSOLE_SYSTEM_PROMPT + (FIX_SUFFIX if allow_fix else DIAGNOSE_SUFFIX))]
     # Sessions are PERSISTED on purpose: that is what lets the owner reopen a console
     # conversation later and have Claude still hold the context.
     if resume_id:
@@ -564,8 +605,7 @@ def _build_cmd(exe, allow_fix, inst, resume_id=None, session_id=None):
     if allow_fix:
         # Explicit opt-in: let Claude actually inspect and repair the installation.
         cmd += ["--add-dir", inst, "--dangerously-skip-permissions"]
-    else:
-        cmd += ["--tools", ""]      # diagnosis only: no tools, cannot change anything
+    assert not any("\n" in a or "\r" in a for a in cmd), "newline in argv would truncate the command"
     return cmd
 
 
@@ -750,7 +790,7 @@ def start_job(question, allow_fix=False, install_dir=None, conversation_id=None)
     _prune_jobs()
     job_id = uuid.uuid4().hex[:16]
     _job_put(job_id, events=[], done=False, reply="", started=time.time(),
-             conversation_id=conv["id"])
+             conversation_id=conv["id"], allow_fix=bool(allow_fix))
     threading.Thread(target=_run_job, daemon=True,
                      args=(job_id, q, bool(allow_fix), inst, conv["id"], exe)).start()
     return {"ok": True, "job_id": job_id, "conversation_id": conv["id"],
