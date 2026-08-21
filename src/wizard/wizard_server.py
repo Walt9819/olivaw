@@ -417,7 +417,7 @@ class Handler(BaseHTTPRequestHandler):
             return {"ok": True, "markdown": md}
 
         if route == "rescue/context":
-            return {"ok": True, **rescue.collect_context(INSTALL_DIR)}
+            return {"ok": True, **rescue.collect_context(INSTALL_DIR, fast=True)}
 
         if route == "rescue/log":
             return rescue.read_log(body.get("limit", 20), INSTALL_DIR)

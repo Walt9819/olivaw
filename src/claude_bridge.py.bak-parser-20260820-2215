@@ -552,19 +552,10 @@ def build_delta_prompt(new_messages, model=None, system_update=None, tools=None)
 
 
 def _strip_fences(text):
-    """Unwrap an OUTER ```json ... ``` fence without touching fences inside the JSON.
-
-    Deleting every fence in the reply also deleted the ones inside the envelope's own
-    "content" string, so an answer containing a code block arrived in Telegram as
-    unformatted text. Brace scanning never needed the inner fences gone — only the
-    wrapper — so we strip just that.
-    """
+    """Remove ```json ... ``` fences (anywhere in the text) without touching the JSON."""
     s = (text or "").strip()
-    opened = re.match(r"```[ \t]*[A-Za-z0-9_+-]*[ \t]*\r?\n?", s)
-    if opened:
-        s = s[opened.end():]
-        s = re.sub(r"\r?\n?[ \t]*```[ \t]*$", "", s)
-    return s.strip()
+    s = re.sub(r"```[ \t]*[A-Za-z0-9_+-]*[ \t]*\r?\n?", "", s)
+    return s.replace("```", "").strip()
 
 
 def _iter_json_objects(text, limit=12):
@@ -624,11 +615,6 @@ _REPLY_TOOLS = {"final_answer", "final", "finalanswer", "answer", "respond", "re
                 "reply", "message", "send_message", "send_reply", "say", "output",
                 "finish", "done", "return_answer", "user_response", "text"}
 _LIST_KEYS = ("calls", "tool_calls", "actions", "tool_uses", "invocations", "steps")
-# Text fields used by invented action verbs (action:"clarify"/"ask"/"question"/...): the
-# body is a genuine message to the user, so it must be delivered, not dropped.
-_ASK_KEYS = ("question", "prompt", "ask", "clarification", "content", "message", "text",
-             "body", "summary", "explanation", "reason")
-_CHOICE_KEYS = ("choices", "options", "alternatives", "suggestions")
 _FINAL_KEYS = ("content", "final", "final_answer", "answer", "reply", "response",
                "message", "text", "output", "result")
 _REASON_KEYS = ("thought", "thoughts", "thinking", "reasoning", "rationale", "analysis",
@@ -636,11 +622,6 @@ _REASON_KEYS = ("thought", "thoughts", "thinking", "reasoning", "rationale", "an
 # Any key that marks an object as a machine envelope rather than a human reply.
 _ENVELOPE_KEYS = tuple(dict.fromkeys(_REASON_KEYS + ("action", "tool", "tool_name",
                                                      "tool_calls", "calls", "function")))
-# A JSON object whose first keys include a reasoning field — the fingerprint of a
-# leaked decision envelope, as opposed to a JSON snippet the user asked to see.
-_REASONING_OBJ_RE = re.compile(
-    r'\{[^{}]{0,400}?"(?:' + "|".join(_REASON_KEYS) + r')"\s*:',
-    re.IGNORECASE | re.DOTALL)
 
 
 def _first_key(obj, keys):
@@ -687,7 +668,7 @@ def _as_call(obj, valid_names):
     return {"name": name, "arguments": args if isinstance(args, dict) else {}}
 
 
-def _as_decision(obj, valid_names, allow_bare_final=True, allow_loose_call=True):
+def _as_decision(obj, valid_names, allow_bare_final=True):
     """Normalize any envelope dict to ('tools', calls) / ('final', text), else None.
 
     Recognized (in priority order): the contract's action+calls, a list of calls under any
@@ -697,11 +678,6 @@ def _as_decision(obj, valid_names, allow_bare_final=True, allow_loose_call=True)
     `allow_bare_final=False` for an object embedded in a longer reply: a JSON snippet the
     user asked for may well have a "message"/"text" key, and mistaking it for the envelope
     would replace the whole answer with that fragment.
-
-    `allow_loose_call=False` likewise for an embedded object: a fenced example the user
-    asked to SEE — {"action":"list","tool":"cronjob"} inside a prose answer — is not a
-    request to run cronjob. The contract's explicit action+calls shape is still honored
-    anywhere, because that one is unambiguous protocol.
     """
     if not isinstance(obj, dict):
         return None
@@ -721,15 +697,14 @@ def _as_decision(obj, valid_names, allow_bare_final=True, allow_loose_call=True)
             return "final", clean_final(val)
 
     # 3) a single inline tool call ({"thought":...,"tool":"X","arguments":{...}})
-    call = _as_call(obj, valid_names) if allow_loose_call else None
+    call = _as_call(obj, valid_names)
     if call:
         return "tools", [call]
 
     # 3b) an invented "answer the user" pseudo-tool carrying the finished reply. Only when
     #     the name is not a real tool, so a genuine Hermes tool is never shadowed.
     name = _first_key(obj, _NAME_KEYS)
-    if (allow_loose_call and isinstance(name, str)
-            and name.strip().lower().lstrip("_") in _REPLY_TOOLS):
+    if isinstance(name, str) and name.strip().lower().lstrip("_") in _REPLY_TOOLS:
         if valid_names is None or name.strip() not in valid_names:
             args = _coerce_args(_first_key(obj, _ARG_KEYS)) or {}
             body = _first_key(args, _FINAL_KEYS) if args else None
@@ -746,21 +721,6 @@ def _as_decision(obj, valid_names, allow_bare_final=True, allow_loose_call=True)
             val = _first_key(obj, _FINAL_KEYS)
             if isinstance(val, str) and val.strip():
                 return "final", clean_final(val)
-
-    # 5) an envelope with an INVENTED action verb ({"action":"clarify","question":...,
-    #    "choices":[...]}) — the text is a real message for the user, so deliver it
-    #    instead of dropping the turn. Observed in production (state.db id 48).
-    if action and action not in ("tools", "final"):
-        ask = _first_key(obj, _ASK_KEYS)
-        if isinstance(ask, str) and ask.strip():
-            body = clean_final(ask)
-            opts = _first_key(obj, _CHOICE_KEYS)
-            if isinstance(opts, list):
-                picks = [str(o).strip() for o in opts if str(o).strip()]
-                if picks:
-                    body += "\n\n" + "\n".join("- " + p for p in picks)
-            log.info("recovered a user-facing message from action=%r envelope", action)
-            return "final", body.strip()
     return None
 
 
@@ -781,35 +741,21 @@ def clean_final(text):
         s = s[:min(idxs)]
     # 3) Strip any orphan tool tags left behind.
     s = re.sub(r"</?(" + "|".join(_TOOLTAGS) + r")\b[^>]*>", "", s, flags=re.DOTALL)
-    # 4) Drop a leaked machine envelope, fenced or bare — but ONLY a real leak. A small
-    #    JSON snippet the user ASKED to see ("muestrame este JSON: {...}") is part of the
-    #    answer, and blanket-stripping it delivered a mutilated reply with the requested
-    #    block missing. So an object is removed only when it dominates the message (the
-    #    reply IS the envelope) or when it carries a reasoning key — nobody ever asks to
-    #    see {"thought": ...}, so that key is the unambiguous leak signature.
-    total = max(len(s), 1)
-    for m in reversed(list(re.finditer(
-            r'\{\s*\"(?:' + "|".join(_ENVELOPE_KEYS) + r')\"\s*:', s, flags=re.IGNORECASE))):
+    # 4) Drop a fenced ```json {...}``` machine envelope if one slipped through — any of
+    #    the shapes the brain drifts into, not just {"action":...}.
+    s = re.sub(r"```(?:json)?\s*\{\s*\"(?:" + "|".join(_ENVELOPE_KEYS) + r")\".*?```",
+               "", s, flags=re.DOTALL | re.IGNORECASE)
+    # 5) Drop a bare (unfenced) envelope object anywhere in the text. A user-facing reply
+    #    never legitimately starts a line with {"thought": / {"tool": / {"action": ...
+    for m in re.finditer(r'\{\s*\"(?:' + "|".join(_ENVELOPE_KEYS) + r')\"\s*:', s,
+                         flags=re.IGNORECASE):
         obj = _balanced_object(s, m.start())
-        if obj is None:             # truncated envelope — nothing useful after it
-            if _is_reasoning_envelope(s[m.start():]) or len(s) - m.start() >= 0.5 * total:
-                s = s[:m.start()]
-            continue
-        if len(obj) >= 0.5 * total or _is_reasoning_envelope(obj):
-            start, end = m.start(), m.start() + len(obj)
-            s = s[:start] + s[end:]
-    # An emptied ```json fence would otherwise stay behind as a bare ``` pair.
-    s = re.sub(r"```[ \t]*[A-Za-z0-9_+-]*[ \t]*\r?\n?\s*```", "", s)
+        if obj:
+            s = s.replace(obj, "")
+        else:                       # truncated envelope — nothing useful after it
+            s = s[:m.start()]
+            break
     return s.strip()
-
-
-def _is_reasoning_envelope(chunk):
-    """True if `chunk` opens a JSON object carrying a reasoning key (thought/thinking/...).
-
-    That key is the fingerprint of a leaked decision envelope: it is the model's
-    private thinking, never something a user asked to be shown.
-    """
-    return bool(_REASONING_OBJ_RE.search(chunk or ""))
 
 
 def _parse_native_tool_calls(text):
@@ -912,33 +858,6 @@ _LOOKS_LIKE_TOOLJSON = re.compile(
 )
 
 
-def _is_machine_envelope(text, min_share=0.6):
-    """True only when the reply IS (mostly) a machine envelope — not merely mentions one.
-
-    `_LOOKS_LIKE_TOOLJSON` alone is a substring test, so a legitimate long answer that
-    QUOTES json ("notes": ..., "action": ...) used to be classified as machine output and
-    suppressed: the user got the honest-failure note instead of their finished answer
-    (observed on real 9k-char replies, hermes state.db ids 3673/3701/3733/12876/12927).
-    An envelope is only an envelope if the JSON dominates the reply, so we require the
-    match to sit inside a balanced object that covers most of the text.
-    """
-    s = _strip_fences(text or "")
-    if not s:
-        return False
-    m = _LOOKS_LIKE_TOOLJSON.search(s)
-    if not m:
-        return False
-    if s.lstrip().startswith("{") and len(s) <= 400:
-        return True          # short, starts as an object: an envelope even if truncated
-    # Find the object containing the match and measure how much of the reply it is.
-    for start in (i for i, ch in enumerate(s) if ch == "{" and i <= m.start()):
-        obj = _balanced_object(s, start)
-        if obj and start + len(obj) > m.start():
-            return len(obj) >= min_share * len(s)
-    # Unbalanced/truncated: envelope only if the reply begins as one.
-    return s.lstrip().startswith("{") and m.start() < 0.25 * len(s)
-
-
 def parse_decision(text, valid_names=None):
     """Return ('tools', [calls]) or ('final', content).
 
@@ -963,12 +882,7 @@ def parse_decision(text, valid_names=None):
         # An object that IS essentially the whole reply may use any final-text key; one
         # embedded in a longer answer must look like a real envelope to be trusted.
         sole = len(chunk) >= 0.9 * body_len
-        # A loose {"tool": ...} shape only counts as an envelope when the JSON is most of
-        # the reply; embedded in prose it is far more likely an example the user asked to
-        # see than a real call (which would silently discard the finished answer).
-        dominant = len(chunk) >= 0.6 * body_len
-        decided = _as_decision(obj, valid_names, allow_bare_final=sole,
-                               allow_loose_call=dominant)
+        decided = _as_decision(obj, valid_names, allow_bare_final=sole)
         if decided is None:
             continue
         kind, value = decided
@@ -992,16 +906,15 @@ def parse_decision(text, valid_names=None):
     # If the reply CLEARLY looks like a (broken) tool/decision attempt but nothing
     # was salvageable, never dump the raw JSON to the chat — return empty so the
     # do_POST guard sends a safe placeholder instead.
-    if _is_machine_envelope(text):
+    if (_LOOKS_LIKE_TOOLJSON.search(text or "")
+            or _strip_fences(text).lstrip().startswith("{")):
         log.warning("unparseable tool/decision JSON in reply; will attempt repair")
         return "final", ""
 
     cleaned = clean_final(text)
     # Last line of defence: if stripping the envelopes left nothing, or what's left still
     # reads as machine output, don't ship it to the user — let the repair path handle it.
-    # `_is_machine_envelope` (not a bare substring test) so a real answer that merely
-    # QUOTES json survives instead of being replaced by the honest-failure note.
-    if not cleaned or _is_machine_envelope(cleaned):
+    if not cleaned or _LOOKS_LIKE_TOOLJSON.search(cleaned):
         log.warning("reply had no user-facing text after envelope strip; will attempt repair")
         return "final", ""
     return "final", cleaned
@@ -1518,14 +1431,6 @@ class Handler(BaseHTTPRequestHandler):
                     })
             else:
                 value = clean_final(value)
-                if value.strip() and _is_machine_envelope(value):
-                    # Absolute last gate before the chat: even after parse + repair +
-                    # clean_final, never hand the user a machine envelope (the "thinking
-                    # tokens and JSON instead of an answer" failure). Empty it out so the
-                    # honest fallback below speaks instead.
-                    log.warning("blocked a machine envelope at the send gate (%d chars)",
-                                len(value))
-                    value = ""
                 if not value.strip():
                     # Honest fallback — never a fake success like "Listo.".
                     value = "No pude generar una respuesta esta vez. Puedes reformular?"

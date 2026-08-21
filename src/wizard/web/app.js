@@ -1249,6 +1249,13 @@
         if (!S.repo || S.repo === "Walt9819/olivaw") S.repo = d.repo || S.repo;
       }
       S._max = Math.max(S._max || 0, S.step || 0);
+      // Deep link: #rescue / #channels / #agent … opens straight to that view. The desktop
+      // shortcut and support links can point right at the help console.
+      var want = (location.hash || "").replace(/^#/, "").trim();
+      if (want) {
+        var idx = STEPS.map(function (x) { return x.id; }).indexOf(want);
+        if (idx >= 0) { S.step = idx; S._max = Math.max(S._max || 0, idx); }
+      }
       render();
     }).catch(function () {
       el("panel").innerHTML = '<h1>No pude conectar con el asistente.</h1>' +

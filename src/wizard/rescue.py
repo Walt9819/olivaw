@@ -88,8 +88,13 @@ def _ports():
     return sorted(set(ports))
 
 
-def collect_context(install_dir=None):
-    """Snapshot of the installation for the model (and for the UI status strip)."""
+def collect_context(install_dir=None, fast=False):
+    """Snapshot of the installation.
+
+    fast=True is for the UI status strip: it skips the two subprocess probes (hermes gateway
+    status / claude auth status) which can each take many seconds. Blocking the help screen
+    for ~25s is unacceptable precisely when something is broken, so the strip shows the
+    instant facts (ports, files) and the full probe runs inside the job."""
     inst = install_dir or INSTALL_DIR
     ctx = {"install_dir": inst, "platform": sys.platform, "python": sys.executable}
 
@@ -117,7 +122,7 @@ def collect_context(install_dir=None):
     hp = which("hermes")
     ctx["hermes_installed"] = bool(hp)
     ctx["hermes_gateway_state"] = "unknown"
-    if hp:
+    if hp and not fast:
         r = run([hp, "gateway", "status"], timeout=25)
         blob = (r["out"] or "") + " " + (r["err"] or "")
         ctx["hermes_gateway"] = redact(blob[:400])
@@ -132,7 +137,7 @@ def collect_context(install_dir=None):
             ctx["hermes_gateway_state"] = "stopped"
     cl = which("claude")
     ctx["claude_installed"] = bool(cl)
-    if cl:
+    if cl and not fast:
         r = run([cl, "auth", "status"], timeout=12)
         ctx["claude_auth"] = redact((r["out"] or r["err"])[:300])
 
