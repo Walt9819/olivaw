@@ -493,10 +493,45 @@ def maybe_update(cfg, state):
         log("deferring update: an agent is busy / not idle yet")
         return
     if apply_update(cfg, state, rel) and state.get("launcher_changed"):
-        log("launcher.py changed; re-exec'ing supervisor")
+        log("launcher.py changed; restarting supervisor")
         stop_bridge(state.get("child"))
         _stop_extras(state)
-        os.execv(sys.executable, [sys.executable, SELF])  # new launcher will relaunch bridges
+        # If the restart cannot happen, DO NOT leave the machine with nothing running: the code
+        # is already updated, so keep serving under this (older) supervisor instead.
+        if not respawn_self():
+            state["child"] = start_bridge(cfg)
+            _reconcile_extras(cfg, state)
+
+
+def respawn_self():
+    """Hand over to the NEW launcher.py. Returns False if it could not be done.
+
+    os.execv is the obvious way and it is WRONG on Windows: the CRT builds the child's command
+    line by joining argv WITHOUT quoting, so an interpreter path containing a space (the default
+    "C:\\Program Files\\Python312\\pythonw.exe") makes the child treat the second half of that
+    path as its script name and exit immediately - silently, because pythonw.exe has no console
+    to report it on. The result was the worst possible failure: every update that touched
+    launcher.py killed the supervisor AND the bridge, so the agent went dark until the next
+    login, with nothing in the log after "re-exec'ing".
+
+    subprocess.Popen quotes properly, and DETACHED_PROCESS means the new supervisor is not tied
+    to this one's console or lifetime."""
+    if os.name == "nt":
+        DETACHED_PROCESS, CREATE_NO_WINDOW = 0x00000008, 0x08000000
+        try:
+            subprocess.Popen([sys.executable, SELF], cwd=INSTALL_DIR, close_fds=True,
+                             creationflags=DETACHED_PROCESS | CREATE_NO_WINDOW)
+        except Exception as e:  # noqa: BLE001
+            log(f"could not restart the supervisor ({e}); staying up with the old launcher")
+            return False
+        log("new supervisor started; this one is exiting")
+        os._exit(0)     # the log write above already flushed; skip interpreter teardown
+    try:
+        os.execv(sys.executable, [sys.executable, SELF])
+    except Exception as e:  # noqa: BLE001
+        log(f"could not restart the supervisor ({e}); staying up with the old launcher")
+        return False
+    return True
 
 
 def _ensure_app_shortcut():
