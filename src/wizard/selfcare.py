@@ -123,8 +123,10 @@ carpeta de exportación: falla con archivos grandes.
    mensaje, no como un informe:
    - Solo lo RELEVANTE para él: lo que decidió y quedó guardado, los compromisos con fecha, y lo que
      necesita de su lado. Nada de rutas de archivos, ni "tarea completada", ni contabilidad interna.
-   - Máximo 6 líneas cortas, sin encabezados ni tablas. Si hay algo que él debe hacer o confirmar,
-     que sea la última línea y que se entienda de un vistazo.
+   - LÍMITE DURO: 900 caracteres. Máximo 6 líneas cortas, sin encabezados ni tablas. Si te pasas,
+     recórtalo TÚ antes de responder: si el mensaje se pasa de largo, la plataforma lo reemplaza por
+     un aviso de "truncado" y el dueño no recibe nada útil. El detalle ya quedó en el vault.
+   - Si hay algo que él debe hacer o confirmar, que sea la última línea y se entienda de un vistazo.
    - Si la noche no dio nada que valga la pena: UNA sola línea diciéndolo (por ejemplo
      "🌙 Noche tranquila: nada nuevo que guardar."). No inventes contenido para tener algo que decir.
    - Si algo se te quedó a medias o falló, dilo en una línea: un aviso honesto vale más que un
@@ -175,8 +177,10 @@ para leer los archivos grandes; NO uses search_files sobre la carpeta de exporta
 6) AVISA AL DUEÑO — llega a su canal principal (Telegram), en su teléfono. Como mensaje, no como
    informe: 2-3 aciertos, 2-3 fallos (con el ejemplo real, en media línea), lo que YA cambiaste, y
    como máximo 2 preguntas o propuestas que necesiten su decisión — al final y numeradas, para que
-   pueda contestar "1" o "2". Máximo 12 líneas cortas, sin encabezados ni tablas. El repaso completo
-   queda en el vault; el mensaje es el resumen que se lee de pie."""
+   pueda contestar "1" o "2". LÍMITE DURO: 1200 caracteres, máximo 12 líneas cortas, sin encabezados
+   ni tablas — si te pasas, recórtalo TÚ: un mensaje demasiado largo lo reemplaza la plataforma por
+   un aviso de "truncado" y el dueño no recibe nada. El repaso completo queda en el vault; el
+   mensaje es el resumen que se lee de pie."""
 
 
 JOBS = {
