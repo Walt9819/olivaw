@@ -119,8 +119,16 @@ carpeta de exportación: falla con archivos grandes.
 4) LÍMITES: escribe solo dentro de {ws} (incluido el vault). No toques NUNCA la instalación de Olivaw
    ni su código. No borres notas: solo añadir o corregir. Al final borra "{tmp}".
 
-5) CIERRA con 3-6 líneas para el dueño: qué valía guardar del día, qué notas tocaste, qué queda
-   pendiente de su lado."""
+5) AVISA AL DUEÑO — y esto llega a su canal principal (Telegram), en su teléfono. Escribe como un
+   mensaje, no como un informe:
+   - Solo lo RELEVANTE para él: lo que decidió y quedó guardado, los compromisos con fecha, y lo que
+     necesita de su lado. Nada de rutas de archivos, ni "tarea completada", ni contabilidad interna.
+   - Máximo 6 líneas cortas, sin encabezados ni tablas. Si hay algo que él debe hacer o confirmar,
+     que sea la última línea y que se entienda de un vistazo.
+   - Si la noche no dio nada que valga la pena: UNA sola línea diciéndolo (por ejemplo
+     "🌙 Noche tranquila: nada nuevo que guardar."). No inventes contenido para tener algo que decir.
+   - Si algo se te quedó a medias o falló, dilo en una línea: un aviso honesto vale más que un
+     resumen limpio."""
 
 
 def weekly_prompt(ws=None, vault=None):
@@ -164,8 +172,11 @@ para leer los archivos grandes; NO uses search_files sobre la carpeta de exporta
 5) ESCRIBE el repaso en {mem}/reviews/AAAA-Www.md con cuatro apartados: qué funcionó (con ejemplos),
    qué no (con ejemplos), qué cambié esta semana, qué propongo. Enlázalo desde {mem}/_Index.md.
 
-6) CIERRA con un mensaje corto al dueño: 2-3 aciertos, 2-3 fallos, lo que YA cambiaste, y como
-   máximo 2 preguntas o propuestas que necesiten su decisión."""
+6) AVISA AL DUEÑO — llega a su canal principal (Telegram), en su teléfono. Como mensaje, no como
+   informe: 2-3 aciertos, 2-3 fallos (con el ejemplo real, en media línea), lo que YA cambiaste, y
+   como máximo 2 preguntas o propuestas que necesiten su decisión — al final y numeradas, para que
+   pueda contestar "1" o "2". Máximo 12 líneas cortas, sin encabezados ni tablas. El repaso completo
+   queda en el vault; el mensaje es el resumen que se lee de pie."""
 
 
 JOBS = {
@@ -249,9 +260,16 @@ def _deliver_target(explicit=None):
     one created here has no origin, so prefer telegram when it is configured."""
     if explicit:
         return explicit
-    env_paths = [os.path.join(os.path.expanduser("~"), ".hermes", ".env"),
-                 os.path.join(os.environ.get("LOCALAPPDATA", ""), "hermes", "hermes-agent",
-                              ".env")]
+    local = os.environ.get("LOCALAPPDATA", "")
+    home = os.path.expanduser("~")
+    # Order matters only for speed; the first file that shows a Telegram setup wins. The first
+    # entry is the one this actually lives in on Windows - missing it is why the routines were
+    # created with `origin` and their summaries never left the cron session.
+    env_paths = [os.path.join(local, "hermes", ".env"),
+                 os.path.join(home, ".hermes", ".env"),
+                 os.path.join(local, "hermes", "hermes-agent", ".env"),
+                 os.path.join(home, ".hermes", "profiles", "default", ".env"),
+                 os.path.join(local, "hermes", "profiles", "default", ".env")]
     for p in env_paths:
         try:
             with open(p, encoding="utf-8", errors="replace") as fh:
