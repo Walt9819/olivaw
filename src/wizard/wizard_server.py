@@ -667,7 +667,14 @@ def main():
     port = _free_port()
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = "http://127.0.0.1:%d/?t=%s" % (port, TOKEN)
-    print("\n  Asistente de configuración de Hermes")
+    # `--sos` opens straight on the help console instead of the setup flow, so a shortcut can
+    # take a stuck owner to Claude in one click (the bridge being down is exactly when the
+    # normal path through Telegram is unavailable).
+    sos = "--sos" in sys.argv[1:]
+    if sos:
+        url += "#rescue"
+    print("\n  %s" % ("Ayuda de Olivaw — habla con Claude" if sos
+                        else "Asistente de configuración de Hermes"))
     print("  Abre esta dirección en tu navegador si no se abre sola:\n")
     print("   ", url, "\n")
     try:

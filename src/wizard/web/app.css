@@ -221,6 +221,18 @@ details[open] summary{color:var(--ink)}
 .ev-text:not(.md){white-space:pre-wrap}
 .ev .spinner{display:inline-block;vertical-align:-2px;margin-right:6px;color:var(--accent)}
 
+/* Floating SOS: only when the sidebar (which holds the normal help button) is hidden.
+   Without this, a window under 861px wide has no way at all to reach the help console. */
+/* sits ABOVE the footer nav: at 760px it otherwise lands on top of "Continuar" */
+.sos-fab{position:fixed; right:16px; bottom:82px; z-index:55; width:48px; height:48px;
+  border-radius:50%; border:none; cursor:pointer; display:none; place-items:center;
+  font-size:23px; line-height:1; background:var(--grad); color:#fff; box-shadow:var(--shadow);
+  transition:transform .15s}
+.sos-fab:hover{transform:translateY(-2px) scale(1.04)}
+.sos-fab:active{transform:scale(.97)}
+body.sos-open .sos-fab{display:none !important}
+@media(max-width:860px){ .sos-fab{display:grid} }
+
 /* ── SOS console overlay (support, not a setup step) ───────────────────────── */
 body.sos-open{overflow:hidden}
 .sos{position:fixed; inset:0; z-index:60; background:var(--bg);

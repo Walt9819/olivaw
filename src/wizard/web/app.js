@@ -1636,6 +1636,9 @@
   (function wireSos() {
     var hb = el("helpBtn");
     if (hb) hb.onclick = function () { openSos(); };
+    // the floating twin, for when the sidebar is hidden
+    var fab = el("sosFab");
+    if (fab) fab.onclick = function () { openSos(); };
     if (el("sosClose")) el("sosClose").onclick = closeSos;
     if (el("sosNew")) el("sosNew").onclick = newConv;
     var send = el("rescueSend");

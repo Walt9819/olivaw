@@ -39,6 +39,11 @@
     </main>
   </div>
 
+  <!-- Always-reachable SOS: the sidebar (and its help button) is hidden on narrow windows,
+       which is exactly when something is broken and help must still be one click away. -->
+  <button class="sos-fab" id="sosFab" title="¿Algo falla? Habla con Claude"
+          aria-label="Ayuda: hablar con Claude">🆘</button>
+
   <!-- SOS console: an overlay, opened only by the 🆘 button (or #rescue). Not a wizard step:
        it is support, not setup — and it must be reachable at any moment, even mid-install. -->
   <div class="sos" id="sos" hidden>

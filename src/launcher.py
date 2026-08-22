@@ -534,6 +534,65 @@ def respawn_self():
     return True
 
 
+def _vbs_needs_write(path):
+    """True if the .vbs is missing or points at an interpreter that no longer exists."""
+    if not os.path.isfile(path):
+        return True
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            cur = fh.read()
+        m = re.search(r'""([^"]+?python[w]?\.exe)""', cur)
+        return not (m and os.path.isfile(m.group(1)))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _write_launcher_vbs(path, pyw, wiz, sos=False):
+    """Write a windowless launcher for the wizard UI (optionally straight to the console)."""
+    what = "help console" if sos else "setup/help UI"
+    args = ' ""--sos""' if sos else ""
+    body = [
+        "' Opens the Olivaw %s (no console). Auto-repaired by the supervisor." % what,
+        'Set s = CreateObject("Wscript.Shell")',
+        's.CurrentDirectory = "%s"' % INSTALL_DIR,
+        's.Run """%s"" ""%s""%s", 0, False' % (pyw, wiz, args),
+    ]
+    with open(path, "w", encoding="ascii", errors="replace") as fh:
+        fh.write("\n".join(body) + "\n")
+
+
+def _start_menu_dir():
+    return os.path.join(os.environ.get("APPDATA", ""), "Microsoft", "Windows",
+                        "Start Menu", "Programs")
+
+
+def _make_lnk(lnk, target, description):
+    """Create a .lnk if it is missing (WScript can write shortcuts; no pywin32 needed)."""
+    if not lnk or os.path.exists(lnk) or not os.path.isdir(os.path.dirname(lnk)):
+        return
+    mk = os.path.join(INSTALL_DIR, "_mklnk.vbs")
+    script = [
+        'Set s = CreateObject("WScript.Shell")',
+        'Set l = s.CreateShortcut("%s")' % lnk,
+        'l.TargetPath = "%s"' % target,
+        'l.WorkingDirectory = "%s"' % INSTALL_DIR,
+        'l.Description = "%s"' % description,
+        "l.Save",
+    ]
+    try:
+        with open(mk, "w", encoding="ascii", errors="replace") as fh:
+            fh.write("\n".join(script) + "\n")
+        subprocess.run(["wscript.exe", "//B", mk], timeout=30)
+        log("created the shortcut %s" % os.path.basename(lnk))
+    except Exception as e:  # noqa: BLE001
+        log("could not create %s: %s" % (os.path.basename(lnk), e))
+    finally:
+        try:
+            os.remove(mk)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _ensure_app_shortcut():
     """Keep the "Olivaw" icon working forever, with no manual maintenance.
 
@@ -565,15 +624,15 @@ def _ensure_app_shortcut():
             except Exception:
                 needs = True
         if needs:
-            body = [
-                "' Opens the Olivaw setup/help UI (no console). Auto-repaired by the supervisor.",
-                'Set s = CreateObject("Wscript.Shell")',
-                's.CurrentDirectory = "%s"' % INSTALL_DIR,
-                's.Run """%s"" ""%s""", 0, False' % (pyw, wiz),
-            ]
-            with open(vbs, "w", encoding="ascii", errors="replace") as fh:
-                fh.write("\n".join(body) + "\n")
+            _write_launcher_vbs(vbs, pyw, wiz)
             log("repaired the app-shortcut launcher (interpreter path had changed)")
+
+        # A dedicated SOS launcher: straight to the help console, no setup flow in the way.
+        sos_vbs = os.path.join(INSTALL_DIR, "Olivaw-SOS.vbs")
+        if _vbs_needs_write(sos_vbs):
+            _write_launcher_vbs(sos_vbs, pyw, wiz, sos=True)
+        _make_lnk(os.path.join(_start_menu_dir(), "Olivaw SOS.lnk"), sos_vbs,
+                  "Hablar con Claude sobre Olivaw (ayuda directa)")
 
         # Recreate the desktop shortcut if the user lost it (WScript can make .lnk files).
         desktop = os.path.join(os.path.expanduser("~"), "Desktop")
