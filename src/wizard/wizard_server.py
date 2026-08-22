@@ -29,11 +29,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from wizard import (agents_registry, channels, checks, config_writer, hermes_ctl,
-                        providers, rescue, telegram_setup, usecases)
+                        providers, rescue, selfcare, telegram_setup, usecases)
     from wizard.procutil import http_json, which
 else:
     from . import (agents_registry, channels, checks, config_writer, hermes_ctl,
-                   providers, rescue, telegram_setup, usecases)
+                   providers, rescue, selfcare, telegram_setup, usecases)
     from .procutil import http_json, which
 
 HERE = os.path.dirname(os.path.abspath(__file__))          # .../src/wizard
@@ -415,6 +415,23 @@ class Handler(BaseHTTPRequestHandler):
             md = config_writer.build_claude_md(
                 body.get("identity", {}), body.get("usecase_ids", []))
             return {"ok": True, "markdown": md}
+
+        if route == "selfcare/status":
+            return selfcare.status()
+
+        if route == "selfcare/preview":
+            return selfcare.preview(body.get("key", "daily"))
+
+        if route == "selfcare/install":
+            return selfcare.install(keys=body.get("keys") or ("daily", "weekly"),
+                                    schedules=body.get("schedules") or {},
+                                    deliver=body.get("deliver") or None)
+
+        if route == "selfcare/run":
+            return selfcare.run_now(body.get("key", "daily"))
+
+        if route == "selfcare/remove":
+            return selfcare.remove(keys=body.get("keys") or ("daily", "weekly"))
 
         if route == "rescue/context":
             return {"ok": True, **rescue.collect_context(INSTALL_DIR, fast=True)}

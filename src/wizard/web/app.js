@@ -831,11 +831,128 @@
       '<button class="btn btn-primary btn-sm" id="smtpSave">Guardar en el agente</button></div>' +
       chLine("smtpPill") + '</details>' +
 
+      // Sleep + weekly retrospective: the agent's own upkeep, not a channel — but this is the
+      // post-setup page, and it is where someone finishing the wizard will actually see it.
+      '<h2 style="margin-top:26px">Rutinas automáticas <span class="muted" ' +
+      'style="font-weight:400;font-size:15px">(recomendado)</span></h2>' +
+      '<p class="muted small" style="margin-top:-6px">Igual que una persona: de madrugada repasa ' +
+      'el día y guarda lo que importa; los domingos revisa su semana y se corrige.</p>' +
+      '<div id="selfcareBox" class="card pad"><span class="muted small">Revisando…</span></div>' +
+
       '<p class="muted small" style="margin-top:16px">Cuando termines (o si no necesitas más ' +
       'canales), pulsa «Cerrar asistente».</p>';
   }
 
+  // ── self-care routines (nightly consolidation + weekly retrospective) ───────
+  function selfcareHtml(st) {
+    if (!st || !st.ok) {
+      return '<span class="muted small">' +
+        esc((st && st.detail) || "No pude leer las rutinas programadas.") + '</span>';
+    }
+    var rows = ["daily", "weekly"].map(function (k) {
+      var j = (st.jobs || {})[k] || {};
+      var on = !!j.installed;
+      return '<div class="sc-row">' +
+        '<div class="sc-main"><div class="sc-title">' +
+        '<span class="pill ' + (on ? "ok" : "load") + '">' + (on ? "✓ activa" : "inactiva") +
+        '</span> <b>' + esc(j.label || k) + '</b></div>' +
+        '<div class="muted small">' + esc(j.what || "") + '</div>' +
+        (on ? '<div class="muted small">Horario <code>' + esc(j.schedule || "") + '</code>' +
+              (j.next_run ? ' · próxima: ' + esc(String(j.next_run).slice(0, 16)) : "") +
+              (j.last_run ? ' · última: ' + esc(String(j.last_run).slice(0, 16)) : "") +
+              '</div>'
+            : '<div class="muted small">Se instalará a las ' +
+              esc(cronHuman(j.default_schedule || "")) + '</div>') +
+        '</div>' +
+        '<div class="sc-side">' +
+        (on ? '<button class="btn btn-soft btn-sm" data-scrun="' + k + '">Probar ahora</button>'
+            : '') +
+        '<button class="btn btn-ghost btn-sm" data-scview="' + k + '">Ver instrucciones</button>' +
+        '</div></div>';
+    }).join("");
+    var anyOff = !((st.jobs || {}).daily || {}).installed ||
+                 !((st.jobs || {}).weekly || {}).installed;
+    return rows +
+      '<div class="row" style="margin-top:12px;gap:10px;flex-wrap:wrap">' +
+      '<button class="btn btn-primary btn-sm" id="scInstall">' +
+      (anyOff ? "Activar las rutinas" : "Reinstalar / actualizar") + '</button>' +
+      '<button class="btn btn-ghost btn-sm" id="scRemove">Quitar</button>' +
+      '<span class="muted small">Memoria larga: <code>' +
+      esc(st.agent_memory || st.vault || st.workspace || "") + '</code></span></div>' +
+      '<div id="scOut" style="margin-top:10px"></div>';
+  }
+
+  function cronHuman(spec) {
+    var p = String(spec || "").split(/\s+/);
+    if (p.length < 5) return spec;
+    var days = { "0": "domingos", "1": "lunes", "2": "martes", "3": "miércoles",
+                 "4": "jueves", "5": "viernes", "6": "sábados" };
+    var hhmm = ("0" + p[1]).slice(-2) + ":" + ("0" + p[0]).slice(-2);
+    if (p[4] === "*") return "las " + hhmm + " todos los días";
+    return "los " + (days[p[4]] || p[4]) + " a las " + hhmm;
+  }
+
+  function paintSelfcare() {
+    var box = el("selfcareBox");
+    if (!box) return;
+    api("selfcare/status", {}).then(function (st) {
+      box = el("selfcareBox");
+      if (!box) return;
+      box.innerHTML = selfcareHtml(st);
+      wireSelfcare();
+    });
+  }
+
+  function wireSelfcare() {
+    var box = el("selfcareBox");
+    if (!box) return;
+    var out = el("scOut");
+    if (el("scInstall")) {
+      el("scInstall").onclick = function () {
+        var b = this;
+        b.disabled = true; b.textContent = "Activando…";
+        api("selfcare/install", {}).then(function (r) {
+          if (r && r.ok) toast("Rutinas activadas 🌙");
+          else if (out) out.innerHTML = '<div class="callout warn small">' +
+            esc((r && (r.detail || JSON.stringify(r.results || {}))) || "No pude activarlas") +
+            '</div>';
+          paintSelfcare();
+        });
+      };
+    }
+    if (el("scRemove")) {
+      el("scRemove").onclick = function () {
+        api("selfcare/remove", {}).then(function () { toast("Rutinas quitadas"); paintSelfcare(); });
+      };
+    }
+    Array.prototype.forEach.call(box.querySelectorAll("[data-scrun]"), function (b) {
+      b.onclick = function () {
+        b.disabled = true; b.textContent = "Encolando…";
+        api("selfcare/run", { key: b.getAttribute("data-scrun") }).then(function (r) {
+          b.disabled = false; b.textContent = "Probar ahora";
+          if (out) {
+            out.innerHTML = '<div class="callout small">' +
+              (r && r.ok ? "Se ejecutará en el próximo tick del programador (menos de un minuto). " +
+                           "Te llegará el resumen por tu canal."
+                         : esc((r && r.detail) || "No pude encolarla")) + '</div>';
+          }
+        });
+      };
+    });
+    Array.prototype.forEach.call(box.querySelectorAll("[data-scview]"), function (b) {
+      b.onclick = function () {
+        api("selfcare/preview", { key: b.getAttribute("data-scview") }).then(function (r) {
+          if (!r || !r.ok || !out) return;
+          out.innerHTML = '<details open><summary>' + esc(r.label) +
+            ' — instrucciones que ejecutará</summary><pre style="white-space:pre-wrap">' +
+            esc(r.prompt) + '</pre></details>';
+        });
+      };
+    });
+  }
+
   function eChannels() {
+    paintSelfcare();
     if (!S.applied) return;
     var prof = targetProfile(), ws = targetWorkspace();
 
