@@ -325,15 +325,63 @@ def _any_mid_turn(cfg, state):
 
 
 # ── bridge process management ────────────────────────────────────────────────
+_adopted = set()
+
+
 def start_bridge(cfg):
+    """Start the bridge, or adopt one that is already serving.
+
+    Spawning a second bridge on a taken port produces a process that dies instantly, which the
+    supervisor then treats as healthy. If something is already answering, leave it alone."""
+    if bridge_status(cfg):
+        url = cfg.get("bridge_url", "")
+        if url not in _adopted:
+            _adopted.add(url)
+            log(f"a bridge is already serving on {url}; adopting it instead of starting a second")
+        return None
+    _adopted.discard(cfg.get("bridge_url", ""))
     env = dict(os.environ)
     env.update(cfg.get("env") or {})
     cmd = list(cfg["bridge_cmd"])
     # Resolve a relative script path against the install dir.
     if len(cmd) >= 2 and not os.path.isabs(cmd[1]):
         cmd[1] = os.path.join(INSTALL_DIR, cmd[1])
+    script = cmd[1] if len(cmd) >= 2 else ""
+    if script and not os.path.isfile(script):
+        # e.g. a swap that went wrong: say so instead of spawning something that cannot run.
+        log(f"cannot start the bridge: {script} does not exist")
+        return None
     log(f"starting bridge: {cmd}")
     return subprocess.Popen(cmd, cwd=cfg.get("bridge_cwd", INSTALL_DIR), env=env)
+
+
+def _free_bridge_port(cfg):
+    """Kill whatever still holds the bridge port (an orphan from a previous generation).
+
+    Only used when we are about to run NEW code there: otherwise the old process keeps serving
+    and the update silently has no effect."""
+    url = cfg.get("bridge_url") or ""
+    m = re.search(r":(\d+)", url)
+    if not m:
+        return
+    port = m.group(1)
+    try:
+        out = subprocess.run(["netstat", "-ano"], capture_output=True, text=True,
+                             timeout=30).stdout
+    except Exception:  # noqa: BLE001
+        return
+    pids = set()
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 5 and parts[0].upper() == "TCP" and parts[1].endswith(":" + port) \
+                and parts[3].upper() == "LISTENING" and parts[4].isdigit():
+            pids.add(parts[4])
+    for pid in pids:
+        log(f"freeing port {port}: stopping leftover process {pid}")
+        try:
+            subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True, timeout=30)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def stop_bridge(child, timeout=15):
@@ -361,6 +409,42 @@ def wait_healthy(cfg, want_version=None, timeout=30):
 
 
 # ── the update itself ────────────────────────────────────────────────────────
+# Without these, an installation is not an installation.
+REQUIRED_FILES = ("launcher.py", "claude_bridge.py", os.path.join("wizard", "wizard_server.py"))
+
+
+def _replace_dir(new_dir, dest):
+    """Lay `new_dir` over `dest`, file by file.
+
+    NOT rmtree-then-move. On Windows the running bridge holds src/bridge.log open, and that
+    makes deleting *and* renaming the directory fail - the old code's
+    rmtree(..., ignore_errors=True) swallowed exactly that failure and then move() nested the
+    whole new tree at src/src, leaving the install with no launcher.py and no bridge. Copying
+    over the top is immune to open handles and cannot nest.
+
+    Files that the new release no longer ships stay behind deliberately: they are inert, and
+    pruning would risk deleting live state (session map, cached images, logs)."""
+    if not os.path.isdir(dest):
+        shutil.move(new_dir, dest)
+        return
+    for root, _dirs, files in os.walk(new_dir):
+        rel = os.path.relpath(root, new_dir)
+        target = dest if rel == "." else os.path.join(dest, rel)
+        os.makedirs(target, exist_ok=True)
+        for name in files:
+            shutil.copy2(os.path.join(root, name), os.path.join(target, name))
+    shutil.rmtree(new_dir, ignore_errors=True)
+
+
+def _verify_install(where=None):
+    """Missing pieces after a swap mean the install is broken; say which."""
+    base = where or SRC_DIR
+    missing = [f for f in REQUIRED_FILES if not os.path.isfile(os.path.join(base, f))]
+    if os.path.isdir(os.path.join(base, "src")):
+        missing.append("(a nested src/src directory should not exist)")
+    return missing
+
+
 def apply_update(cfg, state, rel):
     """Download, verify, swap, health-check, roll back on failure. Returns True on
     a successful version change (caller may re-exec if the launcher itself changed)."""
@@ -400,6 +484,11 @@ def apply_update(cfg, state, rel):
     stop_bridge(state.get("child"))
     state["child"] = None
     _stop_extras(state)
+    # An orphan from an earlier supervisor would keep serving the OLD code on that port and
+    # would answer the health check below, hiding a failed update. Take the port back.
+    if bridge_status(cfg):
+        _free_bridge_port(cfg)
+        time.sleep(1.5)
 
     # back up current code for rollback
     if os.path.isdir(BACKUP_DIR):
@@ -410,18 +499,24 @@ def apply_update(cfg, state, rel):
     old_version = read_version()
 
     try:
-        shutil.rmtree(SRC_DIR, ignore_errors=True)
-        shutil.move(new_src, SRC_DIR)
+        # Live state inside src/ (session map, logs) survives by construction: the new tree is
+        # copied over the old one, so files the release does not ship are left untouched.
+        _replace_dir(new_src, SRC_DIR)
         shutil.move(new_ver, VERSION_FILE)
         # refresh templates (defaults only — never the user's live config/CLAUDE.md)
         new_tpl = os.path.join(STAGING_DIR, "templates")
         if os.path.isdir(new_tpl):
-            dst_tpl = os.path.join(INSTALL_DIR, "templates")
-            shutil.rmtree(dst_tpl, ignore_errors=True)
-            shutil.move(new_tpl, dst_tpl)
+            _replace_dir(new_tpl, os.path.join(INSTALL_DIR, "templates"))
+        missing = _verify_install()
+        if missing:
+            raise RuntimeError("swap left the install incomplete: %s" % ", ".join(missing))
         _run_migrations(cfg, os.path.join(STAGING_DIR, "manifest.json"))
 
         state["child"] = start_bridge(cfg)
+        # The bridge WE started has to be the one that answers. Before this, an orphan bridge
+        # from an earlier supervisor could vouch for an install that had just been destroyed.
+        if state["child"] is not None and state["child"].poll() is not None:
+            raise RuntimeError("the new bridge exited immediately")
         if not wait_healthy(cfg, want_version=ver, timeout=40):
             raise RuntimeError("new bridge did not become healthy")
         _reconcile_extras(cfg, state)   # bring every extra agent back up on the new code
@@ -429,8 +524,10 @@ def apply_update(cfg, state, rel):
         log(f"update failed ({e}); rolling back to v{old_version}")
         stop_bridge(state.get("child")); state["child"] = None
         _stop_extras(state)
-        shutil.rmtree(SRC_DIR, ignore_errors=True)
-        shutil.move(os.path.join(BACKUP_DIR, "src"), SRC_DIR)
+        try:
+            _replace_dir(os.path.join(BACKUP_DIR, "src"), SRC_DIR)
+        except Exception as re_:  # noqa: BLE001
+            log(f"ROLLBACK FAILED ({re_}); the backup is still at {BACKUP_DIR}")
         if os.path.isfile(os.path.join(BACKUP_DIR, "VERSION")):
             shutil.copy2(os.path.join(BACKUP_DIR, "VERSION"), VERSION_FILE)
         state["child"] = start_bridge(cfg)
@@ -674,9 +771,12 @@ def main():
             # onboarding wizard) is picked up without needing a restart.
             cfg = load_config()
             poll = max(300, int(cfg.get("poll_minutes", 45)) * 60)
-            # keep-alive: restart the primary bridge if it died
-            if not state["child"] or state["child"].poll() is not None:
-                log("bridge not running; (re)starting")
+            # keep-alive: the question is "is the bridge serving?", not "is our handle
+            # alive?" - an adopted bridge has no handle, and a dead handle whose port still
+            # answers means someone else is serving.
+            ours_dead = (not state["child"]) or state["child"].poll() is not None
+            if ours_dead and not bridge_status(cfg):
+                log("bridge not answering; (re)starting")
                 state["child"] = start_bridge(cfg)
             # keep-alive + pick up newly-created / removed extra agents each loop
             _reconcile_extras(cfg, state)
