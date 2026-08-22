@@ -1792,7 +1792,14 @@
         if (!S.hermes_config) S.hermes_config = d.hermes_config || "";
         if (!S.repo || S.repo === "Walt9819/olivaw") S.repo = d.repo || S.repo;
       }
+      // "Already set up" was only remembered in THIS browser, so a different browser or cleared
+      // storage hid the extras step (channels, routines) for an agent that is demonstrably
+      // running. Trust the machine over localStorage: a live bridge means setup happened.
+      if (!S.applied && META.agents && META.agents.default && META.agents.default.bridge_up) {
+        S.applied = true;
+      }
       S._max = Math.max(S._max || 0, S.step || 0);
+      if (S.applied) S._max = STEPS.length - 1;
       // Deep link: #channels / #agent … opens straight to that step, and #rescue (or #sos)
       // opens the help console over whatever step you were on. The desktop shortcut and
       // support links can point right at the help console.
