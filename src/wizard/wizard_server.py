@@ -29,11 +29,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from wizard import (agents_registry, channels, checks, config_writer, hermes_ctl,
-                        providers, rescue, selfcare, telegram_setup, usecases)
+                        obsidian, proposals, providers, rescue, selfcare, telegram_setup,
+                        usecases)
     from wizard.procutil import http_json, which
 else:
-    from . import (agents_registry, channels, checks, config_writer, hermes_ctl,
-                   providers, rescue, selfcare, telegram_setup, usecases)
+    from . import (agents_registry, channels, checks, config_writer, hermes_ctl, obsidian,
+                   proposals, providers, rescue, selfcare, telegram_setup, usecases)
     from .procutil import http_json, which
 
 HERE = os.path.dirname(os.path.abspath(__file__))          # .../src/wizard
@@ -432,6 +433,28 @@ class Handler(BaseHTTPRequestHandler):
 
         if route == "selfcare/remove":
             return selfcare.remove(keys=body.get("keys") or ("daily", "weekly"))
+
+        # The long-term memory has to be readable by a person, not just writable by the agent.
+        if route == "obsidian/status":
+            return obsidian.status()
+
+        if route == "obsidian/install":
+            return obsidian.install()
+
+        if route == "obsidian/prepare":
+            return obsidian.prepare()
+
+        if route == "obsidian/open":
+            return obsidian.open_vault()
+
+        # What the agent proposes to build, and the owner's answer - which it reads back and
+        # learns from, so a no stays a no.
+        if route == "proposals/list":
+            return proposals.listing(int(body.get("limit") or 40))
+
+        if route == "proposals/decide":
+            return proposals.decide(body.get("id", ""), body.get("state", ""),
+                                    body.get("comment", ""))
 
         if route == "rescue/context":
             return {"ok": True, **rescue.collect_context(INSTALL_DIR, fast=True)}

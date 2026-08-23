@@ -831,6 +831,12 @@
       '<button class="btn btn-primary btn-sm" id="smtpSave">Guardar en el agente</button></div>' +
       chLine("smtpPill") + '</details>' +
 
+      // The long-term memory, seen from the owner's side: can HE open it?
+      '<h2 style="margin-top:26px">Memoria en Obsidian</h2>' +
+      '<p class="muted small" style="margin-top:-6px">Lo que tu agente recuerda son notas de ' +
+      'texto. En Obsidian puedes leerlas, corregirlas y ver cómo se conectan.</p>' +
+      '<div id="obsBox" class="card pad"><span class="muted small">Comprobando…</span></div>' +
+
       // Sleep + weekly retrospective: the agent's own upkeep, not a channel — but this is the
       // post-setup page, and it is where someone finishing the wizard will actually see it.
       '<h2 style="margin-top:26px">Rutinas automáticas <span class="muted" ' +
@@ -838,6 +844,13 @@
       '<p class="muted small" style="margin-top:-6px">Igual que una persona: de madrugada repasa ' +
       'el día y guarda lo que importa; los domingos revisa su semana y se corrige.</p>' +
       '<div id="selfcareBox" class="card pad"><span class="muted small">Revisando…</span></div>' +
+
+      // What came out of those routines and needs a yes or a no.
+      '<h2 style="margin-top:26px">Lo que Olivaw propone</h2>' +
+      '<p class="muted small" style="margin-top:-6px">Cuando ve algo que podría hacer por ti, lo ' +
+      'propone aquí y espera. No construye nada sin tu sí — y lo que descartes no vuelve a ' +
+      'proponerlo.</p>' +
+      '<div id="propBox" class="card pad"><span class="muted small">Cargando…</span></div>' +
 
       '<p class="muted small" style="margin-top:16px">Cuando termines (o si no necesitas más ' +
       'canales), pulsa «Cerrar asistente».</p>';
@@ -880,6 +893,182 @@
       '<span class="muted small">Memoria larga: <code>' +
       esc(st.agent_memory || st.vault || st.workspace || "") + '</code></span></div>' +
       '<div id="scOut" style="margin-top:10px"></div>';
+  }
+
+  // ── the vault, from the owner's side ──────────────────────────────────────
+  function obsHtml(st) {
+    if (!st || !st.ok) return '<span class="muted small">No pude comprobar Obsidian.</span>';
+    var job = st.install_job || {};
+    var steps = (st.steps || []).map(function (x) {
+      return '<div class="ob-step"><span class="ob-dot ' + (x.ok ? "on" : "off") + '">' +
+        (x.ok ? "✓" : "·") + '</span><span class="' + (x.ok ? "" : "muted") + '">' +
+        esc(x.label) + '</span></div>';
+    }).join("");
+    var btns = [];
+    if (!st.installed) {
+      btns.push(job.state === "running"
+        ? '<button class="btn btn-soft btn-sm" disabled>Instalando Obsidian…</button>'
+        : '<button class="btn btn-primary btn-sm" id="obsInstall">Instalar Obsidian</button>');
+    }
+    if (!st.registered || !st.vault_exists) {
+      btns.push('<button class="btn ' + (st.installed ? "btn-primary" : "btn-soft") +
+        ' btn-sm" id="obsPrepare">Preparar el vault</button>');
+    }
+    if (st.installed && st.vault_exists) {
+      btns.push('<button class="btn ' + (st.opened ? "btn-ghost" : "btn-primary") +
+        ' btn-sm" id="obsOpen">Abrir en Obsidian</button>');
+    }
+    btns.push('<button class="btn btn-ghost btn-sm" id="obsCheck">Volver a comprobar</button>');
+    return '<div class="ob-steps">' + steps + '</div>' +
+      '<div class="muted small" style="margin-top:8px">' +
+      (st.vault ? 'Vault: <code>' + esc(st.vault) + '</code> · ' + st.notes + ' notas' : 'Sin vault todavía') +
+      '</div>' +
+      (st.healthy ? "" : '<div class="callout small" style="margin:10px 0 0">' +
+        esc(st.detail || "") + '</div>') +
+      (job.state === "failed" && !st.installed
+        ? '<div class="callout warn small" style="margin:10px 0 0">No pude instalarlo solo. ' +
+          'Descárgalo de obsidian.md e instálalo a mano; luego pulsa «Volver a comprobar».</div>'
+        : "") +
+      '<div class="row" style="margin-top:12px;gap:10px;flex-wrap:wrap">' + btns.join("") +
+      '</div><div id="obsOut" style="margin-top:10px"></div>';
+  }
+
+  var obsPoll = null;
+  function paintObs() {
+    if (!el("obsBox")) return;
+    api("obsidian/status", {}).then(function (st) {
+      var box = el("obsBox");
+      if (!box) return;
+      box.innerHTML = obsHtml(st);
+      wireObs();
+      // A winget install takes minutes; keep looking until it lands or gives up.
+      var running = st && st.install_job && st.install_job.state === "running";
+      if (running && !obsPoll) obsPoll = setInterval(paintObs, 5000);
+      if (!running && obsPoll) { clearInterval(obsPoll); obsPoll = null; }
+    });
+  }
+
+  function wireObs() {
+    var out = el("obsOut");
+    function act(id, route, working, done) {
+      var b = el(id);
+      if (!b) return;
+      b.onclick = function () {
+        b.disabled = true;
+        var prev = b.textContent;
+        b.textContent = working;
+        api(route, {}).then(function (r) {
+          b.disabled = false; b.textContent = prev;
+          if (out && r && (r.detail || (r.problems && r.problems.length))) {
+            out.innerHTML = '<div class="callout ' + (r.ok ? "" : "warn") + ' small">' +
+              esc(r.detail || (r.problems || []).join(" · ")) + '</div>';
+          }
+          if (r && r.changed && r.changed.length && out) {
+            out.innerHTML = '<div class="callout small">' +
+              r.changed.map(esc).join("<br>") + '</div>';
+          }
+          if (done) toast(done);
+          paintObs();
+        });
+      };
+    }
+    act("obsInstall", "obsidian/install", "Instalando…", null);
+    act("obsPrepare", "obsidian/prepare", "Preparando…", "Vault listo 📓");
+    act("obsOpen", "obsidian/open", "Abriendo…", null);
+    act("obsCheck", "obsidian/status", "Comprobando…", null);
+  }
+
+  // ── proposals: the agent asks, the owner answers, the agent remembers ─────
+  function propHtml(r) {
+    if (!r || !r.ok) return '<span class="muted small">No pude leer las propuestas.</span>';
+    var pend = r.pending || [];
+    var decided = (r.proposals || []).filter(function (p) {
+      return p.state !== "pendiente";
+    });
+    var html = "";
+    if (!pend.length) {
+      html += '<span class="muted small">Nada pendiente de tu decisión. ' +
+        'La rutina nocturna te propondrá algo cuando vea un motivo real — no por rellenar.</span>';
+    }
+    html += pend.map(function (p) {
+      return '<div class="sc-row"><div class="sc-main">' +
+        '<div class="sc-title"><span class="pill load">te toca decidir</span> <b>' +
+        esc(p.title) + '</b></div>' +
+        (p.why ? '<div class="muted small">' + esc(p.why) + '</div>' : "") +
+        '<div class="muted small">' +
+        (p.category ? esc(p.category) : "") +
+        (p.effort ? ' · esfuerzo ' + esc(p.effort) : "") +
+        (p.proposed ? ' · propuesta el ' + esc(p.proposed) : "") + '</div>' +
+        (p.body ? '<details style="margin-top:4px"><summary class="small">Ver qué haría ' +
+          'exactamente</summary><div class="md small">' + mdHtml(p.body) + '</div></details>' : "") +
+        '<input type="text" class="prop-note" data-note="' + esc(p.id) + '" ' +
+        'placeholder="Comentario (opcional): «hazlo pero…», «no, mejor…»">' +
+        '</div><div class="sc-side">' +
+        '<button class="btn btn-primary btn-sm" data-yes="' + esc(p.id) + '">Hazlo</button>' +
+        '<button class="btn btn-ghost btn-sm" data-no="' + esc(p.id) + '">No</button>' +
+        '</div></div>';
+    }).join("");
+    if (decided.length) {
+      var pill = { aceptada: "ok", hecha: "ok", rechazada: "warn", descartada: "load" };
+      html += '<details style="margin-top:12px"><summary class="small">Historial (' +
+        decided.length + ')</summary><div style="margin-top:6px">' +
+        decided.map(function (p) {
+          return '<div class="prop-hist"><span class="pill ' + (pill[p.state] || "load") + '">' +
+            esc(p.state) + '</span> <span>' + esc(p.title) + '</span>' +
+            (p.decided ? ' <span class="muted small">· ' + esc(p.decided) + '</span>' : "") +
+            '</div>';
+        }).join("") + '</div></details>';
+    }
+    // The seeded file is headings plus HTML comments; that is not something learned yet.
+    var learned = String(r.learning || "")
+      .replace(/<!--[\s\S]*?-->/g, "").replace(/^#.*$/gm, "").trim();
+    if (learned.length > 25) {
+      html += '<details style="margin-top:8px"><summary class="small">Qué ha aprendido de tus ' +
+        'respuestas</summary><div class="md small" style="margin-top:6px">' +
+        mdHtml(r.learning) + '</div></details>';
+    }
+    return html + '<div id="propOut" style="margin-top:10px"></div>';
+  }
+
+  function paintProps() {
+    if (!el("propBox")) return;
+    api("proposals/list", {}).then(function (r) {
+      var box = el("propBox");
+      if (!box) return;
+      box.innerHTML = propHtml(r);
+      wireProps();
+    });
+  }
+
+  function wireProps() {
+    var box = el("propBox");
+    if (!box) return;
+    function answer(id, state) {
+      var note = box.querySelector('[data-note="' + id + '"]');
+      var comment = note ? note.value : "";
+      Array.prototype.forEach.call(box.querySelectorAll("button"), function (b) {
+        b.disabled = true;
+      });
+      api("proposals/decide", { id: id, state: state, comment: comment }).then(function (r) {
+        if (r && r.ok) {
+          toast(state === "aceptada"
+            ? "Anotado: lo hará esta noche 🌙"
+            : "Anotado. No volverá a proponerlo.");
+        }
+        paintProps();
+        if (r && !r.ok) {
+          var out = el("propOut");
+          if (out) out.innerHTML = '<div class="callout warn small">' +
+            esc(r.detail || "No pude guardar tu respuesta") + '</div>';
+        }
+      });
+    }
+    Array.prototype.forEach.call(box.querySelectorAll("[data-yes]"), function (b) {
+      b.onclick = function () { answer(b.getAttribute("data-yes"), "aceptada"); };
+    });
+    Array.prototype.forEach.call(box.querySelectorAll("[data-no]"), function (b) {
+      b.onclick = function () { answer(b.getAttribute("data-no"), "rechazada"); };
+    });
   }
 
   function cronHuman(spec) {
@@ -953,6 +1142,8 @@
 
   function eChannels() {
     paintSelfcare();
+    paintObs();
+    paintProps();
     if (!S.applied) return;
     var prof = targetProfile(), ws = targetWorkspace();
 

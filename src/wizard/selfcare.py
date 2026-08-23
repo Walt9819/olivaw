@@ -73,10 +73,32 @@ def _tmp(ws):
     return os.path.join(ws, "tmp", "olivaw-selfcare")
 
 
+# The prompts name these folders, so they must exist before the first run - an agent improvising a
+# layout at 04:30 is how a memory ends up scattered.
+MEMORY_SUBDIRS = ("journal", "memory", "reviews", "proposals")
+
+
+def ensure_memory_dirs(ws=None, vault=None):
+    ws = ws or workspace_dir()
+    vault = vault if vault is not None else vault_dir(ws)
+    mem = os.path.join(vault, AGENT_DIR) if vault else os.path.join(ws, "agent-memory")
+    made = []
+    for sub in MEMORY_SUBDIRS:
+        d = os.path.join(mem, sub)
+        if not os.path.isdir(d):
+            try:
+                os.makedirs(d, exist_ok=True)
+                made.append(d)
+            except Exception:  # noqa: BLE001
+                pass
+    return made
+
+
 def daily_prompt(ws=None, vault=None):
     ws = ws or workspace_dir()
     vault = vault if vault is not None else vault_dir(ws)
     mem = os.path.join(vault, AGENT_DIR) if vault else os.path.join(ws, "agent-memory")
+    prop = os.path.join(mem, "proposals")
     tmp = _tmp(ws)
     return f"""Es tu CONSOLIDACIÓN NOCTURNA (tu "sueño"): releer el día y quedarte con lo que valga la
 pena recordar. Nadie espera respuesta: trabaja tranquilo, pero TERMINA. Más vale una nota corta
@@ -86,15 +108,24 @@ REGLA DE ORO: primero lo barato, y con presupuesto. Máximo ~8 lecturas antes de
 Para leer estos archivos usa SIEMPRE la terminal (head, sed, grep). NO uses search_files sobre la
 carpeta de exportación: falla con archivos grandes.
 
+SI TE QUEDAS SIN SITIO (contexto lleno, aviso de compactación, o llevas ya mucho leído): DEJA DE
+LEER y escribe, en este orden: (1) la entrada del journal, (2) el estado de las propuestas que el
+dueño contestó, (3) el mensaje final. Lo demás puede esperar a mañana; esas tres cosas no. Una
+propuesta aceptada que no queda registrada se pierde, y el dueño ya te había dicho sí.
+
 1) MIRA EL DÍA (barato):
    hermes sessions list | head -25
    hermes sessions export --newer-than 26h --only user-prompts --format md --yes "{tmp}/prompts.md"
-   sed -n '1,400p' "{tmp}/prompts.md"
+   sed -n '1,300p' "{tmp}/prompts.md"
    Con los títulos y lo que pidió el dueño ya sabes de qué se trató el día.
    SOLO si una conversación parece importante y no la entiendes con eso, exporta esa y lee un tramo:
    hermes sessions export --session-id <ID> --format md --yes "{tmp}/one"
    sed -n '1,250p' "{tmp}/one/"*.md
    No exportes el día completo: son megabytes y no te caben.
+   Y de una vez, ahora que tienes sitio, lee lo que vas a necesitar en el paso 4 (dejarlo para el
+   final es cómo se pierde: cuesta dos líneas):
+   grep -H "^titulo:\\|^estado:" "{prop}"/*.md 2>/dev/null | head -40
+   tail -25 "{prop}/_Aprendizaje.md" 2>/dev/null
 
 2) DECIDE QUÉ IMPORTA. Quédate solo con lo que seguirá siendo cierto o útil dentro de un mes:
    decisiones tomadas (y por qué), compromisos y fechas, hechos nuevos del negocio/clientes/producto,
@@ -115,11 +146,60 @@ carpeta de exportación: falla con archivos grandes.
    d) Máximo 5 notas por noche y ~40 líneas nuevas por nota. Hechos concretos, fechas y nombres —
       escribe para que TÚ lo entiendas de un vistazo dentro de tres meses.
    e) Nunca credenciales, tokens ni contraseñas en el vault.
+   f) El dueño abre este vault en Obsidian: no renombres ni muevas notas que ya existen (rompes
+      los [[wikilinks]]) y respeta la estructura de carpetas que ya está.
 
-4) LÍMITES: escribe solo dentro de {ws} (incluido el vault). No toques NUNCA la instalación de Olivaw
+4) CIERRA EL CICLO DE LAS PROPUESTAS — con la lista que ya leíste en el paso 1, sin volver a leer:
+   - Busca en el día si el dueño CONTESTÓ a alguna propuesta pendiente. Vale cualquier forma:
+     "sí", "hazlo", "1", "no", "más adelante", o un comentario matizándola. Cambia el campo
+     `estado:` de esa nota (aceptada / rechazada) y pega su respuesta literal al final.
+   - Y ojo: también puede haber contestado desde el asistente de Olivaw, sin decir nada por chat.
+     Se ve porque el `estado:` ya cambió solo y la nota trae al final una sección "Respuesta del
+     dueño". Esas cuentan igual: lee su comentario, constrúyelo si dijo sí, y apréndelo.
+   - Si quedó ACEPTADA, CONSTRÚYELA ESTA NOCHE si cabe en tus límites (una nota, una plantilla, un
+     script, una skill, un informe recurrente). Al acabar: `estado: hecha` + dos líneas de qué
+     hiciste y cómo se deshace. Si no cabe (necesita dinero, accesos, permisos de terceros o más de
+     una hora), déjala en `aceptada` y dilo en el mensaje final.
+   - Si una propuesta lleva 7 días o más pendiente sin respuesta: `estado: descartada`. No se
+     insiste, no se reenvía.
+   - APRENDE de cada respuesta: añade a "{prop}/_Aprendizaje.md" una línea con lo que te enseñó
+     (qué tipo de cosa acepta, cuál no, y por qué). Lo rechazado NO se vuelve a proponer, ni con
+     otro nombre ni troceado. Esto es lo que hace que dentro de un mes tus propuestas sean SUYAS y
+     no genéricas.
+
+5) PROPÓN ALGO ÚTIL — la parte proactiva. Opcional: solo si el día te dio un motivo real.
+   - Repasa el día preguntándote: ¿qué hizo a mano que yo podría dejar hecho? ¿qué preguntó dos
+     veces? ¿qué información buscó y no tenía a mano? ¿qué se le va a olvidar? ¿qué se repite cada
+     semana?
+   - Pista muy fiable: mira lo que ACABAS de escribir en el journal. Si pusiste "sigue sin
+     respuesta", "hilo abierto", "pendiente de su lado", "lo pidió otra vez" o "quedó a medias",
+     ahí hay una propuesta esperando: vigilarlo tú, prepararle lo que le falta para decidir, o
+     recordárselo el día que toque con todo listo. Escribir eso en el journal y no proponer nada
+     es dejarlo pasar.
+   - Ten presente su ROL y sus prioridades — léelas, no las supongas: {ws}/CLAUDE.md y
+     "{mem}/memory/". Propón lo que le ahorra tiempo A ÉL, no lo que te parece interesante a ti.
+   - MÁXIMO 2 por noche, y CERO si no hay motivo: una propuesta de relleno gasta su atención y le
+     enseña a ignorarte. Cada una debe ser algo que puedas hacer TÚ solo, concreto y reversible.
+     Nunca propongas comprar, contratar, publicar, escribir a terceros ni tocar sistemas de
+     producción.
+   - Escribe cada una en "{prop}/AAAA-MM-DD-titulo-corto.md" con este encabezado exacto (el
+     asistente de Olivaw lo lee para mostrarte los botones de aceptar/rechazar):
+     ---
+     titulo: <una línea, en imperativo>
+     estado: pendiente
+     categoria: automatizacion|conocimiento|informe|plantilla|habito|integracion
+     esfuerzo: bajo|medio|alto
+     propuesta: AAAA-MM-DD
+     decidida:
+     por_que: <la señal concreta del día que la justifica>
+     ---
+     Debajo, en pocas líneas: qué harías exactamente, qué archivos tocarías, qué NO harías, y cómo
+     se revierte.
+
+6) LÍMITES: escribe solo dentro de {ws} (incluido el vault). No toques NUNCA la instalación de Olivaw
    ni su código. No borres notas: solo añadir o corregir. Al final borra "{tmp}".
 
-5) AVISA AL DUEÑO — y esto llega a su canal principal (Telegram), en su teléfono. Escribe como un
+7) AVISA AL DUEÑO — y esto llega a su canal principal (Telegram), en su teléfono. Escribe como un
    mensaje, no como un informe:
    - Solo lo RELEVANTE para él: lo que decidió y quedó guardado, los compromisos con fecha, y lo que
      necesita de su lado. Nada de rutas de archivos, ni "tarea completada", ni contabilidad interna.
@@ -127,8 +207,13 @@ carpeta de exportación: falla con archivos grandes.
      recórtalo TÚ antes de responder: si el mensaje se pasa de largo, la plataforma lo reemplaza por
      un aviso de "truncado" y el dueño no recibe nada útil. El detalle ya quedó en el vault.
    - Si hay algo que él debe hacer o confirmar, que sea la última línea y se entienda de un vistazo.
+   - Si construiste algo que él ya había aceptado, dilo en UNA línea: qué quedó listo y dónde.
+   - Si tienes propuestas nuevas, van AL FINAL, numeradas, una línea cada una: qué harías y qué le
+     ahorra. Y pide el sí de forma que pueda contestar con una palabra ("responde 1 o 1 no").
+     Nada más: el detalle está en el vault y también puede decidirlo en el asistente de Olivaw.
    - Si la noche no dio nada que valga la pena: UNA sola línea diciéndolo (por ejemplo
-     "🌙 Noche tranquila: nada nuevo que guardar."). No inventes contenido para tener algo que decir.
+     "🌙 Noche tranquila: nada nuevo que guardar."). No inventes contenido para tener algo que decir,
+     y tampoco una propuesta para no venir con las manos vacías.
    - Si algo se te quedó a medias o falló, dilo en una línea: un aviso honesto vale más que un
      resumen limpio."""
 
@@ -137,6 +222,7 @@ def weekly_prompt(ws=None, vault=None):
     ws = ws or workspace_dir()
     vault = vault if vault is not None else vault_dir(ws)
     mem = os.path.join(vault, AGENT_DIR) if vault else os.path.join(ws, "agent-memory")
+    prop = os.path.join(mem, "proposals")
     tmp = _tmp(ws)
     return f"""Es tu REPASO SEMANAL: mirar tu propia semana y mejorar de verdad. Sé honesto contigo
 mismo — un repaso donde todo salió bien no sirve para nada. Nadie espera respuesta inmediata, pero
@@ -145,9 +231,16 @@ TERMINA: escribe el repaso aunque la evidencia sea parcial.
 REGLA DE ORO: primero lo barato, con presupuesto (~10 lecturas). Usa la terminal (grep, sed, head)
 para leer los archivos grandes; NO uses search_files sobre la carpeta de exportación.
 
+SI TE QUEDAS SIN SITIO: deja de leer y escribe, en este orden: (1) el repaso en reviews/, (2) el
+estado de las propuestas que el dueño contestó, (3) el mensaje final.
+
 1) LEE LA SEMANA:
    - Empieza por lo que ya destilaste: {mem}/journal/ (las entradas de la semana) y
      {mem}/reviews/ (el repaso anterior: ¿cumpliste lo que te propusiste?).
+   - Tus propuestas y lo que te enseñaron: "{prop}/_Aprendizaje.md" y
+     grep -H "^titulo:\\|^estado:\\|^categoria:" "{prop}"/*.md 2>/dev/null | head -60
+     Cuenta cuántas aceptó y cuántas rechazó, y por qué. Ese es el mejor dato que tienes sobre lo
+     que de verdad le sirve.
    - Lo que pidió el dueño, en sus palabras:
      hermes sessions export --newer-than 7d --only user-prompts --format md --yes "{tmp}/week-prompts.md"
    - La señal de satisfacción, sin leerlo todo:
@@ -165,8 +258,16 @@ para leer los archivos grandes; NO uses search_files sobre la carpeta de exporta
       antes de tocarlo).
    b) Te faltó CONOCIMIENTO → crea o completa la nota del vault que te habría hecho falta, enlazada.
    c) Es un FLUJO repetitivo → deja un script o una skill documentada para no improvisarlo cada vez.
-   d) Necesita permiso, dinero, accesos o una decisión de negocio → NO lo hagas: anótalo como
-      propuesta para el dueño.
+   d) Necesita permiso, dinero, accesos o una decisión de negocio → NO lo hagas: escríbelo como
+      propuesta en "{prop}/AAAA-MM-DD-titulo-corto.md", con el mismo encabezado que usas de noche
+      (titulo, estado: pendiente, categoria, esfuerzo, propuesta, decidida, por_que) y debajo qué
+      harías, qué tocarías y cómo se revierte.
+   e) Y mira una vez a lo grande, con su rol delante: de todo lo que hace cada semana, ¿qué es lo
+      que MÁS tiempo le quita y podrías tú? Propón como máximo 2 cosas así, aunque sean más
+      ambiciosas que las de las noches. Nunca vuelvas sobre algo ya rechazado.
+   f) Ejecuta las propuestas que ya estaban ACEPTADAS y todavía sin hacer, si caben en la sesión;
+      marca `estado: hecha` con lo que hiciste. Y actualiza "{prop}/_Aprendizaje.md" con lo
+      aprendido de las respuestas de la semana.
 
 4) LÍMITES: no toques el código ni la instalación de Olivaw. Los cambios a tu CLAUDE.md: pequeños,
    aditivos y reversibles. Al final borra "{tmp}".
@@ -175,9 +276,9 @@ para leer los archivos grandes; NO uses search_files sobre la carpeta de exporta
    qué no (con ejemplos), qué cambié esta semana, qué propongo. Enlázalo desde {mem}/_Index.md.
 
 6) AVISA AL DUEÑO — llega a su canal principal (Telegram), en su teléfono. Como mensaje, no como
-   informe: 2-3 aciertos, 2-3 fallos (con el ejemplo real, en media línea), lo que YA cambiaste, y
-   como máximo 2 preguntas o propuestas que necesiten su decisión — al final y numeradas, para que
-   pueda contestar "1" o "2". LÍMITE DURO: 1200 caracteres, máximo 12 líneas cortas, sin encabezados
+   informe: 2-3 aciertos, 2-3 fallos (con el ejemplo real, en media línea), lo que YA cambiaste o
+   construiste, y como máximo 2 propuestas que necesiten su decisión — al final, numeradas, con lo
+   que le ahorra cada una, para que pueda contestar "1" o "2" (o "1 no"). LÍMITE DURO: 1200 caracteres, máximo 12 líneas cortas, sin encabezados
    ni tablas — si te pasas, recórtalo TÚ: un mensaje demasiado largo lo reemplaza la plataforma por
    un aviso de "truncado" y el dueño no recibe nada. El repaso completo queda en el vault; el
    mensaje es el resumen que se lee de pie."""
@@ -294,6 +395,7 @@ def install(keys=("daily", "weekly"), schedules=None, deliver=None):
         return {"ok": False, "detail": "No encontré el comando hermes en este equipo."}
     ws = workspace_dir()
     vault = vault_dir(ws)
+    ensure_memory_dirs(ws, vault)
     target = _deliver_target(deliver)
     schedules = schedules or {}
     results = {}

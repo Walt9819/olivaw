@@ -353,3 +353,18 @@ body.sos-open{overflow:hidden}
 .sc-title{display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:14px}
 .sc-side{display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end}
 #scOut pre{max-height:320px}
+
+/* Obsidian health check: a checklist, because each line fails for its own reason */
+.ob-steps{display:flex; flex-direction:column; gap:6px}
+.ob-step{display:flex; align-items:center; gap:9px; font-size:13.5px}
+.ob-dot{width:18px; height:18px; border-radius:50%; display:grid; place-items:center;
+        font-size:11px; font-weight:700; flex:none}
+.ob-dot.on{background:var(--ok-bg); color:var(--ok)}
+.ob-dot.off{background:var(--line-2); color:var(--muted)}
+
+/* Proposals: the comment box is the point, so give it room */
+.prop-note{margin-top:7px; width:100%; padding:7px 10px; font-size:13px;
+           border:1px solid var(--line); border-radius:9px; background:var(--panel-2);
+           color:var(--ink)}
+.prop-note:focus{outline:none; border-color:var(--accent)}
+.prop-hist{display:flex; align-items:center; gap:8px; padding:4px 0; font-size:13px}
