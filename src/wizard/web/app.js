@@ -1019,10 +1019,10 @@
             '</div>';
         }).join("") + '</div></details>';
     }
-    // The seeded file is headings plus HTML comments; that is not something learned yet.
-    var learned = String(r.learning || "")
-      .replace(/<!--[\s\S]*?-->/g, "").replace(/^#.*$/gm, "").trim();
-    if (learned.length > 25) {
+    // The file ships with headings, an intro line and HTML comments. One bullet is what tells
+    // us something was actually learned; anything less is the empty template.
+    var learned = String(r.learning || "").replace(/<!--[\s\S]*?-->/g, "");
+    if (/^[ \t]*[-*+][ \t]+\S/m.test(learned)) {
       html += '<details style="margin-top:8px"><summary class="small">Qué ha aprendido de tus ' +
         'respuestas</summary><div class="md small" style="margin-top:6px">' +
         mdHtml(r.learning) + '</div></details>';

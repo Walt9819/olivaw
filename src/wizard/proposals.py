@@ -28,9 +28,11 @@ import time
 
 from . import selfcare
 
-# 20260822-informe-semanal-ventas — date prefix so they sort, slug so they are recognisable.
-# This is also the only thing that ever reaches a filesystem path, hence the strict shape.
-ID_RE = re.compile(r"^[0-9]{8}-[a-z0-9][a-z0-9._-]{0,60}$")
+# 2026-08-22-informe-semanal-ventas — the dated prefix the prompt asks for, so the notes sort by
+# themselves, plus a slug that is recognisable in Obsidian. The compact form (20260822-...) is
+# accepted too. This is the only thing from these files that ever reaches a filesystem path, hence
+# the strict shape: no separators, no dots leading anywhere.
+ID_RE = re.compile(r"^(?:[0-9]{8}|[0-9]{4}-[0-9]{2}-[0-9]{2})-[a-z0-9][a-z0-9._-]{0,60}$")
 
 STATES = ("pendiente", "aceptada", "rechazada", "hecha", "descartada")
 OPEN_STATES = ("pendiente",)
