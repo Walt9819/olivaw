@@ -617,9 +617,63 @@
   function sumline(ic, k, v) {
     return "<li>" + ic + " <b>" + esc(k) + ":</b> <span class='muted'>" + esc(v) + "</span></li>";
   }
+  // Did Telegram really connect? The wizard used to declare success once the files were written,
+  // so a revoked token produced a green screen and a silent bot.
+  function telegramVerdict(tg) {
+    if (!tg || !tg.state) return "";
+    var fixes = {
+      token_rejected: "Abre @BotFather, envía <code>/token</code>, elige tu bot y pega aquí el " +
+        "token nuevo. El anterior deja de servir en cuanto generas otro.",
+      token_rejected_log: "Pulsa «Reiniciar el gateway» para que tome el token nuevo.",
+      webhook_set: "Ese bot tiene un webhook puesto y por eso no recibe nada. Quítalo (o usa " +
+        "otro bot) y vuelve a comprobar.",
+      gateway_down: "El gateway no está corriendo. Pulsa «Reiniciar el gateway».",
+      no_token: "Falta el token en este perfil: vuelve al paso de Telegram y pégalo.",
+      unreachable: "No hubo forma de hablar con Telegram desde este equipo. Comprueba la " +
+        "conexión y vuelve a intentarlo."
+    };
+    var good = tg.ok;
+    var cls = good ? (tg.state === "connected" ? "" : "warn") : "warn";
+    var title = good
+      ? (tg.state === "connected" ? "Telegram conectado ✅" : "Telegram conectado, pero incompleto ⚠️")
+      : "Telegram NO está funcionando ⚠️";
+    var notes = (tg.notes || []).map(function (n) {
+      return '<div class="muted small" style="margin-top:6px">ℹ️ ' + esc(n) + "</div>";
+    }).join("");
+    return '<div class="callout ' + cls + '" id="tgVerdict"><b>' + title + "</b> " +
+      esc(tg.detail || "") +
+      (fixes[tg.state] ? '<div style="margin-top:6px">' + fixes[tg.state] + "</div>" : "") +
+      notes +
+      '<div class="row" style="margin-top:10px;gap:8px">' +
+      '<button class="btn btn-soft btn-sm" id="tgRecheck">Volver a comprobar</button>' +
+      (good ? "" : '<button class="btn btn-soft btn-sm" id="tgRestart">Reiniciar el gateway</button>') +
+      '<span id="tgPill" class="pill" style="display:none"></span></div></div>';
+  }
+
+  function wireTelegramVerdict() {
+    var pill = el("tgPill");
+    function recheck(after) {
+      if (pill) { pill.style.display = "inline-flex"; pill.className = "pill load"; pill.textContent = "Comprobando…"; }
+      api("telegram/health", { profile: targetProfile() }).then(function (tg) {
+        if (S.applyResult) { S.applyResult.telegram = tg; save(); }
+        render();
+        if (tg && tg.ok) toast("Telegram conectado ✅");
+      });
+      if (after) after();
+    }
+    if (el("tgRecheck")) el("tgRecheck").onclick = function () { recheck(); };
+    if (el("tgRestart")) el("tgRestart").onclick = function () {
+      var b = this; b.disabled = true; b.textContent = "Reiniciando…";
+      api("agent/action", { action: "restart", profile: targetProfile() }).then(function () {
+        recheck();
+      });
+    };
+  }
+
   function rFinished(res) {
     var files = (res.written || []).map(function (f) { return "<li>📄 " + esc(f) + "</li>"; }).join("");
     var warns = (res.warnings || []).map(function (w) { return '<div class="callout warn small">' + esc(w) + "</div>"; }).join("");
+    var tgBox = telegramVerdict(res.telegram);
     var botLink = S.bot_username ? "https://t.me/" + S.bot_username : "";
     // Owner-lock section depends on whether we configured Hermes natively.
     var lock;
@@ -654,9 +708,14 @@
     }
     return '' +
       '<div class="done-hero"><div class="big">🎉</div>' +
-      '<h1>¡Tu agente está vivo!</h1>' +
-      '<p class="lead">Ya escribí todo y encendí el supervisor. A partir de ahora se actualiza solo, ' +
-      'en silencio, cuando no lo estés usando.</p></div>' +
+      '<h1>' + ((res.telegram && !res.telegram.ok) ? 'Casi listo' : '¡Tu agente está vivo!') + '</h1>' +
+      '<p class="lead">' + ((res.telegram && !res.telegram.ok)
+        ? 'Escribí todo y encendí el supervisor, pero falta un paso para que puedas hablarle.'
+        : 'Ya escribí todo y encendí el supervisor. A partir de ahora se actualiza solo, ' +
+          'en silencio, cuando no lo estés usando.') + '</p></div>' +
+      // The verdict goes FIRST: "your agent is alive" is a lie if Telegram never connected,
+      // and this is the screen where that lie used to be told.
+      tgBox +
       newNote + isoNote +
       (botLink ? '<div class="card pad" style="text-align:center"><b>Habla con tu agente ahora</b>' +
         '<p class="muted small">Abre tu bot en Telegram y salúdalo.</p>' +
@@ -676,6 +735,9 @@
       'conectar más canales — WhatsApp, Slack, webhooks (Google Chat) y correo por SMTP.</div>';
   }
   function eFinish() {
+    // The finished screen renders through here too (rFinish returns rFinished when applied),
+    // so the verdict's buttons get wired on both passes.
+    wireTelegramVerdict();
     var btn = el("btnApply"); if (!btn) return;
     var pill = el("pillApply");
     btn.onclick = function () {

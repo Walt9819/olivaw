@@ -21,6 +21,7 @@ Owner-lock = TELEGRAM_ALLOWED_USERS in the profile's .env (+ the dynamic pairing
 
 import os
 import re
+import time
 
 from .procutil import run, which
 
@@ -218,7 +219,43 @@ def gateway_status(hermes=None, profile=None):
     return {"ok": r["ok"], "running": bool(running), "detail": (r["out"] or r["err"])[:400]}
 
 
+def _wait_gateway(want_running, hermes, profile, seconds):
+    """Wait for the gateway to actually reach a state, rather than trusting the command that
+    asked for it. Returns True if it got there."""
+    deadline = time.time() + seconds
+    while True:
+        if bool(gateway_status(hermes, profile).get("running")) == want_running:
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(1.5)
+
+
+def gateway_restart_safe(hermes=None, profile=None, timeout=90):
+    """stop -> confirm it is gone -> start -> confirm it is up.
+
+    `gateway restart` has been seen racing itself on Windows into two gateways (Hermes kills one,
+    but the flow reports several PIDs on the way). Doing it in two explicit steps, each verified,
+    has no race to lose.
+    """
+    steps = []
+    stop = _run(["gateway", "stop"], hermes, timeout=timeout, profile=profile)
+    steps.append("stop: " + ((stop["out"] or stop["err"]).strip()[:120] or "ok"))
+    gone = _wait_gateway(False, hermes, profile, 20)
+    if not gone:
+        steps.append("seguía corriendo tras 20s; arranco de todas formas")
+    start = _run(["gateway", "start"], hermes, timeout=timeout, profile=profile)
+    steps.append("start: " + ((start["out"] or start["err"]).strip()[:120] or "ok"))
+    up = _wait_gateway(True, hermes, profile, 30)
+    return {"ok": bool(up), "detail": " | ".join(steps)[:400],
+            "running": up,
+            "restarted_cleanly": bool(gone and up)}
+
+
 def gateway(action, hermes=None, profile=None, timeout=90):
+    # A restart is the one action with a race in it, so it goes through the deterministic path.
+    if action == "restart":
+        return gateway_restart_safe(hermes, profile, timeout)
     r = _run(["gateway", action], hermes, timeout=timeout, profile=profile)
     return {"ok": r["ok"], "detail": (r["out"] or r["err"])[:400]}
 

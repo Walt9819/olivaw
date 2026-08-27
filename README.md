@@ -161,6 +161,30 @@ errors** (an auth failure looks like a clean exit). The engine therefore treats 
 came back" as the definition of success, and surfaces the real cause otherwise.
 `tools/test_codex_engine.py` pins all of this, using a stream captured from the real CLI.
 
+### Telegram: verified, not assumed
+
+The wizard used to report success once it had written the config. If Telegram had revoked the bot
+token (BotFather invalidates the old one the moment you generate a new one), the gateway logged
+`token ... was rejected`, exited, and the owner got a green screen and a silent bot — the cause
+only visible in Hermes' own profile logs.
+
+Now the token is re-checked against Telegram **at apply time** (a token that validated ten minutes
+ago is not a token that works), the wizard **waits for the gateway to actually connect**, and the
+finished screen states the verdict with the fix: token rejected, webhook set (polling can never
+see a message), gateway down, or connected-but-incomplete (no `TELEGRAM_ALLOWED_USERS`, so no owner
+lock; no `TELEGRAM_HOME_CHANNEL`, so scheduled messages have nowhere to go). "Could not reach
+Telegram" is reported as its own state — telling someone their token is revoked when their wifi is
+down sends them to BotFather to fix a router.
+
+`hermes_ctl.gateway("restart", …)` is now stop → confirm gone → start → confirm up, because
+Hermes' own restart has been seen racing itself into two gateways on Windows.
+
+The SOS console gets the same verdict in its snapshot, plus the per-profile facts (the default
+agent and each extra agent keep separate config, `.env` and logs — "the gateway is running" is
+never an answer without saying *which profile*), and it is told which two alarming Windows log
+lines are harmless: the Unix-only `start_unix_server` watchdog and the dispatcher-lock warning.
+Neither is ever the cause, and both used to look like one.
+
 ### Switching brain on a live install
 
 Pick the other brain in the wizard and apply. The supervisor compares `/status.engine` against

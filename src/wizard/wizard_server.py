@@ -29,12 +29,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from wizard import (agents_registry, channels, checks, config_writer, hermes_ctl,
-                        obsidian, proposals, providers, rescue, selfcare, telegram_setup,
-                        usecases)
+                        obsidian, proposals, providers, rescue, selfcare, telegram_health,
+                        telegram_setup, usecases)
     from wizard.procutil import http_json, which
 else:
     from . import (agents_registry, channels, checks, config_writer, hermes_ctl, obsidian,
-                   proposals, providers, rescue, selfcare, telegram_setup, usecases)
+                   proposals, providers, rescue, selfcare, telegram_health, telegram_setup,
+                   usecases)
     from .procutil import http_json, which
 
 HERE = os.path.dirname(os.path.abspath(__file__))          # .../src/wizard
@@ -449,6 +450,9 @@ class Handler(BaseHTTPRequestHandler):
             base = ensure_test_bridge(p.bridge_env(paths), ws)
             return checks.test_brain(base, brain=(p.cli_label or p.label))
 
+        if route == "telegram/health":
+            return telegram_health.check(body.get("profile") or None, which("hermes"))
+
         if route == "telegram/validate":
             return telegram_setup.validate(body.get("token", ""))
 
@@ -630,7 +634,23 @@ class Handler(BaseHTTPRequestHandler):
             "gateway_action": gateway_action,
             "engine": (p.engine if p else "claude"), "provider": provider_id,
         }
+        # Refuse to write a token Telegram has already rejected. It was structurally valid the
+        # last time it was checked, and BotFather revokes the previous token whenever a new one is
+        # generated - so "it validated five minutes ago" is not the same as "it works".
+        if body.get("token"):
+            pre = telegram_health.check(profile or "default", hp, token=body["token"])
+            if pre.get("state") == "token_rejected":
+                return {"ok": False, "detail": pre["detail"], "telegram": pre}
+
         res = config_writer.write_all(cfg)
+
+        # And then confirm it really connected, instead of declaring success because the files
+        # were written. This is the check whose absence turned a revoked token into an agent that
+        # simply never answered.
+        if body.get("token"):
+            res["telegram"] = telegram_health.wait_for_connection(profile or "default", hp, 30)
+            if not res["telegram"].get("ok"):
+                res.setdefault("warnings", []).append(res["telegram"]["detail"])
         # Changing the brain only takes effect when the bridge restarts. The supervisor does that
         # by itself on its next check (it compares /status.engine with the config), but the owner
         # should be told rather than left wondering why answers still come from the old one.

@@ -27,6 +27,7 @@ import time
 import uuid
 
 from . import console_store as store
+from . import telegram_health
 from .procutil import http_json, run, which
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -195,6 +196,22 @@ def collect_context(install_dir=None, fast=False):
     # The failure that is easy to miss and impossible to work around: the config names an engine
     # whose CLI is not on this machine. Spelled out so the console cannot overlook it.
     ctx["engine_ready"] = bool(cx) if ctx["engine"] == "codex" else bool(cl)
+
+    # Which Hermes profile this agent uses, and whether Telegram is actually up on it. The
+    # gateway being "running" says nothing about Telegram having accepted the token - that
+    # distinction is the whole reason this section exists.
+    ctx["hermes_profile"] = "default"
+    try:
+        with open(os.path.join(inst, "agents.json"), encoding="utf-8") as fh:
+            agents = json.load(fh) or []
+        ctx["agent_profiles"] = [a.get("profile") or a.get("slug") for a in agents if a]
+    except Exception:  # noqa: BLE001
+        ctx["agent_profiles"] = []
+    if not fast:
+        try:
+            ctx["telegram"] = telegram_health.check(ctx["hermes_profile"], hp)
+        except Exception as e:  # noqa: BLE001
+            ctx["telegram"] = {"state": "unknown", "detail": "no se pudo comprobar: %s" % e}
 
     ctx["launcher_log"] = _tail(os.path.join(inst, "launcher.log"))
     ctx["bridge_log"] = _tail(os.path.join(SRC_DIR, "bridge.log"))
@@ -435,6 +452,32 @@ PIECES, all under %(inst)s:
   launcher.log          what the supervisor did (updates, restarts, port conflicts).
   src/bridge.log        what the brain did per turn (model, effort, errors, refusals).
 
+HERMES PROFILES - half of a real incident was commands aimed at the wrong one. The default agent
+uses the DEFAULT profile; every extra agent gets its own, with its OWN config, .env and logs. A
+profile's commands go through `hermes -p <profile> ...` (or its wrapper), and its files live under
+<hermes home>/profiles/<name>/. Two gateways can run at once - one per profile - so "the gateway is
+running" is never an answer by itself: ask WHICH profile.
+
+TELEGRAM, in the order it breaks:
+  1. the token in the profile's .env is REJECTED by Telegram (revoked - BotFather invalidates the
+     old token the moment a new one is generated). The gateway logs "token ... was rejected" and
+     exits with a "non-retryable startup conflict". The snapshot's `telegram.state` says
+     token_rejected. Fix: /token in @BotFather, paste it in the Telegram step again.
+  2. a WEBHOOK is set on the bot, so polling never sees a message. state = webhook_set.
+  3. the gateway is not running at all. state = gateway_down.
+  4. it is connected but TELEGRAM_ALLOWED_USERS is empty (no owner lock) or
+     TELEGRAM_HOME_CHANNEL is empty (scheduled messages have nowhere to go).
+     state = connected_incomplete.
+  Note `telegram.state` is measured against Telegram itself, not guessed from the log.
+
+TWO HERMES-ON-WINDOWS LOG LINES THAT LOOK FATAL AND ARE NOT. Never present these as the cause:
+  - "AttributeError: module 'asyncio' has no attribute 'start_unix_server'" - a Unix-only watchdog
+    on Windows. The gateway keeps working.
+  - "another gateway owns the dispatcher lock" - only disables the Kanban dispatcher for that
+    profile; Telegram polling and chat are unaffected.
+  If you also see "Another gateway instance (PID ...) started during our startup", two starts
+  raced and Hermes killed one on purpose; the survivor is fine.
+
 CHECKS the owner can run, one line each:
   is the bridge alive:   curl http://127.0.0.1:<port>/status     (also reports engine + version)
   is Hermes alive:       hermes gateway status
@@ -472,6 +515,14 @@ def _snapshot_text(ctx):
                                                   ctx.get("claude_auth") or "(n/a)"),
              "codex_installed: %s | auth: %s" % (ctx.get("codex_installed"),
                                                  ctx.get("codex_auth") or "(n/a)"),
+             "hermes_profile: %s   (extra agents use their own: %s)"
+             % (ctx.get("hermes_profile", "default"),
+                ", ".join(ctx.get("agent_profiles") or []) or "none"),
+             "telegram: %s" % json.dumps(
+                 {k: v for k, v in (ctx.get("telegram") or {}).items()
+                  if k in ("state", "detail", "bot", "has_owner", "has_home",
+                           "gateway_running", "profile", "notes")},
+                 ensure_ascii=False)[:900],
              "updater_config(redacted): %s" % ctx.get("updater_config"),
              "note: the PRIMARY agent is configured by updater.config.json + the Hermes 'default' "
              "profile. agents.json lists ONLY additional isolated agents, so an empty/absent "
