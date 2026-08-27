@@ -1,5 +1,9 @@
 """
-Claude Code Bridge — OpenAI-compatible HTTP server backed by the Claude Code CLI.
+Olivaw Bridge — OpenAI-compatible HTTP server backed by a coding CLI used as a pure reasoner.
+
+Claude Code is the default brain and the original path. Set OLIVAW_ENGINE=codex to run the same
+contract on OpenAI's Codex CLI instead (see codex_engine.py); everything else - Hermes, the tool
+loop, sessions, routing - is identical either way.
 
 Hermes points its base_url at this server. Claude Code is the BRAIN (reasoning +
 decisions); Hermes is the HANDS (it executes its own tools: terminal, file, web,
@@ -99,6 +103,22 @@ WORKSPACE = os.environ.get(
 )
 SUBPROCESS_TIMEOUT = int(os.environ.get("CLAUDE_BRIDGE_TIMEOUT", "1500"))
 
+# Which coding CLI is the brain. "claude" (the default) is the original path and must stay
+# indistinguishable from before this existed; "codex" routes the same contract through
+# `codex exec`. The alias keeps the naming of the older env vars usable.
+ENGINE = (os.environ.get("OLIVAW_ENGINE")
+          or os.environ.get("CLAUDE_BRIDGE_ENGINE") or "claude").strip().lower()
+if ENGINE in ("codex-cli", "openai-codex"):
+    ENGINE = "codex"
+codex_engine = None
+if ENGINE == "codex":
+    # Guarded: a bridge whose engine module went missing must fail loudly on the FIRST turn
+    # with a clear message, not at import time with a dead service.
+    try:
+        import codex_engine  # noqa: F401
+    except Exception:  # noqa: BLE001
+        codex_engine = None
+
 # The spawned `claude -p` MUST run isolated from the user's global Claude Code config,
 # or it inherits their MCP servers (mcp-unity, Higgsfield/Pixa/etc.) as its "real" tools.
 # When that happens the brain sees the Hermes tool catalog (terminal/memory/cronjob) as
@@ -158,10 +178,22 @@ RUNTIME_SYSTEM_PROMPT = (
 )
 
 MODEL_NAME = "claude-code"
+# Profile key used when the router names no model tier. Empty under Claude, so the default
+# path keeps adding no addendum at all.
+ENGINE_PROFILE = "codex" if ENGINE == "codex" else ""
+# What /health and /status report. The advertised MODEL_NAME stays "claude-code" whatever the
+# engine: it is the id Hermes already has in its config, and renaming it would break every
+# existing install for no gain.
+BACKEND_NAME = "codex" if ENGINE == "codex" else "claude-code"
 # Advertised via /v1/models. Hermes compacts at compression.threshold × this value,
 # so a 1M window with threshold 0.5 lets the conversation grow to ~500k tokens before
 # compaction — matching Fable's real 1M context instead of throttling at 100k.
 CONTEXT_LENGTH = 1_000_000
+if ENGINE == "codex":
+    # Hermes compacts at compression.threshold x this number. Claiming Claude's 1M window on a
+    # smaller model would let a conversation grow until the turn overflows, so Codex advertises
+    # a deliberately conservative window (env-overridable when the line-up moves).
+    CONTEXT_LENGTH = int(os.environ.get("OLIVAW_CODEX_CONTEXT", "256000"))
 MAX_BODY = 64 * 1024 * 1024
 
 # The decision protocol Claude Code must follow when Hermes supplies a tool catalog.
@@ -219,6 +251,10 @@ MODEL_PROFILES = {
     # Opus 4.8: favors reasoning over tool use and can over-explain — push it to commit + act.
     "opus": "You tend to favor analysis over action and to over-explain. Commit to an approach and issue the tool call rather than deliberating further; keep the JSON minimal.",
     # Sonnet 5 (kept available, off the default hot path): guard the native-XML reversion.
+    # Codex: the whole family is trained to work agentically in a repo, so the thing to hold it
+    # to is that here it only DECIDES - the runtime is what acts - and that the reply is the
+    # bare JSON object rather than a report about it.
+    "codex": "You are not executing this task yourself: emit the single JSON object and stop. Do not run commands, edit files, or explore the repository to answer - the runtime performs every action from the object you return. Output the raw JSON with no ```json fence, no preamble and no summary after it.",
     "sonnet": "Output only the JSON object specified above, with no ```json fence around it. Do not use tool-call XML syntax (no <function_calls>, <invoke>, <parameter>), and do not use the single-tool shape {\"thought\":...,\"tool\":...,\"arguments\":...} — a call goes in \"calls\" with the key \"name\".",
 }
 
@@ -410,7 +446,8 @@ def build_decision_prompt(messages, tools, model=None):
     # Output contract + examples + model-specific addendum come last.
     sections.append("<output_contract>\n" + DECISION_PROTOCOL + "\n</output_contract>")
     sections.append(DECISION_EXAMPLES)
-    addendum = MODEL_PROFILES.get((model or "").split("-")[0].lower())
+    # With no model tier (the normal Codex case) fall back to the engine's own profile.
+    addendum = MODEL_PROFILES.get((model or ENGINE_PROFILE).split("-")[0].lower())
     if addendum:
         sections.append(addendum)
     sections.append("Decide the next step now. Reply with only the single JSON object.")
@@ -1173,6 +1210,15 @@ EFFORT_LIGHT = os.environ.get("CLAUDE_BRIDGE_EFFORT_LIGHT", "low").strip()
 EFFORT_AUX = os.environ.get("CLAUDE_BRIDGE_EFFORT_AUX", "low").strip()
 BIG_CONTEXT_CHARS = 600_000
 
+if ENGINE == "codex":
+    # Sonnet/Opus/Fable are Anthropic tiers; they have no meaning here. Empty means "pass no
+    # -m and let Codex use the model the owner already configured" - which stays correct when
+    # OpenAI's line-up changes. Set OLIVAW_CODEX_MODEL to pin one.
+    PRIMARY_MODEL = os.environ.get("OLIVAW_CODEX_MODEL", "").strip()
+    FALLBACK_MODEL = os.environ.get("OLIVAW_CODEX_FALLBACK", "").strip()
+    AUX_MODEL = os.environ.get("OLIVAW_CODEX_AUX", PRIMARY_MODEL).strip()
+    BIG_CONTEXT_MODEL = os.environ.get("OLIVAW_CODEX_BIGCTX", PRIMARY_MODEL).strip()
+
 HEAVY_KW = (
     "build", "create a", "implement", "code", "develop", "debug", "fix", "refactor",
     "architect", "design", "platform", "deploy", "migrate", "analyze", "optimize",
@@ -1195,7 +1241,7 @@ def _tier_override(requested_model):
     turn off Sonnet. "sonnet"/"claude-code" resolve to no override (already primary).
     """
     r = (requested_model or "").lower()
-    if not r or r in ("claude-code", "claude", "default"):
+    if not r or r in ("claude-code", "claude", "default", "codex", "olivaw"):
         return None
     for tier in OVERRIDE_TIERS:
         if tier in r:
@@ -1264,7 +1310,27 @@ _UNAVAILABLE_RE = re.compile(
 )
 
 
-def run_with_fallback(build_fn, model, effort, resume=None, persist=False, read_images=False):
+def run_brain(prompt, model=None, effort=None, resume=None, persist=False, read_images=False,
+              image_paths=None):
+    """One reasoning turn on whichever engine is configured.
+
+    The (text, usage, session_id) contract is the engine boundary: everything above it - the
+    decision protocol, session resume, fallback, streaming - is engine-agnostic and untouched.
+    """
+    if ENGINE == "codex":
+        if codex_engine is None:
+            raise RuntimeError(
+                "OLIVAW_ENGINE=codex but the Codex engine module is missing from this install. "
+                "Update Olivaw, or set OLIVAW_ENGINE=claude to go back to Claude Code.")
+        return codex_engine.run(
+            prompt, system=RUNTIME_SYSTEM_PROMPT, model=model, effort=effort, resume=resume,
+            persist=persist, image_paths=(image_paths if read_images else None),
+            workspace=WORKSPACE, timeout=SUBPROCESS_TIMEOUT, log=log)
+    return run_claude(prompt, model, effort, resume, persist, read_images)
+
+
+def run_with_fallback(build_fn, model, effort, resume=None, persist=False, read_images=False,
+                      image_paths=None):
     """Run a decision turn on `model`; fall back to FALLBACK_MODEL (Opus 4.8) on a
     refusal OR any hard error. `build_fn(m)` rebuilds the prompt so the fallback gets
     its own profile addendum. If the primary looks permanently unavailable (e.g. Fable
@@ -1274,10 +1340,12 @@ def run_with_fallback(build_fn, model, effort, resume=None, persist=False, read_
     fb = FALLBACK_MODEL
     # Known-dead primary → skip straight to the fallback (no wasted attempt).
     if model and model in _DEAD_MODELS and fb and fb != model:
-        text, usage, sid = run_claude(build_fn(fb), fb, effort, resume, persist, read_images)
+        text, usage, sid = run_brain(build_fn(fb), fb, effort, resume, persist,
+                                    read_images, image_paths)
         return text, usage, fb, sid
     try:
-        text, usage, sid = run_claude(build_fn(model), model, effort, resume, persist, read_images)
+        text, usage, sid = run_brain(build_fn(model), model, effort, resume, persist,
+                                    read_images, image_paths)
         return text, usage, model, sid
     except subprocess.TimeoutExpired:
         raise  # let do_POST return a clean timeout, don't burn a second long attempt
@@ -1285,7 +1353,8 @@ def run_with_fallback(build_fn, model, effort, resume=None, persist=False, read_
         if not fb or fb == model:
             raise
         log.warning("primary %s refused (%s); falling back to %s", model, e, fb)
-        text, usage, sid = run_claude(build_fn(fb), fb, effort, resume, persist, read_images)
+        text, usage, sid = run_brain(build_fn(fb), fb, effort, resume, persist,
+                                    read_images, image_paths)
         return text, usage, fb, sid
     except Exception as e:
         if not fb or fb == model:
@@ -1296,7 +1365,8 @@ def run_with_fallback(build_fn, model, effort, resume=None, persist=False, read_
                         model, str(e)[:200], fb)
         else:
             log.warning("primary %s errored (%s); retrying on %s", model, str(e)[:200], fb)
-        text, usage, sid = run_claude(build_fn(fb), fb, effort, resume, persist, read_images)
+        text, usage, sid = run_brain(build_fn(fb), fb, effort, resume, persist,
+                                    read_images, image_paths)
         return text, usage, fb, sid
 
 
@@ -1535,14 +1605,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/health":
-            self._send_json({"status": "ok", "backend": "claude-code"})
+            self._send_json({"status": "ok", "backend": BACKEND_NAME, "engine": ENGINE})
         elif self.path.rstrip("/") == "/status":
             # Idle probe for the supervisor: safe to update when inflight==0 and
             # idle_seconds is large (no turn mid-flight, quiet for a while).
             with _STATUS_LOCK:
                 inflight, last = _INFLIGHT, _LAST_ACTIVITY_TS
             self._send_json({
-                "backend": "claude-code",
+                "backend": BACKEND_NAME,
+                "engine": ENGINE,
                 "version": _installed_version(),
                 # Which file is actually serving, and its fingerprint. Several copies of
                 # this bridge exist on a typical install (repo, %LOCALAPPDATA% install,
@@ -1560,6 +1631,7 @@ class Handler(BaseHTTPRequestHandler):
                 "object": "list",
                 "data": [{
                     "id": MODEL_NAME,
+                    "engine": ENGINE,
                     "object": "model",
                     "created": int(time.time()),
                     "owned_by": "claude-code-bridge",
@@ -1600,7 +1672,8 @@ class Handler(BaseHTTPRequestHandler):
             _inflight_inc(); counted = True
 
             if tools:
-                text, usage = self._run_decision(messages, tools, stream, req.get("model"), has_images)
+                text, usage = self._run_decision(messages, tools, stream, req.get("model"),
+                                                 has_images, image_paths)
                 valid_names = {(t.get("function", t) or {}).get("name")
                                for t in tools} - {None}
                 kind, value = parse_decision(text, valid_names)
@@ -1614,7 +1687,8 @@ class Handler(BaseHTTPRequestHandler):
                 model, effort = choose_model(_latest_user_text(messages), len(prompt), False, req.get("model"))
                 log.info("plain request: %d msgs, %d chars, model=%s/%s, images=%s, stream=%s",
                          len(messages), len(prompt), model, effort, has_images, stream)
-                text, usage, _ = run_claude(prompt, model, effort, read_images=has_images)
+                text, usage, _ = run_brain(prompt, model, effort, read_images=has_images,
+                                           image_paths=image_paths)
                 kind, value = "final", text
 
             cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
@@ -1706,7 +1780,8 @@ class Handler(BaseHTTPRequestHandler):
         log.warning("decision unrecovered; honest note (dropped=%s)", sorted(dropped))
         return "final", msg
 
-    def _run_decision(self, messages, tools, stream, requested_model=None, read_images=False):
+    def _run_decision(self, messages, tools, stream, requested_model=None, read_images=False,
+                      image_paths=None):
         """Run one decision turn, resuming the conversation's persistent Claude Code
         session when possible (sending only the new messages), otherwise starting a
         fresh persisted session with the full prompt. Returns (text, usage).
@@ -1723,6 +1798,12 @@ class Handler(BaseHTTPRequestHandler):
         entry = SESSIONS.get(fp) if (RESUME_ENABLED and fp) else None
 
         # ── Resume path: prefix of what Hermes sent must equal what we already sent.
+        if entry and entry.get("engine", "claude") != ENGINE:
+            # Switching brains invalidates the map: a Claude session id means nothing to Codex.
+            log.info("session map was written by the %s engine; re-baselining on %s",
+                     entry.get("engine", "claude"), ENGINE)
+            SESSIONS.drop(fp)
+            entry = None
         if entry:
             n = entry.get("sent_count", 0)
             if (len(convo) > n and entry.get("session_id")
@@ -1738,7 +1819,8 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     text, usage, used_model, sid = run_with_fallback(
                         lambda m: build_delta_prompt(delta, m, sys_upd, tools_upd),
-                        model, effort, resume=entry["session_id"], persist=True, read_images=read_images)
+                        model, effort, resume=entry["session_id"], persist=True,
+                        read_images=read_images, image_paths=image_paths)
                     if used_model != model:
                         log.info("-> served by fallback model=%s", used_model)
                     SESSIONS.put(fp, {
@@ -1747,6 +1829,7 @@ class Handler(BaseHTTPRequestHandler):
                         "prefix_hash": _hash_msgs(convo),
                         "system_hash": _hash_text(system_text),
                         "tools_hash": tools_digest_hash,
+                        "engine": ENGINE,
                     })
                     return text, usage
                 except subprocess.TimeoutExpired:
@@ -1768,7 +1851,8 @@ class Handler(BaseHTTPRequestHandler):
                  len(messages), len(tools), len(base_prompt), model, effort, stream)
         text, usage, used_model, sid = run_with_fallback(
             lambda m: build_decision_prompt(messages, tools, m),
-            model, effort, persist=RESUME_ENABLED, read_images=read_images)
+            model, effort, persist=RESUME_ENABLED, read_images=read_images,
+            image_paths=image_paths)
         if used_model != model:
             log.info("-> served by fallback model=%s", used_model)
         if RESUME_ENABLED and fp and sid:
@@ -1778,6 +1862,7 @@ class Handler(BaseHTTPRequestHandler):
                 "prefix_hash": _hash_msgs(convo),
                 "system_hash": _hash_text(system_text),
                 "tools_hash": _hash_text(json.dumps(_tools_digest(tools), sort_keys=True)),
+                "engine": ENGINE,
             })
         return text, usage
 

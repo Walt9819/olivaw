@@ -37,8 +37,22 @@ def _install(paths):
                                    "Detalle: " + (r["err"] or r["out"])[:400]}
 
 
+def _login(paths):
+    from .. import channels          # local import: channels must not depend on providers
+    exe = (paths or {}).get("claude") or which("claude") or "claude"
+    return channels.open_login_terminal([exe, "auth", "login"],
+                                        title="Iniciar sesion en Claude")
+
+
+def _login_status(paths):
+    from .. import channels
+    return channels.claude_status((paths or {}).get("claude") or which("claude"))
+
+
 def _bridge_env(paths):
-    env = {}
+    # OLIVAW_ENGINE is written explicitly rather than left out: switching back from Codex has
+    # to CLEAR the old value, and an absent key would silently keep whatever was there.
+    env = {"OLIVAW_ENGINE": "claude"}
     if paths.get("claude"):
         env["CLAUDE_BRIDGE_CLAUDE"] = paths["claude"]
     if paths.get("workspace"):
@@ -56,6 +70,9 @@ INFO = ProviderInfo(
     download_url="https://claude.com/product/claude-code",
     help_url="https://docs.claude.com/en/docs/claude-code/overview",
     login_hint="Se abrirá una ventana para conectar tu cuenta; cuando termine, vuelve aquí.",
+    cli_key="claude",
+    cli_label="Claude Code",
+    engine="claude",
     steps=[
         {"title": "Ya lo instalamos por ti",
          "body": "Claude Code quedó instalado durante la instalación. No tienes que hacer nada."},
@@ -65,5 +82,7 @@ INFO = ProviderInfo(
     ],
     check_fn=_check,
     install_fn=_install,
+    login_fn=_login,
+    login_status_fn=_login_status,
     bridge_env_fn=_bridge_env,
 )

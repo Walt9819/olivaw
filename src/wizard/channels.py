@@ -91,6 +91,12 @@ def launch_terminal(profile, subargs, title="Hermes"):
 
 
 # ── Claude Code sign-in (one click) ────────────────────────────────────────────
+def open_login_terminal(argv, title="Olivaw"):
+    """Open the interactive sign-in for a brain CLI. Used by the provider adapters, so adding a
+    third brain needs no change here."""
+    return _open_terminal([str(a) for a in argv], title=title)
+
+
 def claude_login(claude_path=None):
     """Open a terminal running `claude auth login` so the user signs in with one click
     (the CLI opens the browser OAuth flow). No user input goes into the command."""

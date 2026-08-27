@@ -171,6 +171,7 @@ def initial_state():
             "workspace": workspace,
             "python": sys.executable,
             "claude": claude or "",
+            "codex": which("codex") or "",
             "node": which("node") or "",
             "hermes": which("hermes") or "",
             "hermes_config": _find_hermes_config(),
@@ -185,6 +186,21 @@ def initial_state():
     }
 
 
+def _cli_paths(body=None):
+    """Everything an adapter might need to find its CLI. Both keys are always present, so the
+    front-end does not need to know which one a given provider cares about."""
+    body = body or {}
+    return {"claude": body.get("claude") or which("claude") or "",
+            "codex": body.get("codex") or which("codex") or "",
+            "workspace": body.get("workspace") or ""}
+
+
+def _provider(body=None):
+    body = body or {}
+    return (providers.get(body.get("provider", providers.DEFAULT_ID))
+            or providers.get(providers.DEFAULT_ID))
+
+
 # ── test bridge (for "probar el cerebro") ────────────────────────────────────
 def _port_open(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -192,15 +208,31 @@ def _port_open(port):
         return s.connect_ex(("127.0.0.1", port)) == 0
 
 
-def ensure_test_bridge(claude_path, workspace):
-    """Start a throwaway bridge on TEST_PORT if not already up. Returns base url."""
+def ensure_test_bridge(provider_env, workspace):
+    """Start a throwaway bridge on TEST_PORT if not already up. Returns base url.
+
+    `provider_env` comes from the selected provider's adapter, so the test exercises the brain
+    the owner actually picked. A test bridge already running a DIFFERENT engine is retired first
+    — otherwise switching provider mid-wizard would keep testing the previous one.
+    """
     global _test_bridge
-    ok, _d, _s = http_json(TEST_URL + "/health", timeout=3)
+    want = (provider_env or {}).get("OLIVAW_ENGINE", "claude")
+    ok, data, _s = http_json(TEST_URL + "/health", timeout=3)
     if ok:
-        return TEST_URL
+        if not isinstance(data, dict) or data.get("engine", "claude") == want:
+            return TEST_URL
+        try:
+            if _test_bridge:
+                _test_bridge.terminate()
+                _test_bridge.wait(timeout=10)
+        except Exception:  # noqa: BLE001
+            pass
+        for _ in range(20):
+            if not http_json(TEST_URL + "/health", timeout=1)[0]:
+                break
+            time.sleep(0.5)
     env = os.environ.copy()
-    if claude_path:
-        env["CLAUDE_BRIDGE_CLAUDE"] = claude_path
+    env.update({k: str(v) for k, v in (provider_env or {}).items()})
     if workspace:
         env["CLAUDE_BRIDGE_WORKSPACE"] = workspace
         os.makedirs(workspace, exist_ok=True)
@@ -363,32 +395,36 @@ class Handler(BaseHTTPRequestHandler):
             return {"ok": False, "detail": "chequeo desconocido"}
 
         if route == "provider/check":
-            p = providers.get(body.get("provider", providers.DEFAULT_ID))
+            p = _provider(body)
             if not p:
                 return {"ok": False, "detail": "proveedor desconocido"}
-            return p.check({"claude": body.get("claude") or which("claude")})
+            return p.check(_cli_paths(body))
 
         if route == "provider/install":
-            p = providers.get(body.get("provider", providers.DEFAULT_ID))
+            p = _provider(body)
             if not p:
                 return {"ok": False, "detail": "proveedor desconocido"}
-            return p.install({})
+            return p.install(_cli_paths(body))
 
         if route == "provider/login":
-            return channels.claude_login(body.get("claude") or which("claude"))
+            return _provider(body).login(_cli_paths(body))
 
         if route == "provider/login-status":
-            return channels.claude_status(body.get("claude") or which("claude"))
+            return _provider(body).login_status(_cli_paths(body))
 
         if route == "test-brain":
-            claude = body.get("claude") or which("claude")
+            p = _provider(body)
+            paths = _cli_paths(body)
             ws = body.get("workspace") or os.path.join(
                 os.path.expanduser("~"), "hermes-workspace")
-            if not claude:
+            cli = paths.get(p.cli_key) or ""
+            if not cli:
                 return {"ok": False,
-                        "detail": "No encontramos Claude Code. Complétalo en el paso anterior."}
-            base = ensure_test_bridge(claude, ws)
-            return checks.test_brain(base)
+                        "detail": "No encontramos %s. Complétalo en el paso anterior."
+                                  % (p.cli_label or p.label)}
+            paths["workspace"] = ws
+            base = ensure_test_bridge(p.bridge_env(paths), ws)
+            return checks.test_brain(base, brain=(p.cli_label or p.label))
 
         if route == "telegram/validate":
             return telegram_setup.validate(body.get("token", ""))
@@ -513,7 +549,10 @@ class Handler(BaseHTTPRequestHandler):
         provider_id = body.get("provider", providers.DEFAULT_ID)
         p = providers.get(provider_id)
         claude = body.get("claude") or which("claude")
-        provider_env = p.bridge_env({"claude": claude}) if p else {}
+        # No workspace here on purpose: write_all() sets CLAUDE_BRIDGE_WORKSPACE from the
+        # agent's own workspace, which is only decided further down.
+        provider_env = p.bridge_env({"claude": claude,
+                                     "codex": body.get("codex") or which("codex") or ""}) if p else {}
         identity = dict(body.get("identity", {}))
         identity["owner_id"] = body.get("owner_id", "")
         hp = which("hermes")
@@ -538,6 +577,7 @@ class Handler(BaseHTTPRequestHandler):
             provisioned = {"slug": slug, "name": name, "profile": profile, "port": port,
                            "workspace": workspace, "claude_config_dir": claude_config_dir,
                            "enabled": True, "gateway_enabled": bool(body.get("token")),
+                           "engine": (p.engine if p else "claude"),
                            "bot_username": body.get("bot_username", "")}
         elif mode == "reconfigure" and agent.get("slug") and agent.get("slug") != "default":
             slug = agent["slug"]
@@ -565,6 +605,7 @@ class Handler(BaseHTTPRequestHandler):
             "hermes_config_path": body.get("hermes_config") or _find_hermes_config(),
             "hermes": hp, "port": port, "profile": profile, "is_default": is_default,
             "gateway_action": gateway_action,
+            "engine": (p.engine if p else "claude"), "provider": provider_id,
         }
         res = config_writer.write_all(cfg)
 
@@ -576,6 +617,7 @@ class Handler(BaseHTTPRequestHandler):
             rec = agents_registry.get(slug, INSTALL_DIR) or {"slug": slug}
             rec.update({"profile": profile, "port": port, "workspace": workspace,
                         "claude_config_dir": claude_config_dir, "enabled": True,
+                        "engine": (p.engine if p else "claude"),
                         "gateway_enabled": bool(body.get("token")) or rec.get("gateway_enabled", False)})
             if body.get("bot_username"):
                 rec["bot_username"] = body["bot_username"]

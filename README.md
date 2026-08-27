@@ -6,16 +6,22 @@
 -->
 # Hermes Bridge
 
-Run the **Hermes Agent** using your **Claude Code subscription as its model** — no API key —
-reachable over Telegram (or any Hermes platform). Includes local GPU **STT** (voice notes) and
-**TTS** (voice replies), an `hqctl` ops CLI, and a **silent auto-updater** so non-technical users
-stay current without ever touching a terminal.
+Run the **Hermes Agent** on a **coding-CLI subscription as its model** — no API key — reachable
+over Telegram (or any Hermes platform). The brain is your choice: **Claude Code** (default) or
+**OpenAI Codex**. Includes local GPU **STT** (voice notes) and **TTS** (voice replies), an `hqctl`
+ops CLI, and a **silent auto-updater** so non-technical users stay current without ever touching a
+terminal.
 
 ```
-Telegram ⇄ Hermes gateway ⇄ bridge (localhost:8790) ⇄ claude -p  (Claude Code = the brain)
+Telegram ⇄ Hermes gateway ⇄ bridge (localhost:8790) ⇄ claude -p     (Claude Code = the brain)
+                                     │                └─ or ─┐
+                                     │                  codex exec  (Codex = the brain)
                                      ▲
                           supervisor: keeps it alive + auto-updates when idle
 ```
+
+Everything else is engine-agnostic: the same tool loop, session resume, routing, wizard, SOS
+console, nightly consolidation and weekly self-review run on either brain.
 
 ## 🚀 Empezar en ~15 minutos (guía para no-técnicos)
 
@@ -71,6 +77,7 @@ customized `CLAUDE.md`, and database are never touched.
 ```
 src/            code that gets auto-updated
   claude_bridge.py   the bridge (function-calling shim; /status idle probe)
+  codex_engine.py    the Codex brain: `codex exec` behind the same (text, usage, session) contract
   launcher.py        supervisor + auto-updater
   hqctl.py           terse HQ ops CLI
   stt/ tts/          local voice in/out
@@ -94,15 +101,48 @@ The installer checks prerequisites (Python 3, Node, Claude Code CLI, Hermes), do
 the latest release, registers the supervisor at login, and then **opens the onboarding wizard in
 the browser** to finish everything else — no terminal, no config files.
 
-Prerequisites the user must have (installer guides these): Python 3, Node.js, the Claude Code CLI
-(`npm i -g @anthropic-ai/claude-code`, logged into a Claude subscription), and Hermes Agent.
+Prerequisites the user must have (installer guides these): Python 3, Node.js, Hermes Agent, and
+**one** brain CLI:
+
+* **Claude Code** — `npm i -g @anthropic-ai/claude-code`, then `claude auth login`. Needs a paid
+  Claude plan (Pro or Max).
+* **Codex** — `npm i -g @openai/codex`, then `codex login`. Needs a paid ChatGPT plan (Plus, Pro or
+  Business), or an OpenAI API key in `CODEX_API_KEY`.
+
+Both are offered in the wizard's first step, which installs and signs into whichever you pick.
+
+### Choosing the brain (Claude Code or Codex)
+
+The wizard writes the choice into `updater.config.json` → `env.OLIVAW_ENGINE` (`claude` | `codex`),
+and the bridge reads it at startup. To switch by hand, set that value (plus `OLIVAW_CODEX` with the
+path to the CLI) and restart the bridge.
+
+What is identical on both: the decision protocol and tool loop, per-conversation session resume
+(so later turns send only the new messages), effort routing by task weight, image attachments,
+the SOS console with its resumable conversations, and the nightly/weekly routines.
+
+What genuinely differs, and why:
+
+| | Claude Code | Codex |
+|---|---|---|
+| tool-less reasoning | `--tools ""` — no tools at all | no such flag; enforced by a **read-only sandbox** (`-c sandbox_mode="read-only"`) |
+| runtime contract | `--append-system-prompt` | prepended to the prompt on stdin |
+| session id | we choose it (`--session-id`) | Codex mints it; we learn it from `thread.started` |
+| model routing | Sonnet / Opus / Fable tiers | no `-m` unless you set `OLIVAW_CODEX_MODEL` — your configured default is used |
+| the agent's persona | `<workspace>/CLAUDE.md` | `<workspace>/AGENTS.md` (the wizard writes it) |
+| advertised context | 1M | 256k by default (`OLIVAW_CODEX_CONTEXT`) — Hermes compacts against this number |
+
+One Codex behaviour worth knowing: **`codex exec` can exit 0 having produced nothing but errors**
+(an auth failure looks like a clean exit). The engine therefore treats "an `agent_message` came
+back" as the definition of success, and surfaces the real cause otherwise. `tools/test_codex_engine.py`
+pins that, using a stream captured from the real CLI.
 
 ### The onboarding wizard (`src/wizard/`)
 
 A tiny stdlib web app (opens in the browser, zero extra dependencies) that walks a non-technical
 user through, **testing each step live so nothing is left half-connected**:
 
-1. **The brain** — pick the provider (Claude Code today; Codex / Antigravity are pluggable stubs),
+1. **The brain** — pick the provider (Claude Code or Codex; Antigravity is a pluggable stub),
    with a download/login guide and a real *“probar el cerebro”* button that sends a live request
    through the bridge.
 2. **Hermes** — install guide + a *“verificar”* button.
@@ -258,7 +298,11 @@ tagged releases, and never commit secrets — tokens/keys live only in each user
 
 ## Configuration knobs
 
-Bridge (env): `CLAUDE_BRIDGE_PRIMARY` (default `sonnet`), `_FALLBACK` (`opus`), `_AUX` (`sonnet`),
-`_BIGCTX` (`fable`), `_EFFORT_HEAVY/NORMAL/LIGHT`, `_IMG_DIR`, `_CLAUDE`, `_WORKSPACE`.
+Bridge (env): `OLIVAW_ENGINE` (`claude` | `codex`), `CLAUDE_BRIDGE_PRIMARY` (default `sonnet`),
+`_FALLBACK` (`opus`), `_AUX` (`sonnet`), `_BIGCTX` (`fable`), `_EFFORT_HEAVY/NORMAL/LIGHT`,
+`_IMG_DIR`, `_CLAUDE`, `_WORKSPACE`.
+Codex engine (env): `OLIVAW_CODEX` (path to the CLI), `OLIVAW_CODEX_MODEL` (empty = the model your
+Codex config already uses), `OLIVAW_CODEX_MODEL_<TIER>` for a per-tier override,
+`OLIVAW_CODEX_FALLBACK`, `OLIVAW_CODEX_AUX`, `OLIVAW_CODEX_BIGCTX`, `OLIVAW_CODEX_CONTEXT`.
 Supervisor (`updater.config.json`): `repo`, `poll_minutes`, `idle_seconds`, `nightly_hour`,
 `auto_update`, `lang`, Telegram token/chat ids. See `templates/`.

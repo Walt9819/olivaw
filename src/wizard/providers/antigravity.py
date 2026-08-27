@@ -3,6 +3,9 @@
 from .base import ProviderInfo
 
 INFO = ProviderInfo(
+    cli_key="antigravity",
+    cli_label="Antigravity",
+    engine="antigravity",
     id="antigravity",
     label="Antigravity",
     status="coming_soon",

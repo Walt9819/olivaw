@@ -245,6 +245,13 @@ def _agent_cfg(agent, base_cfg):
         env["CLAUDE_BRIDGE_WORKSPACE"] = agent["workspace"]
     if agent.get("claude_config_dir"):
         env["CLAUDE_CONFIG_DIR"] = agent["claude_config_dir"]
+    # An extra agent inherits the default agent's brain unless it names its own.
+    if agent.get("engine"):
+        env["OLIVAW_ENGINE"] = agent["engine"]
+        if agent["engine"] == "codex" and not env.get("OLIVAW_CODEX"):
+            found = shutil.which("codex.cmd") or shutil.which("codex.exe") or shutil.which("codex")
+            if found:
+                env["OLIVAW_CODEX"] = found
     port = int(agent["port"])
     return {
         "slug": agent.get("slug"),
@@ -410,7 +417,8 @@ def wait_healthy(cfg, want_version=None, timeout=30):
 
 # ── the update itself ────────────────────────────────────────────────────────
 # Without these, an installation is not an installation.
-REQUIRED_FILES = ("launcher.py", "claude_bridge.py", os.path.join("wizard", "wizard_server.py"))
+REQUIRED_FILES = ("launcher.py", "claude_bridge.py", "codex_engine.py",
+                  os.path.join("wizard", "wizard_server.py"))
 
 
 def _replace_dir(new_dir, dest):

@@ -276,9 +276,13 @@
     var opts = META.providers.map(function (p) {
       var sel = p.id === S.provider ? " sel" : "";
       var dis = p.status !== "ready" ? " disabled" : "";
-      var badge = p.status === "ready"
-        ? '<span class="badge">Recomendado</span>'
-        : '<span class="badge soon">Próximamente</span>';
+      // Two brains are ready now, so "recommended" has to mean the default one specifically -
+      // otherwise both cards claim it and the badge stops meaning anything.
+      var badge = p.status !== "ready"
+        ? '<span class="badge soon">Próximamente</span>'
+        : (p.id === META.default_provider
+            ? '<span class="badge">Recomendado</span>'
+            : '<span class="badge alt">Disponible</span>');
       return '<div class="opt' + sel + dis + '" data-pid="' + p.id + '">' +
         '<div class="ic">' + esc(p.label[0]) + '</div>' +
         '<div class="grow"><div class="row" style="justify-content:space-between">' +
@@ -296,29 +300,34 @@
     return '' +
       '<div class="eyebrow">Paso 1 · El cerebro</div>' +
       '<h1>Elige quién piensa por tu agente</h1>' +
-      '<p class="lead">El cerebro es el modelo de IA que razona. Hoy el recomendado es ' +
-      'Claude Code: usa tu suscripción de Claude, sin claves de API.</p>' +
+      '<p class="lead">El cerebro es el modelo de IA que razona. Puedes usar <b>Claude Code</b> ' +
+      '(el recomendado) o <b>Codex</b> de OpenAI: en ambos casos con tu suscripción, sin claves ' +
+      'de API. Todo lo demás de Olivaw funciona igual con cualquiera de los dos.</p>' +
       '<div class="opt-grid" id="provOpts">' + opts + '</div>' +
       '<div class="callout"><b>Necesitas una cuenta de pago.</b> ' + esc(p.paid_note) +
       ' &nbsp;<a href="' + esc(p.download_url) + '" target="_blank" rel="noopener noreferrer">Descargar</a> · ' +
       '<a href="' + esc(p.help_url) + '" target="_blank" rel="noopener noreferrer">Ayuda oficial</a></div>' +
       '<div class="guide">' + steps + '</div>' +
       '<div class="card pad">' +
-      '<b>1 · Conecta tu cuenta de Claude</b>' +
+      '<b>1 · Conecta tu cuenta de ' + esc(cliLabel()) + '</b>' +
       '<p class="muted small">Un clic abre una ventana para iniciar sesión con tu cuenta. ' +
       'Solo se hace una vez. ' + esc(p.login_hint) + '</p>' +
       '<div class="row">' +
-      '<button class="btn btn-primary" id="btnLogin">Iniciar sesión en Claude</button>' +
+      '<button class="btn btn-primary" id="btnLogin">Iniciar sesión en ' + esc(cliLabel()) +
+      '</button>' +
       '<button class="btn btn-soft btn-sm" id="btnLoginStatus">Ya inicié sesión</button>' +
       '<span id="pillLogin" class="pill" style="display:none"></span></div>' +
       '<details style="margin-top:12px"><summary>Opciones avanzadas</summary>' +
-      '<label class="field" style="margin-top:8px"><span class="lab">Ruta de Claude Code ' +
-      '<span class="hint">(la detectamos sola)</span></span>' +
-      '<input type="text" id="claudePath" placeholder="claude" value="' + esc(S.claude) + '"></label>' +
+      '<label class="field" style="margin-top:8px"><span class="lab">Ruta de ' +
+      esc(cliLabel()) + ' <span class="hint">(la detectamos sola)</span></span>' +
+      '<input type="text" id="claudePath" placeholder="' + esc(cliKey()) + '" value="' +
+      esc(cliPath()) + '"></label>' +
       '<div class="row">' +
       '<button class="btn btn-soft btn-sm" id="btnNode">Verificar Node.js</button>' +
-      '<button class="btn btn-soft btn-sm" id="btnInstall">Reinstalar Claude Code</button>' +
-      '<button class="btn btn-soft btn-sm" id="btnCheckClaude">Verificar Claude Code</button>' +
+      '<button class="btn btn-soft btn-sm" id="btnInstall">Instalar ' + esc(cliLabel()) +
+      '</button>' +
+      '<button class="btn btn-soft btn-sm" id="btnCheckClaude">Verificar ' + esc(cliLabel()) +
+      '</button>' +
       '</div><div id="pillProv" class="pill load" style="display:none"></div></details>' +
       '</div>' +
       '<div class="card pad">' +
@@ -329,7 +338,19 @@
   }
   function provider() {
     return META.providers.filter(function (p) { return p.id === S.provider; })[0] ||
-      META.providers[0] || { steps: [], paid_note: "", download_url: "#", help_url: "#", login_hint: "" };
+      META.providers[0] || { steps: [], paid_note: "", download_url: "#", help_url: "#",
+                             login_hint: "", cli_key: "claude", cli_label: "Claude Code" };
+  }
+  // The CLI path lives under the provider's own key, so switching brain does not lose the other
+  // one's path, and the back end can look up whichever it needs.
+  function cliKey() { return provider().cli_key || "claude"; }
+  function cliLabel() { return provider().cli_label || provider().label || "el cerebro"; }
+  function cliPath() { return S[cliKey()] || ""; }
+  function setCliPath(v) { S[cliKey()] = v; save(); }
+  function brainBody(extra) {
+    var b = { provider: S.provider, claude: S.claude || "", codex: S.codex || "" };
+    for (var k in (extra || {})) b[k] = extra[k];
+    return b;
   }
   function eProvider() {
     Array.prototype.forEach.call(document.querySelectorAll("#provOpts .opt"), function (o) {
@@ -337,20 +358,22 @@
         var pid = o.getAttribute("data-pid");
         var p = META.providers.filter(function (x) { return x.id === pid; })[0];
         if (!p || p.status !== "ready") { toast("Ese proveedor aún no está disponible."); return; }
-        S.provider = pid; save(); render();
+        if (pid !== S.provider) S.brainOk = false;   // a different brain has not been tested
+        S.provider = pid; save(); render(); renderStepper();
       };
     });
-    var cp = el("claudePath"); if (cp) cp.oninput = function () { S.claude = cp.value.trim(); save(); };
+    var cp = el("claudePath");
+    if (cp) cp.oninput = function () { setCliPath(cp.value.trim()); };
     // One-click Claude sign-in (opens the OAuth flow in a terminal).
     var pillLogin = el("pillLogin");
     if (el("btnLogin")) el("btnLogin").onclick = function () {
       pillLogin.style.display = "inline-flex";
-      runTest(this, pillLogin, function () { return api("provider/login", { claude: S.claude }); }, "Abriendo…")
+      runTest(this, pillLogin, function () { return api("provider/login", brainBody()); }, "Abriendo…")
         .then(function (r) { if (r && r.ok) toast("Completa el inicio de sesión en la ventana, luego pulsa «Ya inicié sesión»."); });
     };
     if (el("btnLoginStatus")) el("btnLoginStatus").onclick = function () {
       pillLogin.style.display = "inline-flex";
-      runTest(this, pillLogin, function () { return api("provider/login-status", { claude: S.claude }); }, "Comprobando…");
+      runTest(this, pillLogin, function () { return api("provider/login-status", brainBody()); }, "Comprobando…");
     };
     var pill = el("pillProv");
     if (el("btnNode")) el("btnNode").onclick = function () {
@@ -359,19 +382,24 @@
     };
     if (el("btnInstall")) el("btnInstall").onclick = function () {
       pill.style.display = "inline-flex";
-      runTest(this, pill, function () { return api("provider/install", { provider: S.provider }); }, "Instalando…");
+      runTest(this, pill, function () { return api("provider/install", brainBody()); }, "Instalando…");
     };
     if (el("btnCheckClaude")) el("btnCheckClaude").onclick = function () {
       pill.style.display = "inline-flex";
       runTest(this, pill, function () {
-        return api("provider/check", { provider: S.provider, claude: S.claude });
-      }).then(function (r) { if (r.ok && r.path) { S.claude = r.path; save(); if (el("claudePath")) el("claudePath").value = r.path; } });
+        return api("provider/check", brainBody());
+      }).then(function (r) {
+        if (r.ok && r.path) {
+          setCliPath(r.path);
+          if (el("claudePath")) el("claudePath").value = r.path;
+        }
+      });
     };
     var pb = el("pillBrain");
     el("btnBrain").onclick = function () {
       pb.style.display = "inline-flex";
       runTest(this, pb, function () {
-        return api("test-brain", { claude: S.claude, workspace: S.workspace });
+        return api("test-brain", brainBody({ workspace: S.workspace }));
       }, "Despertando al cerebro… (puede tardar)").then(function (r) {
         S.brainOk = !!(r && r.ok); save(); renderStepper();
         if (S.brainOk) toast("¡El cerebro está vivo! 🧠");
@@ -571,7 +599,7 @@
       'que lo mantiene vivo y lo actualiza solo cuando no lo estés usando.</p>' +
       warn +
       '<div class="card pad"><b>Resumen</b><ul class="filelist">' +
-      sumline("🧠", "Cerebro", provider().label + (S.brainOk ? " · probado ✓" : "")) +
+      sumline("🧠", "Cerebro", cliLabel() + (S.brainOk ? " · probado ✓" : "")) +
       sumline("✨", "Agente", (S.identity.agent_name || "sin nombre") + (S.identity.purpose ? " — " + S.identity.purpose : "")) +
       sumline("🧩", "Habilidades", S.usecases.length ? String(S.usecases.length) + " seleccionadas" : "ninguna") +
       sumline("🔒", "Dueño", S.owner_id ? (S.owner_username || S.owner_id) + " (id " + S.owner_id + ")" : "sin vincular") +
@@ -647,7 +675,8 @@
     btn.onclick = function () {
       pill.style.display = "inline-flex";
       var payload = {
-        provider: S.provider, claude: S.claude, install_dir: S.install_dir,
+        provider: S.provider, claude: S.claude || "", codex: S.codex || "",
+        install_dir: S.install_dir,
         workspace: S.workspace, repo: S.repo, token: S.token, owner_id: S.owner_id,
         chat_id: S.chat_id, maintainer_id: S.maintainer_id, lang: "es",
         identity: S.identity, usecase_ids: S.usecases, tavily_key: S.tavily_key,
@@ -1817,6 +1846,8 @@
     api("rescue/context", {}).then(function (c) {
       if (!box) return;
       if (!c || !c.ok) { box.innerHTML = '<span class="muted small">No pude leer el estado.</span>'; return; }
+      // Name the brain this install actually runs, everywhere the console mentions it.
+      paintBrainName(c.engine === "codex" ? "Codex" : "Claude");
       var b = (c.bridges || []).map(function (x) {
         return '<span class="pill ' + (x.up ? "ok" : "err") + '" style="margin:0 6px 0 0">' +
           (x.up ? "✓" : "✕") + " puente :" + esc(x.port) + '</span>';
@@ -1824,8 +1855,12 @@
       box.innerHTML = '<div class="row" style="flex-wrap:wrap;gap:6px">' + b +
         '<span class="pill ' + (c.hermes_installed ? "ok" : "err") + '" style="margin:0">' +
         (c.hermes_installed ? "✓" : "✕") + ' Hermes</span>' +
-        '<span class="pill ' + (c.claude_installed ? "ok" : "err") + '" style="margin:0">' +
-        (c.claude_installed ? "✓" : "✕") + ' Claude</span>' +
+        (function () {
+          var cx = c.engine === "codex";
+          var okCli = cx ? c.codex_installed : c.claude_installed;
+          return '<span class="pill ' + (okCli ? "ok" : "err") + '" style="margin:0">' +
+            (okCli ? "✓" : "✕") + (cx ? " Codex" : " Claude") + '</span>';
+        })() +
         '<span class="muted small" style="margin-left:auto">v' + esc(c.version || "?") + '</span></div>' +
         (c.bridge_down ? '<div class="callout warn small" style="margin:10px 0 0">El puente no responde: ' +
           'por eso tu agente no contesta en Telegram. Pregunta abajo y te digo cómo revivirlo.</div>' : "");
@@ -1910,6 +1945,26 @@
       });
   }
 
+  // The console talks to whichever brain this install runs, so it must not be labelled "Claude"
+  // on a Codex machine — this is the screen people open when they are already lost.
+  function paintBrainName(brain) {
+    if (!brain) return;
+    var sub = el("sosSub");
+    if (sub) {
+      sub.textContent = "Habla con " + brain + " sobre tu instalación — sin pasar por tu agente";
+    }
+    Array.prototype.forEach.call(document.querySelectorAll("[data-brain-name]"), function (n) {
+      n.textContent = "Habla con " + brain;
+    });
+    var fab = el("sosFab");
+    if (fab) fab.title = "¿Algo falla? Habla con " + brain;
+    var foot = el("sosSideFoot");
+    if (foot) {
+      foot.textContent = "Se guardan en tu equipo y " + brain + " mantiene el contexto: " +
+        "puedes retomarlas cuando quieras.";
+    }
+  }
+
   function openSos(convId) {
     var sos = el("sos");
     if (!sos) return;
@@ -1978,6 +2033,7 @@
         // fill only empty fields (don't clobber a resumed session)
         S.python = d.python || S.python;
         if (!S.claude) S.claude = d.claude || "";
+        if (!S.codex) S.codex = d.codex || "";
         if (!S.install_dir) S.install_dir = d.install_dir || "";
         if (!S.workspace) S.workspace = d.workspace || "";
         if (!S.hermes_config) S.hermes_config = d.hermes_config || "";

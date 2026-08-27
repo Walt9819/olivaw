@@ -2,9 +2,9 @@
 Provider adapter interface.
 
 A "provider" is the model backend Hermes uses as its brain (via the bridge).
-Claude Code is the default and only fully-supported provider today; Codex and
-Antigravity are declared as `coming_soon` stubs that slot into the SAME interface,
-so adding them later is one adapter file each — no wizard rework.
+Claude Code is the default; Codex is fully supported too. Antigravity is still a
+`coming_soon` stub that slots into the SAME interface, so adding it later is one
+adapter file plus an engine module — no wizard rework.
 
 Each adapter is a plain object exposing:
   id            short slug ("claude-code")
@@ -15,8 +15,13 @@ Each adapter is a plain object exposing:
   download_url  where to get the app/CLI
   help_url      official docs / support link
   login_hint    what "logged in" looks like, in plain words
+  cli_key       key under which this CLI's path travels in state/requests ("claude"/"codex")
+  cli_label     the CLI's own name, for buttons and labels ("Claude Code"/"Codex")
+  engine        which bridge engine runs it ("claude"/"codex") — sets OLIVAW_ENGINE
   check()       -> dict: is the CLI present & runnable? {ok, found, path, version, detail}
   install()     -> dict: best-effort auto-install {ok, detail}   (may be a no-op)
+  login()       -> dict: open the interactive sign-in for this CLI
+  login_status() -> dict: {ok, signed_in, detail} without any interaction
   bridge_env(paths) -> dict: env vars the bridge needs for THIS provider
 
 The wizard only calls check()/install() for the selected provider, and renders
@@ -37,10 +42,15 @@ class ProviderInfo:
     download_url: str
     help_url: str
     login_hint: str = ""
+    cli_key: str = "claude"
+    cli_label: str = ""
+    engine: str = "claude"
     steps: List[Dict[str, str]] = field(default_factory=list)  # [{title, body, link?}]
     # runtime hooks (set by concrete adapters); stubs may leave them None
     check_fn: Optional[Callable[[dict], dict]] = None
     install_fn: Optional[Callable[[dict], dict]] = None
+    login_fn: Optional[Callable[[dict], dict]] = None
+    login_status_fn: Optional[Callable[[dict], dict]] = None
     bridge_env_fn: Optional[Callable[[dict], dict]] = None
 
     def to_public(self) -> dict:
@@ -54,6 +64,9 @@ class ProviderInfo:
             "download_url": self.download_url,
             "help_url": self.help_url,
             "login_hint": self.login_hint,
+            "cli_key": self.cli_key,
+            "cli_label": self.cli_label or self.label,
+            "engine": self.engine,
             "steps": self.steps,
         }
 
@@ -67,6 +80,17 @@ class ProviderInfo:
         if self.status != "ready" or not self.install_fn:
             return {"ok": False, "detail": "Instalación automática no disponible."}
         return self.install_fn(paths)
+
+    def login(self, paths: dict) -> dict:
+        if self.status != "ready" or not self.login_fn:
+            return {"ok": False, "detail": f"{self.label} aún no está disponible."}
+        return self.login_fn(paths)
+
+    def login_status(self, paths: dict) -> dict:
+        if self.status != "ready" or not self.login_status_fn:
+            return {"ok": False, "signed_in": False,
+                    "detail": f"{self.label} aún no está disponible."}
+        return self.login_status_fn(paths)
 
     def bridge_env(self, paths: dict) -> dict:
         if self.bridge_env_fn:

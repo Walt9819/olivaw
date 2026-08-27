@@ -3,6 +3,7 @@ Writes the real configuration at the end of the wizard.
 
 Produces, atomically and with backups:
   1. <workspace>/CLAUDE.md          the warm-started persona (identity + use-cases + seeds)
+     <workspace>/AGENTS.md          the same persona, when the brain is Codex (the doc it reads)
   2. <install>/updater.config.json  the supervisor/updater config (token, owner, paths)
   3. <install>/hermes-config-snippet.yaml   personalized Hermes model block + OWNER LOCK
   4. <install>/.env                 local secrets (token, dummy key, yolo)
@@ -191,7 +192,7 @@ def default_bot_commands():
 def write_all(cfg):
     """
     cfg keys:
-      install_dir, workspace, python, provider_env(dict),
+      install_dir, workspace, python, provider_env(dict), engine("claude"|"codex"),
       repo, telegram_bot_token, owner_id, chat_id, maintainer_id, lang,
       identity(dict), usecase_ids(list), tavily_key(optional),
       hermes_config_path(optional)
@@ -204,12 +205,20 @@ def write_all(cfg):
     os.makedirs(install_dir, exist_ok=True)
     os.makedirs(workspace, exist_ok=True)
 
-    # 1) CLAUDE.md (warm-started persona)
+    # 1) The warm-started persona. CLAUDE.md is always written (it is also the file the owner
+    #    edits by hand); on Codex the SAME content also goes to AGENTS.md, because that is the
+    #    project doc Codex loads. Without it a Codex brain would start with no identity — the
+    #    one place where the two engines are not interchangeable by accident.
     claude_md = build_claude_md(cfg.get("identity", {}), cfg.get("usecase_ids", []))
     claude_md_path = os.path.join(workspace, "CLAUDE.md")
     _backup(claude_md_path)
     _atomic_write(claude_md_path, claude_md)
     written.append(claude_md_path)
+    if (cfg.get("engine") or "claude") == "codex":
+        agents_md_path = os.path.join(workspace, "AGENTS.md")
+        _backup(agents_md_path)
+        _atomic_write(agents_md_path, claude_md)
+        written.append(agents_md_path)
 
     # 2) updater.config.json — ONLY for the default agent. Extra agents run from
     #    agents.json (written by the caller) under the same supervisor, so we must not

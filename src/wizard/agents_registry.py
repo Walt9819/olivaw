@@ -2,7 +2,8 @@
 Registry of ADDITIONAL agents on this machine (agents.json at the install root).
 
 Each agent = an isolated Hermes profile + its own bridge instance:
-  {slug, name, profile, port, workspace, claude_config_dir, bot_username}
+  {slug, name, profile, port, workspace, claude_config_dir, bot_username, engine}
+  `engine` is optional: absent means "same brain as the default agent".
 
 The original `default` agent (Walt's existing setup) is NOT stored here — it keeps
 running from updater.config.json exactly as before. This registry only layers extra

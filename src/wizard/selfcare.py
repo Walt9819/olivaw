@@ -73,6 +73,21 @@ def _tmp(ws):
     return os.path.join(ws, "tmp", "olivaw-selfcare")
 
 
+def agent_doc(ws=None):
+    """The file that holds the agent's own working notes — CLAUDE.md on Claude Code, AGENTS.md
+    on Codex. The weekly review edits it, so naming the wrong one would send its improvements to
+    a file the brain never reads."""
+    ws = ws or workspace_dir()
+    claude_md = os.path.join(ws, "CLAUDE.md")
+    agents_md = os.path.join(ws, "AGENTS.md")
+    if os.path.isfile(agents_md) and not os.path.isfile(claude_md):
+        return agents_md
+    if os.path.isfile(agents_md) and os.path.isfile(claude_md):
+        # Both present (an install that switched engines): name both, the routine picks.
+        return claude_md + " (y " + agents_md + ", si existe: mantenlos iguales)"
+    return claude_md
+
+
 # The prompts name these folders, so they must exist before the first run - an agent improvising a
 # layout at 04:30 is how a memory ends up scattered.
 MEMORY_SUBDIRS = ("journal", "memory", "reviews", "proposals")
@@ -99,6 +114,7 @@ def daily_prompt(ws=None, vault=None):
     vault = vault if vault is not None else vault_dir(ws)
     mem = os.path.join(vault, AGENT_DIR) if vault else os.path.join(ws, "agent-memory")
     prop = os.path.join(mem, "proposals")
+    doc = agent_doc(ws)
     tmp = _tmp(ws)
     return f"""Es tu CONSOLIDACIÓN NOCTURNA (tu "sueño"): releer el día y quedarte con lo que valga la
 pena recordar. Nadie espera respuesta: trabaja tranquilo, pero TERMINA. Más vale una nota corta
@@ -176,7 +192,7 @@ propuesta aceptada que no queda registrada se pierde, y el dueño ya te había d
      ahí hay una propuesta esperando: vigilarlo tú, prepararle lo que le falta para decidir, o
      recordárselo el día que toque con todo listo. Escribir eso en el journal y no proponer nada
      es dejarlo pasar.
-   - Ten presente su ROL y sus prioridades — léelas, no las supongas: {ws}/CLAUDE.md y
+   - Ten presente su ROL y sus prioridades — léelas, no las supongas: {doc} y
      "{mem}/memory/". Propón lo que le ahorra tiempo A ÉL, no lo que te parece interesante a ti.
    - MÁXIMO 2 por noche, y CERO si no hay motivo: una propuesta de relleno gasta su atención y le
      enseña a ignorarte. Cada una debe ser algo que puedas hacer TÚ solo, concreto y reversible.
@@ -223,6 +239,7 @@ def weekly_prompt(ws=None, vault=None):
     vault = vault if vault is not None else vault_dir(ws)
     mem = os.path.join(vault, AGENT_DIR) if vault else os.path.join(ws, "agent-memory")
     prop = os.path.join(mem, "proposals")
+    doc = agent_doc(ws)
     tmp = _tmp(ws)
     return f"""Es tu REPASO SEMANAL: mirar tu propia semana y mejorar de verdad. Sé honesto contigo
 mismo — un repaso donde todo salió bien no sirve para nada. Nadie espera respuesta inmediata, pero
@@ -254,7 +271,7 @@ estado de las propuestas que el dueño contestó, (3) el mensaje final.
    Si una misma queja aparece dos veces o más, es un patrón, no un accidente.
 
 3) CONVIERTE CADA PATRÓN EN UNA ACCIÓN, y hazla ahora si te toca:
-   a) Es CÓMO trabajas → añade una o dos líneas concretas a tu {ws}/CLAUDE.md (aditivo; copia .bak
+   a) Es CÓMO trabajas → añade una o dos líneas concretas a tu {doc} (aditivo; copia .bak
       antes de tocarlo).
    b) Te faltó CONOCIMIENTO → crea o completa la nota del vault que te habría hecho falta, enlazada.
    c) Es un FLUJO repetitivo → deja un script o una skill documentada para no improvisarlo cada vez.
@@ -269,8 +286,8 @@ estado de las propuestas que el dueño contestó, (3) el mensaje final.
       marca `estado: hecha` con lo que hiciste. Y actualiza "{prop}/_Aprendizaje.md" con lo
       aprendido de las respuestas de la semana.
 
-4) LÍMITES: no toques el código ni la instalación de Olivaw. Los cambios a tu CLAUDE.md: pequeños,
-   aditivos y reversibles. Al final borra "{tmp}".
+4) LÍMITES: no toques el código ni la instalación de Olivaw. Los cambios a tus instrucciones
+   ({doc}): pequeños, aditivos y reversibles. Al final borra "{tmp}".
 
 5) ESCRIBE el repaso en {mem}/reviews/AAAA-Www.md con cuatro apartados: qué funcionó (con ejemplos),
    qué no (con ejemplos), qué cambié esta semana, qué propongo. Enlázalo desde {mem}/_Index.md.

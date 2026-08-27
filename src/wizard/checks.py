@@ -56,10 +56,13 @@ def check_bridge(base_url="http://127.0.0.1:8790"):
             "detail": "El puente no está corriendo todavía (es normal antes de terminar)."}
 
 
-def test_brain(base_url, timeout=120):
+def test_brain(base_url, timeout=120, brain="Claude Code"):
     """
-    The headline test: send a real chat completion through the bridge and confirm
-    the brain (Claude Code) answers. Proves provider → bridge → response end-to-end.
+    The headline test: send a real chat completion through the bridge and confirm the brain
+    answers. Proves provider → bridge → response end-to-end.
+
+    `brain` is only for the message shown when it fails — telling a Codex user to log into
+    Claude Code is how a working setup gets reported as broken.
     """
     payload = {
         "model": "claude-code",
@@ -76,8 +79,8 @@ def test_brain(base_url, timeout=120):
     if not ok:
         detail = data if isinstance(data, str) else str(data)
         return {"ok": False,
-                "detail": "El cerebro no respondió. ¿Iniciaste sesión en Claude Code? "
-                          "Detalle: " + detail[:300]}
+                "detail": "El cerebro no respondió. ¿Iniciaste sesión en %s? "
+                          "Detalle: %s" % (brain, detail[:300])}
     try:
         text = data["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError, TypeError):

@@ -35,6 +35,51 @@ INSTALL_DIR = os.path.dirname(SRC_DIR)
 EMPTY_MCP = os.path.join(SRC_DIR, "empty_mcp.json")
 TIMEOUT = 300
 
+if SRC_DIR not in sys.path:
+    sys.path.insert(0, SRC_DIR)
+try:
+    import codex_engine
+except Exception:  # noqa: BLE001 - the console must still open on an install without it
+    codex_engine = None
+
+
+def configured_engine(install_dir=None):
+    """Which brain this installation thinks with.
+
+    Read from updater.config.json rather than this process's environment: the wizard is launched
+    from a shortcut and inherits none of the bridge's env, so the console would otherwise offer
+    Claude on a Codex install.
+    """
+    env = (os.environ.get("OLIVAW_ENGINE") or "").strip().lower()
+    if env in ("claude", "codex"):
+        return env
+    try:
+        with open(os.path.join(install_dir or INSTALL_DIR, "updater.config.json"),
+                  encoding="utf-8") as fh:
+            cfg = json.load(fh) or {}
+        val = ((cfg.get("env") or {}).get("OLIVAW_ENGINE") or "").strip().lower()
+        if val in ("claude", "codex"):
+            return val
+    except Exception:  # noqa: BLE001
+        pass
+    # Nothing configured: whichever brain is actually on the machine.
+    if which("claude"):
+        return "claude"
+    if codex_engine is not None and codex_engine.available():
+        return "codex"
+    return "claude"
+
+
+def engine_exe(engine=None, install_dir=None):
+    eng = engine or configured_engine(install_dir)
+    if eng == "codex":
+        return (codex_engine.resolve_exe() if codex_engine else which("codex")) or ""
+    return which("claude") or ""
+
+
+def engine_label(engine=None, install_dir=None):
+    return "Codex" if (engine or configured_engine(install_dir)) == "codex" else "Claude Code"
+
 # ── secret redaction ─────────────────────────────────────────────────────────
 _TOKEN_PATTERNS = [
     re.compile(r"\b\d{6,}:[A-Za-z0-9_-]{25,}\b"),                     # telegram bot token
@@ -141,6 +186,12 @@ def collect_context(install_dir=None, fast=False):
     if cl and not fast:
         r = run([cl, "auth", "status"], timeout=12)
         ctx["claude_auth"] = redact((r["out"] or r["err"])[:300])
+    ctx["engine"] = configured_engine(inst)
+    cx = engine_exe("codex", inst)
+    ctx["codex_installed"] = bool(cx)
+    if cx and not fast and codex_engine is not None:
+        st = codex_engine.login_status()
+        ctx["codex_auth"] = redact(str(st.get("detail") or "")[:300])
 
     ctx["launcher_log"] = _tail(os.path.join(inst, "launcher.log"))
     ctx["bridge_log"] = _tail(os.path.join(SRC_DIR, "bridge.log"))
@@ -200,6 +251,15 @@ DIAGNOSE_SUFFIX = (
     "save memories. Never say you are doing any of those — answer from the snapshot you were "
     "given, and if something can only be settled by inspecting the machine, say so and tell the "
     "owner to tick 'Permitir que revise archivos y aplique arreglos'.")
+# Codex cannot switch its tools off, so the truthful brief is different: it may LOOK, and the
+# read-only sandbox is what stops it changing anything. Telling it "you have no tools" would stop
+# it reading the very logs the owner opened the console to have read.
+DIAGNOSE_SUFFIX_CODEX = (
+    " In this turn you run in a READ-ONLY sandbox: you may read files and run read-only commands "
+    "to investigate, and every attempt to write, install or restart anything will be refused by "
+    "the sandbox. So never say you changed, fixed, restarted or saved anything — you cannot. If a "
+    "repair is needed, explain it and tell the owner to tick 'Permitir que revise archivos y "
+    "aplique arreglos'.")
 FIX_SUFFIX = (
     " In this turn you DO have tools, scoped to the installation directory: inspect and repair it "
     "as needed, then state plainly what you changed.")
@@ -332,8 +392,11 @@ def _snapshot_text(ctx):
              "hermes_gateway_raw: %s" % (ctx.get("hermes_gateway") or "(n/a)"),
              "note: if hermes_gateway_state is 'unknown', the check merely timed out — do NOT "
              "tell the owner the gateway is down; say it could not be verified.",
+             "brain_engine: %s   (the CLI answering right now)" % ctx.get("engine", "claude"),
              "claude_installed: %s | auth: %s" % (ctx.get("claude_installed"),
                                                   ctx.get("claude_auth") or "(n/a)"),
+             "codex_installed: %s | auth: %s" % (ctx.get("codex_installed"),
+                                                 ctx.get("codex_auth") or "(n/a)"),
              "updater_config(redacted): %s" % ctx.get("updater_config"),
              "note: the PRIMARY agent is configured by updater.config.json + the Hermes 'default' "
              "profile. agents.json lists ONLY additional isolated agents, so an empty/absent "
@@ -346,10 +409,12 @@ def _snapshot_text(ctx):
 
 
 def ask(question, allow_fix=False, install_dir=None, history=None):
-    """Run one direct Claude Code turn. Returns {ok, reply, mode, bridge_down}."""
-    exe = which("claude")
+    """Run one direct brain turn (no streaming). Returns {ok, reply, mode, bridge_down}."""
+    engine = configured_engine(install_dir)
+    exe = engine_exe(engine, install_dir)
     if not exe:
-        return {"ok": False, "detail": "Claude Code no está instalado en este equipo."}
+        return {"ok": False,
+                "detail": "%s no está instalado en este equipo." % engine_label(engine)}
     q = (question or "").strip()
     if not q:
         return {"ok": False, "detail": "Escribe tu pregunta."}
@@ -369,6 +434,22 @@ def ask(question, allow_fix=False, install_dir=None, history=None):
     # The prompt carries logs + config and easily exceeds the OS command-line limit, so it goes
     # over STDIN (bare -p, no prompt argv) exactly like the bridge does. Passing it as an argument
     # silently TRUNCATES it on Windows and the model then answers about a cut-off prompt.
+    if engine == "codex":
+        # One shot, nothing persisted — the same shape as the streaming console, minus the events.
+        if codex_engine is None:
+            return {"ok": False, "detail": "Esta versión de Olivaw no trae el motor de Codex."}
+        try:
+            text, _usage, _sid = codex_engine.run(
+                prompt, system=_codex_system(allow_fix), persist=False, workspace=inst,
+                timeout=TIMEOUT)
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "detail": "Codex tardó demasiado en responder. Intenta de nuevo."}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "detail": redact(str(e))[:400]}
+        return {"ok": True, "reply": (text or "").strip() or "(sin respuesta)",
+                "mode": "fix" if allow_fix else "diagnose", "engine": "codex",
+                "bridge_down": ctx.get("bridge_down")}
+
     cmd = [exe, "-p", "--output-format", "json",
            "--strict-mcp-config", "--mcp-config", EMPTY_MCP,
            "--append-system-prompt", CONSOLE_SYSTEM_PROMPT,
@@ -469,8 +550,10 @@ def _tool_use_forbidden(job_id, name):
 
 
 def _handle_event(job_id, d):
-    """Map one stream-json event onto a UI line."""
+    """Map one stream event onto a UI line. Handles both engines' event vocabularies."""
     t = d.get("type")
+    if t in _CODEX_EVENTS:
+        return _handle_codex_event(job_id, d, t)
     if t == "system" and d.get("subtype") == "init":
         _job_event(job_id, "system", "Claude listo (modelo %s, permisos %s)"
                    % (d.get("model", "?"), d.get("permissionMode", "?")))
@@ -519,6 +602,93 @@ def _handle_event(job_id, d):
         secs = (d.get("duration_ms") or 0) / 1000.0
         _job_event(job_id, "done", "Terminado en %.1fs (%s turno/s)"
                    % (secs, d.get("num_turns", "?")))
+        return
+
+
+_CODEX_EVENTS = ("thread.started", "turn.started", "turn.completed", "turn.failed",
+                 "item.started", "item.updated", "item.completed", "error")
+
+
+def _handle_codex_event(job_id, d, t):
+    """Codex's JSONL, in the console's own vocabulary.
+
+    Only the shapes that carry something a person should see are mapped; the rest is ignored on
+    purpose, so a new event type in a future CLI cannot break the console.
+    """
+    if t == "thread.started":
+        _job_event(job_id, "system", "Codex listo (sesión %s)"
+                   % str(d.get("thread_id") or "?")[:8])
+        return
+    if t == "error":
+        msg = str(d.get("message") or "")
+        # Reconnect notices are noise while it is still retrying; the failure arrives as
+        # turn.failed if it never recovers.
+        if msg and not msg.lower().startswith("reconnecting"):
+            _job_event(job_id, "system", redact(msg)[:400])
+        return
+    if t == "turn.failed":
+        err = d.get("error") or {}
+        msg = str(err.get("message") if isinstance(err, dict) else err) or "Codex falló."
+        if "401" in msg or "unauthorized" in msg.lower():
+            msg += " — parece que Codex no tiene sesión: ejecuta `codex login` una vez."
+        _job_event(job_id, "error", redact(msg)[:400])
+        return
+    if t == "turn.completed":
+        u = d.get("usage") or {}
+        with _JOBS_LOCK:
+            job = _JOBS.get(job_id) or {}
+            reply, blocked = job.get("reply") or "", job.get("blocked")
+        if blocked or not reply.strip():
+            return
+        _job_event(job_id, "done", "Terminado (%s tokens de salida)"
+                   % (u.get("output_tokens", "?") if isinstance(u, dict) else "?"))
+        return
+
+    item = d.get("item") or {}
+    if not isinstance(item, dict):
+        return
+    kind = item.get("type")
+    if kind == "agent_message" and t == "item.completed":
+        final = redact(str(item.get("text") or "")).strip()
+        if not final:
+            return
+        final, ask = parse_ask(final)
+        # Set the reply only. Codex sends its answer once, at the end, so emitting it as a live
+        # "text" event too would show the owner the raw markdown and the raw ```ask fence just
+        # before the console renders the same thing properly.
+        _job_put(job_id, reply=final, ask=ask)
+        return
+    if kind == "reasoning" and t == "item.completed":
+        txt = str(item.get("text") or "").strip()
+        if txt:
+            _job_event(job_id, "thinking", redact(txt))
+        return
+    if kind == "command_execution":
+        # Reading is allowed in diagnose mode (the sandbox blocks the writes), so a command is
+        # shown rather than treated as a breach.
+        if t == "item.started":
+            _job_event(job_id, "tool", redact(str(item.get("command") or ""))[:200],
+                       name="terminal")
+        elif t == "item.completed":
+            out = str(item.get("aggregated_output") or "")
+            if out.strip():
+                _job_event(job_id, "tool_result", redact(out)[:1500])
+        return
+    if kind == "file_change" and t == "item.completed":
+        # In diagnose mode this must be impossible. If it ever happens, stop rather than trust it.
+        if _tool_use_forbidden(job_id, "escritura de archivos"):
+            return
+        paths = ", ".join(str(c.get("path")) for c in (item.get("changes") or [])
+                          if isinstance(c, dict))
+        _job_event(job_id, "tool", "cambios en archivos: " + paths[:300], name="edit")
+        return
+    if kind == "error" and t == "item.completed":
+        msg = str(item.get("message") or "")
+        if msg:
+            _job_event(job_id, "system", redact(msg)[:400])
+        return
+    if kind == "mcp_tool_call" or kind == "web_search":
+        _job_event(job_id, "tool", kind, name=kind)
         return
 
 
@@ -612,6 +782,42 @@ def _build_cmd(exe, allow_fix, inst, resume_id=None, session_id=None):
     return cmd
 
 
+def _build_cmd_codex(exe, allow_fix, inst, resume_id=None):
+    """`codex exec` for the console. Sessions persist (that is what lets the owner reopen a
+    conversation), and the thread id is learned from the stream rather than chosen by us —
+    Codex has no --session-id."""
+    cmd = [exe, "exec"]
+    if resume_id:
+        cmd += ["resume", str(resume_id)]
+    cmd += ["--json", "--skip-git-repo-check"]
+    if allow_fix:
+        # The same explicit opt-in the checkbox describes: inspect and repair for real.
+        cmd += ["--dangerously-bypass-approvals-and-sandbox"]
+    else:
+        # Diagnosis only. The sandbox, not a promise, is what makes this safe.
+        cmd += ["-c", 'sandbox_mode="read-only"', "-c", 'approval_policy="never"']
+    cmd += ["-c", "mcp_servers={}", "-c", "tools.web_search=false"]
+    cmd += ["-"]                       # prompt on stdin: it carries logs and cannot be an argv
+    assert not any("\n" in a or "\r" in a for a in cmd), "newline in argv would truncate the command"
+    return cmd
+
+
+def _codex_system(allow_fix):
+    return CONSOLE_SYSTEM_PROMPT + (FIX_SUFFIX if allow_fix else DIAGNOSE_SUFFIX_CODEX)
+
+
+def _turn(exe, allow_fix, inst, prompt, resume_id=None, session_id=None, engine=None):
+    """(command, prompt) for one console turn on whichever engine is in play.
+
+    Codex has no --append-system-prompt, so its brief is prepended to the prompt instead; both
+    engines end up with the same instructions.
+    """
+    if (engine or configured_engine(inst)) == "codex":
+        return (_build_cmd_codex(exe, allow_fix, inst, resume_id),
+                "%s\n\n%s" % (_codex_system(allow_fix), prompt))
+    return _build_cmd(exe, allow_fix, inst, resume_id, session_id), prompt
+
+
 def _stream(job_id, cmd, prompt, inst):
     """Run one Claude turn, feeding events to the job. Returns (ok, returncode, stderr, sid)."""
     with _JOBS_LOCK:
@@ -639,8 +845,9 @@ def _stream(job_id, cmd, prompt, inst):
             d = json.loads(line)
         except Exception:  # noqa: BLE001
             continue
-        if isinstance(d, dict) and d.get("session_id"):
-            sid = str(d["session_id"])
+        if isinstance(d, dict) and (d.get("session_id") or d.get("thread_id")):
+            # Claude calls it session_id, Codex calls it thread_id; both are what we resume with.
+            sid = str(d.get("session_id") or d.get("thread_id"))
         try:
             _handle_event(job_id, d)
         except Exception:  # noqa: BLE001
@@ -659,13 +866,15 @@ def _stream(job_id, cmd, prompt, inst):
     return (after != before and bool(after)), proc.returncode, err, sid
 
 
-def _run_job(job_id, question, allow_fix, install_dir, conv_id=None, exe=None):
-    # exe is resolved by start_job (in the request thread) so a transient PATH lookup miss
-    # inside this worker thread can never make it look like Claude is "not installed".
-    exe = exe or which("claude")
+def _run_job(job_id, question, allow_fix, install_dir, conv_id=None, exe=None, engine=None):
+    # exe/engine are resolved by start_job (in the request thread) so a transient PATH lookup
+    # miss inside this worker thread can never make it look like the CLI is "not installed".
     inst = install_dir or INSTALL_DIR
+    engine = engine or configured_engine(inst)
+    exe = exe or engine_exe(engine, inst)
+    brain = engine_label(engine)
     if not exe:
-        _job_event(job_id, "error", "Claude Code no está instalado en este equipo.")
+        _job_event(job_id, "error", "%s no está instalado en este equipo." % brain)
         _job_put(job_id, done=True)
         return
     conv = store.load(inst, conv_id) if conv_id else None
@@ -678,41 +887,45 @@ def _run_job(job_id, question, allow_fix, install_dir, conv_id=None, exe=None):
         ctx = collect_context(inst)
         bstate = ", ".join("puerto %s %s" % (x["port"], "OK" if x.get("up") else "caído")
                            for x in ctx.get("bridges", []))
-        _job_event(job_id, "system", "Estado: %s | Hermes %s | Claude %s" % (
+        _job_event(job_id, "system", "Estado: %s | Hermes %s | %s %s" % (
             bstate or "sin puentes",
-            "OK" if ctx.get("hermes_installed") else "ausente",
-            "OK" if ctx.get("claude_installed") else "ausente"))
+            "OK" if ctx.get("hermes_installed") else "ausente", brain,
+            "OK" if ctx.get("codex_installed" if engine == "codex" else "claude_installed")
+            else "ausente"))
 
         resuming = bool(conv.get("resumable") and conv.get("session_id") and conv.get("turns"))
         if resuming:
             _job_event(job_id, "system",
-                       "Retomando esta conversación — Claude ya tiene el contexto anterior.")
-            ok, rc, err, sid = _stream(
-                job_id, _build_cmd(exe, allow_fix, inst, resume_id=conv["session_id"]),
-                _followup_prompt(ctx, question), inst)
+                       "Retomando esta conversación — %s ya tiene el contexto anterior." % brain)
+            cmd, p = _turn(exe, allow_fix, inst, _followup_prompt(ctx, question),
+                           resume_id=conv["session_id"], engine=engine)
+            ok, rc, err, sid = _stream(job_id, cmd, p, inst)
             if not ok:
                 # The stored session is gone (pruned, or another machine/profile). Start a new
                 # Claude session for this same conversation and hand it the saved transcript.
-                _job_event(job_id, "system", "La sesión anterior ya no está en Claude; sigo en "
-                                             "una nueva con el historial guardado.")
+                _job_event(job_id, "system", "La sesión anterior ya no está en %s; sigo en "
+                                             "una nueva con el historial guardado." % brain)
                 sid_new = str(uuid.uuid4())
                 store.set_fields(inst, conv_id, session_id=sid_new)
-                ok, rc, err, sid = _stream(
-                    job_id, _build_cmd(exe, allow_fix, inst, session_id=sid_new),
-                    _first_prompt(ctx, question, _history_pairs(conv)), inst)
+                cmd, p = _turn(exe, allow_fix, inst,
+                               _first_prompt(ctx, question, _history_pairs(conv)),
+                               session_id=sid_new, engine=engine)
+                ok, rc, err, sid = _stream(job_id, cmd, p, inst)
         else:
             sid_new = conv.get("session_id") or str(uuid.uuid4())
-            ok, rc, err, sid = _stream(
-                job_id, _build_cmd(exe, allow_fix, inst, session_id=sid_new),
-                _first_prompt(ctx, question, _history_pairs(conv)), inst)
+            cmd, p = _turn(exe, allow_fix, inst,
+                           _first_prompt(ctx, question, _history_pairs(conv)),
+                           session_id=sid_new, engine=engine)
+            ok, rc, err, sid = _stream(job_id, cmd, p, inst)
             if not conv.get("session_id"):
                 store.set_fields(inst, conv_id, session_id=sid_new)
 
         if sid and sid != (store.load(inst, conv_id) or {}).get("session_id"):
-            # Claude told us which session it actually used — trust that for resuming.
+            # The CLI told us which session it actually used — trust that for resuming. On Codex
+            # this is the ONLY way we learn it: it mints its own thread id.
             store.set_fields(inst, conv_id, session_id=sid)
         if not ok and rc not in (0, None):
-            _job_event(job_id, "error", redact(err)[:400] or "Claude terminó con error.")
+            _job_event(job_id, "error", redact(err)[:400] or "%s terminó con error." % brain)
     except Exception as e:  # noqa: BLE001
         _job_event(job_id, "error", "Fallo interno: %s" % e)
     finally:
@@ -783,10 +996,14 @@ def start_job(question, allow_fix=False, install_dir=None, conversation_id=None)
     q = (question or "").strip()
     if not q:
         return {"ok": False, "detail": "Escribe tu pregunta."}
-    exe = which("claude")
-    if not exe:
-        return {"ok": False, "detail": "Claude Code no está instalado en este equipo."}
     inst = install_dir or INSTALL_DIR
+    engine = configured_engine(inst)
+    exe = engine_exe(engine, inst)
+    if not exe:
+        other = "Codex" if engine == "claude" else "Claude Code"
+        return {"ok": False,
+                "detail": "%s no está instalado en este equipo. Instálalo, o cambia el cerebro "
+                          "a %s en el asistente." % (engine_label(engine), other)}
     conv = store.load(inst, conversation_id) if conversation_id else None
     if not conv or conv.get("archived"):
         conv = store.create(inst, q)
@@ -795,9 +1012,10 @@ def start_job(question, allow_fix=False, install_dir=None, conversation_id=None)
     _job_put(job_id, events=[], done=False, reply="", started=time.time(),
              conversation_id=conv["id"], allow_fix=bool(allow_fix))
     threading.Thread(target=_run_job, daemon=True,
-                     args=(job_id, q, bool(allow_fix), inst, conv["id"], exe)).start()
+                     args=(job_id, q, bool(allow_fix), inst, conv["id"], exe, engine)).start()
     return {"ok": True, "job_id": job_id, "conversation_id": conv["id"],
             "title": conv.get("title"), "resumed": bool(conv.get("turns")),
+            "engine": engine, "brain": engine_label(engine),
             "mode": "fix" if allow_fix else "diagnose"}
 
 
