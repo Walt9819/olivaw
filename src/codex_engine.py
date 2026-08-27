@@ -20,9 +20,11 @@ Facts about `codex exec` that shaped the code (verified against codex-cli 0.150.
     tracing lines). Every line that is not JSON is skipped.
   * `-c key=value` overrides are validated against a known key list — `--strict-config` rejects
     unknown ones. `tools.web_search`, `sandbox_mode`, `approval_policy`, `mcp_servers` and
-    `model_reasoning_effort` are real; `tools.shell` is NOT, so the shell tool cannot be turned
-    off the way Claude's `--tools ""` turns everything off. Read-only sandboxing is the guarantee
-    instead: the brain may look, it cannot touch.
+    `model_reasoning_effort` are real; `tools.shell` is NOT.
+  * The tools are FEATURES, not config fields: `codex features list` shows `shell_tool`, and
+    `--disable shell_tool` turns it off. That is the real equivalent of Claude's `--tools ""`,
+    and it is what makes this a pure reasoner rather than an agent with a sandbox around it. The
+    read-only sandbox stays as the backstop for `unified_exec`, which this CLI will not disable.
   * There is no `--append-system-prompt`. The runtime contract is prepended to the prompt on
     stdin, inside a marked block.
   * `codex exec resume <thread_id>` continues a session, but accepts a SMALLER option set than
@@ -62,6 +64,58 @@ _PASSTHROUGH = ("claude-code", "claude", "default", "codex", "")
 # than being passed through: a bad value fails the whole turn at the API.
 _EFFORT = {"xhigh": "xhigh", "high": "high", "medium": "medium", "low": "low",
            "minimal": "minimal", "none": "low", "": "medium"}
+
+# Codex's tools are FEATURES, not config fields: `-c tools.shell=false` is rejected, while
+# `--disable shell_tool` really does turn the shell off (checked with `codex features list`).
+# Turning them off is what makes the brain a pure reasoner, exactly like Claude's `--tools ""` -
+# the runtime performs every action, so the brain having its own tools is a liability, not a help.
+# `unified_exec` is deliberately in the list even though this CLI refuses to disable it: if a
+# later version allows it, we want it off, and until then the read-only sandbox covers it.
+TOOL_FEATURES = ("shell_tool", "unified_exec", "apps", "browser_use", "computer_use",
+                 "web_search", "code_mode_host", "tool_suggest")
+
+# Flipped off for the life of the process if the CLI ever rejects those flags (a renamed or
+# removed feature). Losing the isolation is bad; losing the brain entirely is worse.
+_FEATURES_USABLE = True
+
+_FLAG_PROBLEM = re.compile(
+    r"unknown configuration field|unknown feature|unrecognized|not a (?:valid|known) feature|"
+    r"invalid value for|error loading config|unexpected argument|unknown option",
+    re.I,
+)
+
+
+def flags_rejected(text):
+    """Does this failure look like the CLI refusing our isolation flags (rather than a real
+    problem with the turn)? Used to decide whether retrying without them is worth a shot."""
+    return bool(_FLAG_PROBLEM.search(str(text or "")))
+
+
+def disable_feature_flags(log=None):
+    """Stop sending the feature flags for the rest of this process."""
+    global _FEATURES_USABLE
+    if _FEATURES_USABLE:
+        _FEATURES_USABLE = False
+        if log:
+            log.warning("codex rejected the tool-disabling feature flags; continuing WITHOUT them "
+                        "(the read-only sandbox still prevents any change). Check `codex features "
+                        "list` against TOOL_FEATURES in codex_engine.py.")
+    return _FEATURES_USABLE
+
+
+def features_enabled():
+    return _FEATURES_USABLE
+
+
+def tool_off_flags():
+    """`--disable <feature>` for every tool the reasoner must not have."""
+    if not _FEATURES_USABLE:
+        return []
+    out = []
+    for f in TOOL_FEATURES:
+        out += ["--disable", f]
+    return out
+
 
 # Prepended to the prompt, since Codex has no --append-system-prompt. Marked as the
 # runtime's own framing so it reads as setup rather than as conversation content.
@@ -125,8 +179,9 @@ def _config_flags(effort):
     """Isolation and behaviour, expressed as -c overrides so `exec` and `exec resume`
     can share one option list (resume accepts neither -s nor -C)."""
     return [
-        # The brain reasons; the runtime acts. Read-only is what makes that true here:
-        # Codex has no way to switch the shell tool off, so the sandbox is the guarantee.
+        # The brain reasons; the runtime acts. The tools are off (see tool_off_flags); this is
+        # the backstop for anything that survives that - notably unified_exec, which this CLI
+        # will not let us disable. Read-only means no writes, no installs, no network.
         "-c", 'sandbox_mode="read-only"',
         "-c", 'approval_policy="never"',
         # Mirror the Claude path's --strict-mcp-config: the owner's own MCP servers are
@@ -144,6 +199,7 @@ def build_cmd(exe, model=None, effort=None, resume=None, persist=False, image_pa
     if resume:
         cmd += ["resume", str(resume)]
     cmd += ["--json", "--skip-git-repo-check"]
+    cmd += tool_off_flags()
     cmd += _config_flags(effort)
     m = map_model(model)
     if m:
@@ -271,32 +327,40 @@ def run(prompt, system=None, model=None, effort=None, resume=None, persist=False
     if system:
         body = "%s\n%s\n%s\n\n%s" % (_SYSTEM_HEADER, str(system).strip(), _SYSTEM_FOOTER, body)
 
-    fd, out_file = tempfile.mkstemp(prefix="olivaw-codex-", suffix=".txt")
-    os.close(fd)
-    cmd = build_cmd(exe, model=model, effort=effort, resume=resume, persist=persist,
-                    image_paths=image_paths, out_file=out_file)
     start = time.time()
-    try:
-        proc = _spawn(cmd, body, timeout, cwd)
-        stdout = proc.stdout.decode("utf-8", errors="replace")
-        stderr = proc.stderr.decode("utf-8", errors="replace")
-        events = parse_events(stdout)
-        text = events["text"]
-        if not text.strip():
-            # -o carries the last message even when the stream shape shifts; cheap insurance.
-            try:
-                with open(out_file, encoding="utf-8", errors="replace") as fh:
-                    text = fh.read()
-            except Exception:  # noqa: BLE001
-                text = ""
-    finally:
+    attempts = 2 if features_enabled() else 1
+    for attempt in range(attempts):
+        fd, out_file = tempfile.mkstemp(prefix="olivaw-codex-", suffix=".txt")
+        os.close(fd)
+        cmd = build_cmd(exe, model=model, effort=effort, resume=resume, persist=persist,
+                        image_paths=image_paths, out_file=out_file)
         try:
-            os.unlink(out_file)
-        except Exception:  # noqa: BLE001
-            pass
-
-    if not (text or "").strip():
-        raise RuntimeError("codex: " + _best_error(events, stderr, proc.returncode))
+            proc = _spawn(cmd, body, timeout, cwd)
+            stdout = proc.stdout.decode("utf-8", errors="replace")
+            stderr = proc.stderr.decode("utf-8", errors="replace")
+            events = parse_events(stdout)
+            text = events["text"]
+            if not text.strip():
+                # -o carries the last message even when the stream shape shifts; cheap insurance.
+                try:
+                    with open(out_file, encoding="utf-8", errors="replace") as fh:
+                        text = fh.read()
+                except Exception:  # noqa: BLE001
+                    text = ""
+        finally:
+            try:
+                os.unlink(out_file)
+            except Exception:  # noqa: BLE001
+                pass
+        if (text or "").strip():
+            break
+        detail = _best_error(events, stderr, proc.returncode)
+        # A rejected isolation flag must not cost the owner their agent: drop the flags and
+        # try once more, rather than reporting a dead brain.
+        if attempt == 0 and attempts == 2 and flags_rejected(detail + " " + (stderr or "")):
+            disable_feature_flags(log)
+            continue
+        raise RuntimeError("codex: " + detail)
 
     u = events.get("usage") or {}
     usage = {"prompt_tokens": int(u.get("input_tokens", 0) or 0)
@@ -304,11 +368,26 @@ def run(prompt, system=None, model=None, effort=None, resume=None, persist=False
              "completion_tokens": int(u.get("output_tokens", 0) or 0)}
     usage["total_tokens"] = usage["prompt_tokens"] + usage["completion_tokens"]
     if log:
-        log.info("codex ok in %.1fs (model=%s/%s, out_tokens=%s, in=%s cached=%s%s)",
+        log.info("codex ok in %.1fs (model=%s/%s, out_tokens=%s, in=%s cached=%s%s%s)",
                  time.time() - start, map_model(model) or "default", map_effort(effort),
                  usage["completion_tokens"], u.get("input_tokens", 0),
-                 u.get("cached_input_tokens", 0), ", resumed" if resume else "")
+                 u.get("cached_input_tokens", 0), ", resumed" if resume else "",
+                 "" if features_enabled() else ", TOOLS NOT DISABLED (sandbox only)")
     return text, usage, (events.get("thread_id") or None)
+
+
+def console_flags(allow_fix):
+    """Flags for the SOS console, where the two modes are the whole point.
+
+    diagnose: identical to a bridge turn - no tools, read-only sandbox. That is what lets the
+      console promise the owner that nothing on the machine can change.
+    fix: the explicit opt-in. Tools ON and the sandbox bypassed, because repairing an install
+      means editing files under it and restarting processes.
+    """
+    if allow_fix:
+        return ["--dangerously-bypass-approvals-and-sandbox"]
+    return tool_off_flags() + ["-c", 'sandbox_mode="read-only"',
+                               "-c", 'approval_policy="never"']
 
 
 # ── used by the wizard, kept here so there is one source of truth per engine ──

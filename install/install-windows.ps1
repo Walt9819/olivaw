@@ -2,14 +2,17 @@
   olivaw - one-click installer (Windows).
 
   Goal: the user installs NOTHING technical by hand. This script auto-installs every
-  dependency, then opens the browser wizard. The only things the user provides are their
-  Claude paid account (they log in once) and their Hermes account.
+  dependency, then opens the browser wizard. The only things the user provides are a paid
+  account for the brain (they log in once) and their Hermes account.
+
+  The brain is either Claude Code (default) or OpenAI Codex: -Engine claude|codex.
 
   What it installs automatically (each step is skipped if already present):
     1. Hermes  -> official installer (also brings uv, Python, Node.js, ripgrep, ffmpeg, Git Bash)
     2. uv      -> Astral's Python manager (from Hermes' bin, or bootstrapped)
     3. Python  -> a uv-managed Python that runs the bridge/supervisor/wizard (no system Python)
-    4. Claude Code -> native installer (no Node required)
+    4. the brain CLI -> Claude Code via its native installer (no Node needed), or
+                        Codex via npm when -Engine codex
     5. olivaw  -> downloads + SHA-256-verifies the latest release
   Then it registers the supervisor at login and opens the setup wizard.
 
@@ -28,6 +31,8 @@ param(
   [string]$Workspace = "$env:USERPROFILE\hermes-workspace",
   [string]$LocalSource = "",
   [string]$Lang = "es",
+  [ValidateSet("claude","codex")]
+  [string]$Engine = "claude",
   [switch]$NoWizard,
   [switch]$NoAutoInstall
 )
@@ -95,21 +100,39 @@ $pyDir = Split-Path $py
 $pyw = Join-Path $pyDir "pythonw.exe"; if (-not (Test-Path $pyw)) { $pyw = $py }
 Ok "Python: $py"
 
-# 4) Claude Code (native install; no Node needed) ----------------------------
-Step "4/5  Claude Code"
+# 4) the brain CLI (Claude Code by default, Codex with -Engine codex) --------
+$brainName = if ($Engine -eq "codex") { "Codex" } else { "Claude Code" }
+Step "4/5  $brainName (el cerebro)"
 Refresh-Path
-$claude = Have claude
-if ($claude) {
-  Ok "Claude Code ya esta instalado."
-} elseif ($NoAutoInstall) {
-  Warn "Claude Code no encontrado y auto-install desactivado."
+$claude = ""
+$codex = ""
+if ($Engine -eq "codex") {
+  $codex = Have codex
+  if ($codex) {
+    Ok "Codex ya esta instalado."
+  } elseif ($NoAutoInstall) {
+    Warn "Codex no encontrado y auto-install desactivado."
+  } else {
+    Info "Instalando Codex (npm install -g @openai/codex)..."
+    try { & npm install -g @openai/codex 2>&1 | Out-Null } catch { Warn "Codex install: $($_.Exception.Message)" }
+    Refresh-Path
+    $codex = Have codex
+    if ($codex) { Ok "Codex instalado." } else { Warn "No pude confirmar Codex en PATH; el asistente lo revisara." }
+  }
 } else {
-  Info "Instalando Claude Code (instalador nativo)..."
-  try { powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://claude.ai/install.ps1 | iex" | Out-Null } catch { Warn "Claude install: $($_.Exception.Message)" }
-  Refresh-Path
   $claude = Have claude
-  if (-not $claude -and (Test-Path "$env:USERPROFILE\.local\bin\claude.exe")) { $claude = "$env:USERPROFILE\.local\bin\claude.exe" }
-  if ($claude) { Ok "Claude Code instalado." } else { Warn "No pude confirmar Claude en PATH; el asistente lo revisara." }
+  if ($claude) {
+    Ok "Claude Code ya esta instalado."
+  } elseif ($NoAutoInstall) {
+    Warn "Claude Code no encontrado y auto-install desactivado."
+  } else {
+    Info "Instalando Claude Code (instalador nativo)..."
+    try { powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://claude.ai/install.ps1 | iex" | Out-Null } catch { Warn "Claude install: $($_.Exception.Message)" }
+    Refresh-Path
+    $claude = Have claude
+    if (-not $claude -and (Test-Path "$env:USERPROFILE\.local\bin\claude.exe")) { $claude = "$env:USERPROFILE\.local\bin\claude.exe" }
+    if ($claude) { Ok "Claude Code instalado." } else { Warn "No pude confirmar Claude en PATH; el asistente lo revisara." }
+  }
 }
 
 # 5) olivaw (download + verify + extract) ------------------------------------
@@ -150,7 +173,7 @@ if (-not $UseWizard) {
     repo = $Repo; auto_update = $true
     bridge_cmd = @($py, "src\claude_bridge.py", "--port", "8790"); bridge_cwd = $InstallDir
     bridge_url = "http://127.0.0.1:8790"
-    env = @{ CLAUDE_BRIDGE_CLAUDE = $claude; CLAUDE_BRIDGE_WORKSPACE = $Workspace }
+    env = @{ OLIVAW_ENGINE = $Engine; CLAUDE_BRIDGE_CLAUDE = $claude; OLIVAW_CODEX = $codex; CLAUDE_BRIDGE_WORKSPACE = $Workspace }
     telegram_bot_token = $BotToken; telegram_chat_id = $ChatId; maintainer_chat_id = $MaintainerId
     poll_minutes = 45; idle_seconds = 300; nightly_hour = 4; lang = $Lang
   }
@@ -210,7 +233,11 @@ if ($UseWizard) {
   Write-Host "`nSi el navegador no abre solo, ejecuta:  `"$py`" `"$wiz`"`n" -ForegroundColor Green
 } else {
   Write-Host "`n=== Casi listo ===" -ForegroundColor White
-  Info "1) Inicia sesion en Claude una vez:  claude"
+  if ($Engine -eq "codex") {
+    Info "1) Inicia sesion en Codex una vez:  codex login"
+  } else {
+    Info "1) Inicia sesion en Claude una vez:  claude"
+  }
   Info "2) Asegurate de que Hermes este configurado (hermes setup) y su gateway corriendo."
   Info "3) Escribe a tu bot de Telegram para probar."
   Write-Host "`nLas actualizaciones son automaticas y silenciosas.`n" -ForegroundColor Green

@@ -222,6 +222,23 @@ def is_idle(cfg):
     return idle is None or idle >= cfg.get("idle_seconds", 300)
 
 
+def engine_mismatch(cfg):
+    """The running bridge's brain vs the configured one. Returns (live, wanted) or None.
+
+    Only reports a mismatch when the bridge actually TELLS us its engine: a bridge too old to
+    report one must not be restarted in a loop - the updater replaces it soon enough.
+    """
+    want = ((cfg.get("env") or {}).get("OLIVAW_ENGINE") or "claude").strip().lower() or "claude"
+    st = bridge_status(cfg)
+    if not st:
+        return None
+    live = st.get("engine")
+    if not live:
+        return None
+    live = str(live).strip().lower()
+    return None if live == want else (live, want)
+
+
 def in_nightly_window(cfg):
     return datetime.datetime.now().hour == int(cfg.get("nightly_hour", 4))
 
@@ -786,6 +803,23 @@ def main():
             if ours_dead and not bridge_status(cfg):
                 log("bridge not answering; (re)starting")
                 state["child"] = start_bridge(cfg)
+            else:
+                # The owner changed the brain in the wizard: swap the running bridge for one on
+                # the new engine. Only when idle - a restart mid-turn loses that turn.
+                swap = engine_mismatch(cfg)
+                if swap and is_idle(cfg):
+                    live, want = swap
+                    log(f"engine changed in config ({live} -> {want}); restarting the bridge")
+                    try:
+                        if state["child"]:
+                            state["child"].terminate()
+                            state["child"].wait(timeout=20)
+                    except Exception as e:  # noqa: BLE001
+                        log(f"could not stop the old bridge cleanly ({e})")
+                    _free_bridge_port(cfg)
+                    state["child"] = start_bridge(cfg)
+                elif swap:
+                    log(f"engine change to {swap[1]} pending: waiting for the agent to go idle")
             # keep-alive + pick up newly-created / removed extra agents each loop
             _reconcile_extras(cfg, state)
             # periodic update check

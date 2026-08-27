@@ -109,7 +109,17 @@ Prerequisites the user must have (installer guides these): Python 3, Node.js, He
 * **Codex** — `npm i -g @openai/codex`, then `codex login`. Needs a paid ChatGPT plan (Plus, Pro or
   Business), or an OpenAI API key in `CODEX_API_KEY`.
 
-Both are offered in the wizard's first step, which installs and signs into whichever you pick.
+Both are offered in the wizard's first step, which installs and signs into whichever you pick. The
+installers can also start from Codex directly, so nothing Claude-specific is installed for someone
+who does not use it:
+
+```powershell
+irm https://raw.githubusercontent.com/Walt9819/olivaw/main/install/install-windows.ps1 | iex   # Claude (default)
+install-windows.ps1 -Engine codex                                                             # Codex
+```
+```bash
+HB_ENGINE=codex bash ~/olivaw.command      # macOS / Linux
+```
 
 ### Choosing the brain (Claude Code or Codex)
 
@@ -125,17 +135,41 @@ What genuinely differs, and why:
 
 | | Claude Code | Codex |
 |---|---|---|
-| tool-less reasoning | `--tools ""` — no tools at all | no such flag; enforced by a **read-only sandbox** (`-c sandbox_mode="read-only"`) |
+| tool-less reasoning | `--tools ""` | `--disable shell_tool` (+ `apps`, `browser_use`, `computer_use`, `web_search`), with `sandbox_mode="read-only"` behind it |
 | runtime contract | `--append-system-prompt` | prepended to the prompt on stdin |
 | session id | we choose it (`--session-id`) | Codex mints it; we learn it from `thread.started` |
 | model routing | Sonnet / Opus / Fable tiers | no `-m` unless you set `OLIVAW_CODEX_MODEL` — your configured default is used |
 | the agent's persona | `<workspace>/CLAUDE.md` | `<workspace>/AGENTS.md` (the wizard writes it) |
 | advertised context | 1M | 256k by default (`OLIVAW_CODEX_CONTEXT`) — Hermes compacts against this number |
 
-One Codex behaviour worth knowing: **`codex exec` can exit 0 having produced nothing but errors**
-(an auth failure looks like a clean exit). The engine therefore treats "an `agent_message` came
-back" as the definition of success, and surfaces the real cause otherwise. `tools/test_codex_engine.py`
-pins that, using a stream captured from the real CLI.
+Codex's tools are **features, not config fields**: `-c tools.shell=false` is rejected outright,
+while `codex features list` shows `shell_tool` and `--disable shell_tool` turns it off. That is
+what makes the Codex brain a pure reasoner rather than an agent with a fence around it, and it is
+why the SOS console's diagnose mode can make the owner the same promise on both engines — no
+tools, nothing can change. `unified_exec` refuses to be disabled in 0.150.x, so the read-only
+sandbox stays as the backstop.
+
+Because that flag cannot be tested against the live API here, it is **fail-open**: the first turn
+whose failure looks like a rejected flag drops the feature flags for the life of the process, logs
+it, and retries. A renamed feature costs isolation, never the brain.
+
+One more Codex behaviour worth knowing: **`codex exec` can exit 0 having produced nothing but
+errors** (an auth failure looks like a clean exit). The engine therefore treats "an `agent_message`
+came back" as the definition of success, and surfaces the real cause otherwise.
+`tools/test_codex_engine.py` pins all of this, using a stream captured from the real CLI.
+
+### Switching brain on a live install
+
+Pick the other brain in the wizard and apply. The supervisor compares `/status.engine` against
+`env.OLIVAW_ENGINE` on every loop and, **when the agent is idle**, restarts the bridge onto the new
+engine — no reboot, and never mid-turn. The wizard says so instead of leaving you wondering why
+answers still sound like the old one. A bridge too old to report its engine is left to the updater
+rather than restarted in a loop.
+
+The SOS console follows the same config, so it diagnoses the brain you are actually running: it is
+handed a per-engine runbook (which CLI, how to check its session, which env var selects it, what
+restarts what) plus a flag for the one failure that is otherwise invisible — a configured engine
+whose CLI is not installed.
 
 ### The onboarding wizard (`src/wizard/`)
 

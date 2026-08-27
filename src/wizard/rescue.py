@@ -192,6 +192,9 @@ def collect_context(install_dir=None, fast=False):
     if cx and not fast and codex_engine is not None:
         st = codex_engine.login_status()
         ctx["codex_auth"] = redact(str(st.get("detail") or "")[:300])
+    # The failure that is easy to miss and impossible to work around: the config names an engine
+    # whose CLI is not on this machine. Spelled out so the console cannot overlook it.
+    ctx["engine_ready"] = bool(cx) if ctx["engine"] == "codex" else bool(cl)
 
     ctx["launcher_log"] = _tail(os.path.join(inst, "launcher.log"))
     ctx["bridge_log"] = _tail(os.path.join(SRC_DIR, "bridge.log"))
@@ -209,9 +212,12 @@ def collect_context(install_dir=None, fast=False):
 
 
 PREAMBLE = """You are the built-in support engineer for an olivaw installation (a Hermes AI agent
-whose brain is Claude Code, reached through a local bridge). The owner is talking to you from the
+whose brain is a coding CLI, reached through a local bridge). The owner is talking to you from the
 olivaw setup UI, NOT through the agent - usually because the normal path (Telegram -> Hermes ->
 bridge) is broken and this is the only way they can reach you.
+
+WHICH BRAIN THIS INSTALL USES is in the snapshot below, as brain_engine. Read it before advising:
+telling a Codex owner to run `claude auth login` (or the reverse) sends them somewhere useless.
 
 Answer in the owner's language (default Spanish), briefly and concretely, for a NON-TECHNICAL
 person: say what is wrong and what to do, in plain words. If you propose a command, keep it to one
@@ -251,18 +257,16 @@ DIAGNOSE_SUFFIX = (
     "save memories. Never say you are doing any of those — answer from the snapshot you were "
     "given, and if something can only be settled by inspecting the machine, say so and tell the "
     "owner to tick 'Permitir que revise archivos y aplique arreglos'.")
-# Codex cannot switch its tools off, so the truthful brief is different: it may LOOK, and the
-# read-only sandbox is what stops it changing anything. Telling it "you have no tools" would stop
-# it reading the very logs the owner opened the console to have read.
-DIAGNOSE_SUFFIX_CODEX = (
-    " In this turn you run in a READ-ONLY sandbox: you may read files and run read-only commands "
-    "to investigate, and every attempt to write, install or restart anything will be refused by "
-    "the sandbox. So never say you changed, fixed, restarted or saved anything — you cannot. If a "
-    "repair is needed, explain it and tell the owner to tick 'Permitir que revise archivos y "
-    "aplique arreglos'.")
+# Codex gets the SAME brief: its tools are switched off with --disable shell_tool (and the
+# read-only sandbox behind that), so "you have no tools" is as true there as it is for Claude.
+DIAGNOSE_SUFFIX_CODEX = DIAGNOSE_SUFFIX
 FIX_SUFFIX = (
-    " In this turn you DO have tools, scoped to the installation directory: inspect and repair it "
-    "as needed, then state plainly what you changed.")
+    " In this turn you DO have tools: read and edit files, and run commands. Use the "
+    "<how_olivaw_works> section above - it tells you where everything is and what restarts what. "
+    "Work inside the installation and the agent's workspace, make the smallest reversible change "
+    "that fixes the cause (not the symptom), verify it (re-run the check that was failing), and "
+    "then state plainly what you changed and how to undo it. If the fix needs a credential, a "
+    "purchase or a decision that is the owner's to make, stop and ask instead.")
 
 
 # -- the "ask the owner" block ------------------------------------------------
@@ -380,6 +384,75 @@ def parse_ask(text):
     return (clean or body if not ask else clean), ask
 
 
+def _runbook(ctx):
+    """How this installation is wired, so the console can repair it instead of guessing.
+
+    Everything here is fact about olivaw's own layout - the same facts the launcher and the bridge
+    act on - written per engine so the commands offered are the right ones for THIS brain.
+    """
+    inst = ctx.get("install_dir") or INSTALL_DIR
+    engine = ctx.get("engine", "claude")
+    if engine == "codex":
+        brain = ("BRAIN: OpenAI Codex. The bridge runs `codex exec` per turn with the tools "
+                 "disabled (--disable shell_tool ...) and a read-only sandbox, so the brain only "
+                 "decides; Hermes performs every action.\n"
+                 "  - is it signed in:  codex login status      (fix: codex login)\n"
+                 "  - is it installed:  codex --version         (fix: npm install -g @openai/codex)\n"
+                 "  - selected by:      env OLIVAW_ENGINE=codex in updater.config.json\n"
+                 "  - CLI path:         env OLIVAW_CODEX\n"
+                 "  - a 401 / 'Reconnecting...' storm in bridge.log means the Codex session "
+                 "expired, NOT that the bridge is broken.\n"
+                 "  - the agent's own instructions live in <workspace>/AGENTS.md (Codex reads "
+                 "that file, not CLAUDE.md).")
+    else:
+        brain = ("BRAIN: Claude Code. The bridge runs `claude -p` per turn with --tools \"\" so the "
+                 "brain only decides; Hermes performs every action.\n"
+                 "  - is it signed in:  claude auth status      (fix: claude auth login)\n"
+                 "  - is it installed:  claude --version        (fix: npm install -g "
+                 "@anthropic-ai/claude-code)\n"
+                 "  - selected by:      env OLIVAW_ENGINE=claude (or absent) in updater.config.json\n"
+                 "  - CLI path:         env CLAUDE_BRIDGE_CLAUDE\n"
+                 "  - the agent's own instructions live in <workspace>/CLAUDE.md.")
+    return """<how_olivaw_works note="fact about this installation; use it to diagnose and repair">
+%(brain)s
+
+SHAPE: Telegram (or another channel) -> Hermes gateway -> the bridge on 127.0.0.1:<port> -> the
+brain CLI. The bridge is an OpenAI-compatible server; Hermes is configured to point its base_url
+at it and to use the model id "claude-code" WHATEVER the engine is (renaming it would break the
+owner's Hermes config, so a Codex install still says claude-code there - that is correct, not a bug).
+
+PIECES, all under %(inst)s:
+  src/launcher.py       the SUPERVISOR. Starts at login (Startup\\Olivaw.vbs), keeps the bridge
+                        alive, and auto-updates from GitHub when the agent is idle. If the bridge
+                        dies, this is what should bring it back within a minute.
+  src/claude_bridge.py  the bridge itself (engine dispatch lives here; OLIVAW_ENGINE picks one).
+  src/codex_engine.py   the Codex brain. Required for a Codex install.
+  src/wizard/           this console and the setup assistant.
+  updater.config.json   the live config: repo, port, bridge_url, auto_update, idle_seconds, and
+                        `env` (which carries OLIVAW_ENGINE and the CLI paths). EDIT THIS to change
+                        the engine or a path; the bridge reads it at startup.
+  agents.json           ONLY extra isolated agents. Empty/absent is normal.
+  launcher.log          what the supervisor did (updates, restarts, port conflicts).
+  src/bridge.log        what the brain did per turn (model, effort, errors, refusals).
+
+CHECKS the owner can run, one line each:
+  is the bridge alive:   curl http://127.0.0.1:<port>/status     (also reports engine + version)
+  is Hermes alive:       hermes gateway status
+  restart the bridge:    stop the pythonw.exe running src/claude_bridge.py - the supervisor
+                         respawns it. Restarting the supervisor itself restarts both.
+  port already taken:    an orphaned bridge from a previous run; the supervisor frees 8790 on
+                         update, but a stale process can hold it.
+
+COMMON CAUSES, in the order worth checking: (1) the brain CLI is not signed in; (2) the bridge is
+not running (supervisor stopped, or an update half-applied - launcher.log says); (3) Hermes gateway
+stopped; (4) OLIVAW_ENGINE names an engine whose CLI is missing; (5) the port is held by an orphan.
+
+LIMITS, even in fix mode: never print or move a token, password or .env content; never delete the
+owner's vault or notes; never change the owner allow-list. Prefer the smallest reversible fix, and
+say plainly what you changed.
+</how_olivaw_works>""" % {"brain": brain, "inst": inst}
+
+
 def _snapshot_text(ctx):
     parts = ["<installation_snapshot>",
              "version: %s" % ctx.get("version"),
@@ -393,6 +466,8 @@ def _snapshot_text(ctx):
              "note: if hermes_gateway_state is 'unknown', the check merely timed out — do NOT "
              "tell the owner the gateway is down; say it could not be verified.",
              "brain_engine: %s   (the CLI answering right now)" % ctx.get("engine", "claude"),
+             "brain_cli_present: %s   (False = updater.config.json names an engine that is NOT "
+             "installed; that alone stops every turn)" % ctx.get("engine_ready"),
              "claude_installed: %s | auth: %s" % (ctx.get("claude_installed"),
                                                   ctx.get("claude_auth") or "(n/a)"),
              "codex_installed: %s | auth: %s" % (ctx.get("codex_installed"),
@@ -405,7 +480,7 @@ def _snapshot_text(ctx):
              "--- launcher.log (tail) ---", ctx.get("launcher_log") or "(empty)",
              "--- bridge.log (tail) ---", ctx.get("bridge_log") or "(empty)",
              "</installation_snapshot>"]
-    return "\n".join(parts)
+    return _runbook(ctx) + "\n\n" + "\n".join(parts)
 
 
 def ask(question, allow_fix=False, install_dir=None, history=None):
@@ -649,6 +724,12 @@ def _handle_codex_event(job_id, d, t):
         return
     kind = item.get("type")
     if kind == "agent_message" and t == "item.completed":
+        with _JOBS_LOCK:
+            if (_JOBS.get(job_id) or {}).get("blocked"):
+                # The turn was stopped for using a tool it should not have. Whatever it says
+                # after that is not to be shown: the events already arrived on stdout before the
+                # process died, and its claim ("I restarted the bridge") would be a lie.
+                return
         final = redact(str(item.get("text") or "")).strip()
         if not final:
             return
@@ -664,8 +745,10 @@ def _handle_codex_event(job_id, d, t):
             _job_event(job_id, "thinking", redact(txt))
         return
     if kind == "command_execution":
-        # Reading is allowed in diagnose mode (the sandbox blocks the writes), so a command is
-        # shown rather than treated as a breach.
+        # Diagnose mode has no tools at all, so a command here means a flag stopped working.
+        # Same guard as the Claude path: stop the turn rather than trust the promise.
+        if t == "item.started" and _tool_use_forbidden(job_id, item.get("command") or "comando"):
+            return
         if t == "item.started":
             _job_event(job_id, "tool", redact(str(item.get("command") or ""))[:200],
                        name="terminal")
@@ -790,13 +873,10 @@ def _build_cmd_codex(exe, allow_fix, inst, resume_id=None):
     if resume_id:
         cmd += ["resume", str(resume_id)]
     cmd += ["--json", "--skip-git-repo-check"]
-    if allow_fix:
-        # The same explicit opt-in the checkbox describes: inspect and repair for real.
-        cmd += ["--dangerously-bypass-approvals-and-sandbox"]
-    else:
-        # Diagnosis only. The sandbox, not a promise, is what makes this safe.
-        cmd += ["-c", 'sandbox_mode="read-only"', "-c", 'approval_policy="never"']
-    cmd += ["-c", "mcp_servers={}", "-c", "tools.web_search=false"]
+    # One source of truth for what each mode may do (codex_engine.console_flags): diagnose is
+    # tool-less + read-only, exactly like a bridge turn; fix is the explicit opt-in.
+    cmd += codex_engine.console_flags(allow_fix) if codex_engine else []
+    cmd += ["-c", "mcp_servers={}"]
     cmd += ["-"]                       # prompt on stdin: it carries logs and cannot be an argv
     assert not any("\n" in a or "\r" in a for a in cmd), "newline in argv would truncate the command"
     return cmd
@@ -919,6 +999,20 @@ def _run_job(job_id, question, allow_fix, install_dir, conv_id=None, exe=None, e
             ok, rc, err, sid = _stream(job_id, cmd, p, inst)
             if not conv.get("session_id"):
                 store.set_fields(inst, conv_id, session_id=sid_new)
+
+        # Same fail-open rule as the bridge: if Codex refused the tool-disabling flags, drop
+        # them and try once more. A support console that cannot answer is worse than one whose
+        # diagnose mode leans on the sandbox instead of on the flags.
+        if (not ok and engine == "codex" and codex_engine is not None
+                and codex_engine.features_enabled() and codex_engine.flags_rejected(err)):
+            codex_engine.disable_feature_flags()
+            _job_event(job_id, "system",
+                       "Esta versión de Codex no acepta una de mis opciones de aislamiento; "
+                       "reintento sin ellas (sigue sin poder cambiar nada).")
+            cmd, p = _turn(exe, allow_fix, inst,
+                           _first_prompt(ctx, question, _history_pairs(conv)),
+                           session_id=conv.get("session_id"), engine=engine)
+            ok, rc, err, sid = _stream(job_id, cmd, p, inst)
 
         if sid and sid != (store.load(inst, conv_id) or {}).get("session_id"):
             # The CLI told us which session it actually used — trust that for resuming. On Codex

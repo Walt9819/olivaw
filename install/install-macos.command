@@ -2,14 +2,15 @@
 # olivaw - one-click installer (macOS / Linux).
 #
 # The user installs NOTHING technical by hand. This auto-installs every dependency,
-# then opens the browser wizard. The only user-provided things are the Claude paid
-# account (log in once) and the Hermes account.
+# then opens the browser wizard. The brain is Claude Code (default) or OpenAI Codex
+# (HB_ENGINE=codex). The only user-provided things are the brain's paid account
+# (log in once) and the Hermes account.
 #
 # Auto-installed (each step skipped if already present):
 #   1. Hermes      -> official installer (also brings uv, Python, Node, ripgrep, ffmpeg)
 #   2. uv          -> Astral Python manager
 #   3. Python      -> a uv-managed Python that runs bridge/supervisor/wizard
-#   4. Claude Code -> native installer (no Node required)
+#   4. the brain CLI -> Claude Code (native installer), or Codex via npm when HB_ENGINE=codex
 #   5. olivaw      -> downloads + SHA-256-verifies the latest release
 #
 # Non-technical (opens wizard):
@@ -31,6 +32,8 @@ WORKSPACE="${HB_WORKSPACE:-$HOME/hermes-workspace}"
 BOT="${HB_BOT_TOKEN:-}"; CHAT="${HB_CHAT_ID:-}"; MAINT="${HB_MAINTAINER:-$CHAT}"
 LOCAL_SRC="${HB_LOCAL_SOURCE:-}"; LANG_="${HB_LANG:-es}"
 NO_WIZARD="${HB_NO_WIZARD:-}"; NO_AUTO="${HB_NO_AUTOINSTALL:-}"
+ENGINE="${HB_ENGINE:-claude}"          # which brain: claude | codex
+case "$ENGINE" in claude|codex) ;; *) ENGINE="claude" ;; esac
 USE_WIZARD=1; { [ -n "$BOT" ] || [ -n "$NO_WIZARD" ]; } && USE_WIZARD=0
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 mkdir -p "$INSTALL_DIR" "$WORKSPACE"
@@ -70,17 +73,29 @@ PY="$("$UV" python find 3.12 2>/dev/null | head -1 || true)"
 [ -n "$PY" ] && [ -x "$PY" ] || { echo "uv no pudo proveer Python."; exit 1; }
 ok "Python: $PY"
 
-# 4) Claude Code (native install, no Node)
-step "4/5  Claude Code"
-if have claude >/dev/null; then ok "Claude Code ya esta instalado."
-elif [ -n "$NO_AUTO" ]; then warn "Claude Code no encontrado y auto-install desactivado."
+# 4) the brain CLI (Claude Code by default, Codex when HB_ENGINE=codex)
+if [ "$ENGINE" = "codex" ]; then
+  step "4/5  Codex (el cerebro)"
+  if have codex >/dev/null; then ok "Codex ya esta instalado."
+  elif [ -n "$NO_AUTO" ]; then warn "Codex no encontrado y auto-install desactivado."
+  else
+    say "Instalando Codex (npm install -g @openai/codex)..."
+    npm install -g @openai/codex >/dev/null 2>&1 || warn "El instalador de Codex reporto un problema."
+    have codex >/dev/null && ok "Codex instalado." || warn "No pude confirmar 'codex' en PATH; el asistente lo revisara."
+  fi
 else
-  say "Instalando Claude Code (instalador nativo)..."
-  curl -fsSL https://claude.ai/install.sh | bash || warn "El instalador de Claude reporto un problema."
-  export PATH="$HOME/.local/bin:$PATH"
-  have claude >/dev/null && ok "Claude Code instalado." || warn "No pude confirmar 'claude' en PATH; el asistente lo revisara."
+  step "4/5  Claude Code (el cerebro)"
+  if have claude >/dev/null; then ok "Claude Code ya esta instalado."
+  elif [ -n "$NO_AUTO" ]; then warn "Claude Code no encontrado y auto-install desactivado."
+  else
+    say "Instalando Claude Code (instalador nativo)..."
+    curl -fsSL https://claude.ai/install.sh | bash || warn "El instalador de Claude reporto un problema."
+    export PATH="$HOME/.local/bin:$PATH"
+    have claude >/dev/null && ok "Claude Code instalado." || warn "No pude confirmar 'claude' en PATH; el asistente lo revisara."
+  fi
 fi
 CLAUDE="$(have claude || true)"
+CODEX="$(have codex || true)"
 
 # 5) olivaw
 step "5/5  olivaw"
@@ -108,12 +123,13 @@ ok "olivaw instalado en $INSTALL_DIR (v$(cat "$INSTALL_DIR/VERSION"))"
 
 # headless config (only when a token was passed)
 if [ "$USE_WIZARD" = "0" ]; then
-"$PY" - "$INSTALL_DIR" "$REPO" "$PY" "$WORKSPACE" "${CLAUDE:-}" "$BOT" "$CHAT" "$MAINT" "$LANG_" <<'PYEOF'
+"$PY" - "$INSTALL_DIR" "$REPO" "$PY" "$WORKSPACE" "${CLAUDE:-}" "$BOT" "$CHAT" "$MAINT" "$LANG_" "$ENGINE" "${CODEX:-}" <<'PYEOF'
 import json,sys
-inst,repo,py,ws,claude,bot,chat,maint,lang=sys.argv[1:10]
+inst,repo,py,ws,claude,bot,chat,maint,lang,engine,codex=sys.argv[1:12]
 cfg={"repo":repo,"auto_update":True,"bridge_cmd":[py,"src/claude_bridge.py","--port","8790"],
  "bridge_cwd":inst,"bridge_url":"http://127.0.0.1:8790",
- "env":{"CLAUDE_BRIDGE_CLAUDE":claude,"CLAUDE_BRIDGE_WORKSPACE":ws},
+ "env":{"OLIVAW_ENGINE":engine,"CLAUDE_BRIDGE_CLAUDE":claude,"OLIVAW_CODEX":codex,
+        "CLAUDE_BRIDGE_WORKSPACE":ws},
  "telegram_bot_token":bot,"telegram_chat_id":chat,"maintainer_chat_id":maint,
  "poll_minutes":45,"idle_seconds":300,"nightly_hour":4,"lang":lang}
 open(inst+"/updater.config.json","w").write(json.dumps(cfg,indent=2,ensure_ascii=False))
@@ -167,7 +183,7 @@ if [ "$USE_WIZARD" = "1" ]; then
   echo; printf "\033[32mSi el navegador no abre solo, ejecuta:  \"%s\" \"%s\"\033[0m\n\n" "$PY" "$INSTALL_DIR/src/wizard/wizard_server.py"
 else
   echo; echo "=== Casi listo ==="
-  say "1) Inicia sesion en Claude una vez:  claude"
+  if [ "$ENGINE" = "codex" ]; then say "1) Inicia sesion en Codex una vez:  codex login"; else say "1) Inicia sesion en Claude una vez:  claude"; fi
   say "2) Configura Hermes (hermes setup) y deja su gateway corriendo."
   say "3) Escribe a tu bot de Telegram para probar."
   echo; printf "\033[32mLas actualizaciones son automaticas y silenciosas.\033[0m\n\n"

@@ -46,7 +46,12 @@ def check_bridge(base_url="http://127.0.0.1:8790"):
     if ok and isinstance(data, dict):
         return {"ok": True, "running": True, "version": data.get("version"),
                 "inflight": data.get("inflight"),
-                "detail": "El puente está corriendo (v%s)." % data.get("version", "?")}
+                # Which brain is actually serving - the wizard compares this with the choice the
+                # owner just made, so a pending switch can be reported instead of silently waited on.
+                "engine": data.get("engine"),
+                "detail": "El puente está corriendo (v%s%s)." % (
+                    data.get("version", "?"),
+                    ", cerebro: %s" % data["engine"] if data.get("engine") else "")}
     # try /health as a fallback (older bridge without /status)
     ok2, _d, _s = http_json(base_url.rstrip("/") + "/health", timeout=6)
     if ok2:

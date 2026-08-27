@@ -150,6 +150,43 @@ cmd = ce.build_cmd("codex.cmd", image_paths=[here, os.path.join("nope", "missing
 check("existing image attached", "-i" in cmd and here in cmd)
 check("missing image skipped", cmd.count("-i") == 1)
 
+print("\ntool-lessness — the brain decides, the runtime acts")
+cmd = ce.build_cmd("codex.cmd", effort="medium", out_file="X")
+for feat in ("shell_tool", "apps", "browser_use", "computer_use", "web_search"):
+    i = cmd.index(feat) if feat in cmd else -1
+    check("%s disabled" % feat, i > 0 and cmd[i - 1] == "--disable", cmd)
+check("mcp servers cleared", "mcp_servers={}" in cmd)
+check("read-only sandbox behind it", 'sandbox_mode="read-only"' in cmd)
+check("resume keeps the tools off", "shell_tool" in ce.build_cmd("codex.cmd", resume="t1"))
+
+print("\nconsole modes")
+diag, fix = ce.console_flags(False), ce.console_flags(True)
+check("diagnose has no tools", "shell_tool" in diag and "--disable" in diag, diag)
+check("diagnose is read-only", 'sandbox_mode="read-only"' in diag, diag)
+check("diagnose does not bypass", "--dangerously-bypass-approvals-and-sandbox" not in diag, diag)
+check("fix mode bypasses (the checkbox promises it)",
+      "--dangerously-bypass-approvals-and-sandbox" in fix, fix)
+check("fix mode does not also disable the tools it needs", "shell_tool" not in fix, fix)
+
+print("\nfail-open when the CLI refuses the flags")
+check("a renamed feature is recognised as a flag problem",
+      ce.flags_rejected("error: unknown feature `shell_tool`"))
+check("an unexpected argument too", ce.flags_rejected("error: unexpected argument '--disable'"))
+check("a real failure is NOT treated as a flag problem",
+      not ce.flags_rejected("unexpected status 401 Unauthorized: Incorrect API key"))
+check("nor is a timeout", not ce.flags_rejected("model response stream ended unexpectedly"))
+try:
+    check("flags on by default", ce.features_enabled())
+    ce.disable_feature_flags()
+    check("after refusal the flags are gone", ce.tool_off_flags() == [])
+    check("the sandbox still is not", 'sandbox_mode="read-only"' in ce.build_cmd("codex.cmd"))
+    check("and the console still refuses to bypass in diagnose mode",
+          "--dangerously-bypass-approvals-and-sandbox" not in ce.console_flags(False))
+finally:
+    import importlib
+    importlib.reload(ce)
+check("reload restores them", ce.features_enabled())
+
 print("\nargv safety")
 cmd = ce.build_cmd("codex.cmd", model="gpt-5.1-codex", effort="high", out_file="X")
 check("no newline in any argument", not any("\n" in a or "\r" in a for a in cmd))

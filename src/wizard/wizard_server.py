@@ -608,6 +608,21 @@ class Handler(BaseHTTPRequestHandler):
             "engine": (p.engine if p else "claude"), "provider": provider_id,
         }
         res = config_writer.write_all(cfg)
+        # Changing the brain only takes effect when the bridge restarts. The supervisor does that
+        # by itself on its next check (it compares /status.engine with the config), but the owner
+        # should be told rather than left wondering why answers still come from the old one.
+        try:
+            live = (checks.check_bridge(cfg["bridge_url"] if "bridge_url" in cfg
+                                        else "http://127.0.0.1:%d" % port) or {})
+            res["engine"] = cfg.get("engine", "claude")
+            if live.get("running") and live.get("engine") and \
+                    live["engine"] != cfg.get("engine", "claude"):
+                res["engine_switch_pending"] = True
+                res.setdefault("warnings", []).append(
+                    "El cerebro cambió a %s. El puente se reinicia solo en cuanto tu agente esté "
+                    "en reposo (menos de un minuto normalmente)." % cfg.get("engine", "claude"))
+        except Exception:  # noqa: BLE001
+            pass
 
         # Register the extra agent so the supervisor starts/keeps its bridge.
         if provisioned:

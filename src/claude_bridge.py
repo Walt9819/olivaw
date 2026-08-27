@@ -1916,7 +1916,11 @@ def main():
     args = ap.parse_args()
     os.makedirs(WORKSPACE, exist_ok=True)
     server = ExclusiveHTTPServer((args.host, args.port), Handler)
-    log.info("Claude Code bridge (function-calling shim) on http://%s:%d (workspace=%s)",
+    # Name the brain in the log: this line is how anyone reading bridge.log knows which engine
+    # actually started, and a Codex install saying "Claude Code bridge" sends them down the
+    # wrong path when something breaks.
+    log.info("Olivaw bridge [%s] (function-calling shim) on http://%s:%d (workspace=%s)",
+             BACKEND_NAME,
              args.host, args.port, WORKSPACE)
     server.serve_forever()
 
