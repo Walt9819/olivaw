@@ -16,8 +16,10 @@
     5. olivaw  -> downloads + SHA-256-verifies the latest release
   Then it registers the supervisor at login and opens the setup wizard.
 
-  Usage (non-technical, opens the wizard):
+  Usage (non-technical, opens the wizard). It asks which brain you want:
     iex (irm https://raw.githubusercontent.com/Walt9819/olivaw/main/install/install-windows.ps1)
+  Choosing the brain up front (no question asked):
+    $env:OLIVAW_ENGINE='codex'; iex (irm https://raw.githubusercontent.com/Walt9819/olivaw/main/install/install-windows.ps1)
   Advanced / headless (configure from params, no wizard):
     install-windows.ps1 -NoWizard -BotToken "123:ABC" -ChatId "8114329186"
 #>
@@ -80,6 +82,47 @@ function Native {
 
 Write-Host "`n=== olivaw installer (Windows) ===" -ForegroundColor White
 Write-Host "  Instalando todo automaticamente. Puede tardar varios minutos la primera vez.`n" -ForegroundColor DarkGray
+
+# ── which brain? asked FIRST, so nobody waits ten minutes to be asked a question ──
+function Can-Prompt {
+  # Read-Host blocks forever when there is nobody to answer, and this script is usually run
+  # piped into iex - so only ask when stdin is a real console.
+  try { return ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected) }
+  catch { return $false }
+}
+function Ask-Engine {
+  Refresh-Path
+  $haveClaude = [bool](Have claude)
+  $haveCodex  = [bool](Have codex)
+  Write-Host "> El cerebro de tu agente" -ForegroundColor White
+  Write-Host ("    1) Claude Code  - cuenta de pago de Claude (Pro o Max)" +
+              $(if ($haveClaude) { "   [ya instalado]" } else { "" }) + "   [recomendado]")
+  Write-Host ("    2) Codex        - cuenta de pago de ChatGPT (Plus, Pro o Business)" +
+              $(if ($haveCodex) { "   [ya instalado]" } else { "" }))
+  Write-Host "  Se instala y configura solo el que elijas. Puedes cambiarlo despues desde el asistente." -ForegroundColor DarkGray
+  for ($i = 0; $i -lt 3; $i++) {
+    $a = ""
+    try { $a = (Read-Host "  Elige 1 o 2 [1]") } catch { return "claude" }
+    $a = "$a".Trim().ToLower()
+    if ($a -eq "" -or $a -eq "1" -or $a -eq "claude") { return "claude" }
+    if ($a -eq "2" -or $a -eq "codex")  { return "codex" }
+    Warn "Responde 1 o 2."
+  }
+  return "claude"
+}
+
+if (-not $PSBoundParameters.ContainsKey('Engine')) {
+  $envEngine = "$env:OLIVAW_ENGINE".Trim().ToLower()
+  if ($envEngine -eq "claude" -or $envEngine -eq "codex") {
+    $Engine = $envEngine
+    Info "Cerebro elegido por OLIVAW_ENGINE: $Engine"
+  } elseif (Can-Prompt) {
+    $Engine = Ask-Engine
+  }
+}
+$brainName = if ($Engine -eq "codex") { "Codex" } else { "Claude Code" }
+Ok "Cerebro: $brainName"
+
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 New-Item -ItemType Directory -Force -Path $Workspace  | Out-Null
 
@@ -133,8 +176,7 @@ $pyDir = Split-Path $py
 $pyw = Join-Path $pyDir "pythonw.exe"; if (-not (Test-Path $pyw)) { $pyw = $py }
 Ok "Python: $py"
 
-# 4) the brain CLI (Claude Code by default, Codex with -Engine codex) --------
-$brainName = if ($Engine -eq "codex") { "Codex" } else { "Claude Code" }
+# 4) the brain CLI — only the one that was chosen is installed --------------
 Step "4/5  $brainName (el cerebro)"
 Refresh-Path
 $claude = ""
@@ -145,6 +187,9 @@ if ($Engine -eq "codex") {
     Ok "Codex ya esta instalado."
   } elseif ($NoAutoInstall) {
     Warn "Codex no encontrado y auto-install desactivado."
+  } elseif (-not (Have npm)) {
+    Warn "Codex se instala con npm (Node.js) y no encontre npm en este equipo."
+    Info "Instala Node.js desde nodejs.org, abre una ventana nueva y vuelve a ejecutar esto."
   } else {
     Info "Instalando Codex (npm install -g @openai/codex)..."
     if ((Native "npm" @("install","-g","@openai/codex") -Quiet) -ne 0) { Warn "npm no pudo instalar Codex." }
@@ -262,6 +307,11 @@ if ($UseWizard) {
   Write-Host "`n=== Abriendo el asistente de configuracion ===" -ForegroundColor White
   Info "Sigue los pasos en el navegador: probar el cerebro, conectar Hermes, ponerle nombre"
   Info "a tu agente y vincularlo a tu Telegram. El asistente activa todo al final."
+  if ($Engine -eq "codex" -and -not $codex) {
+    Warn "Codex no quedo instalado. El asistente te deja instalarlo con un boton en el primer paso."
+  } elseif ($Engine -eq "codex") {
+    Info "Cuando el asistente te lo pida, inicia sesion en Codex (un clic, una sola vez)."
+  }
   Start-Process -FilePath $py -ArgumentList "`"$wiz`"" -WorkingDirectory $InstallDir
   Write-Host "`nSi el navegador no abre solo, ejecuta:  `"$py`" `"$wiz`"`n" -ForegroundColor Green
 } else {

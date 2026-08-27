@@ -160,6 +160,25 @@ def agents_snapshot():
     return {"default": default, "extra": extra}
 
 
+def _configured_engine():
+    """Which brain this machine is set up for (the installer wrote it, or a previous run of
+    this wizard did). Absent means Claude Code, the default."""
+    try:
+        with open(os.path.join(INSTALL_DIR, "updater.config.json"), encoding="utf-8") as fh:
+            cfg = json.load(fh) or {}
+        val = ((cfg.get("env") or {}).get("OLIVAW_ENGINE") or "").strip().lower()
+        return val if val in ("claude", "codex") else "claude"
+    except Exception:  # noqa: BLE001
+        return "claude"
+
+
+def _provider_for_engine(engine):
+    for p in providers.all_providers():
+        if p.engine == engine and p.status == "ready":
+            return p.id
+    return providers.DEFAULT_ID
+
+
 def initial_state():
     claude = which("claude")
     workspace = _default_workspace()
@@ -178,7 +197,11 @@ def initial_state():
             "repo": _existing_repo() or "Walt9819/olivaw",
         },
         "providers": providers.public_list(),
-        "default_provider": providers.DEFAULT_ID,
+        # What this machine is set up for: the wizard opens on it, so the choice made in the
+        # installer is not asked again.
+        "default_provider": _provider_for_engine(_configured_engine()),
+        # What we recommend, which is a different thing and keeps the badge honest.
+        "recommended_provider": providers.DEFAULT_ID,
         "usecases": usecases.public_list(),
         "smtp_providers": channels.SMTP_PROVIDERS,
         "image_options": channels.IMAGE_OPTIONS,

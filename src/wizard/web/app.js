@@ -33,7 +33,8 @@
     for (var _i = 0; _i < 4; _i++) _c += _cs[Math.floor(Math.random() * _cs.length)];
     S.owner_code = _c;
   }
-  var META = { providers: [], usecases: [], default_provider: "claude-code", hermes: {},
+  var META = { providers: [], usecases: [], default_provider: "claude-code",
+    recommended_provider: "claude-code", hermes: {},
     agents: { default: null, extra: [] }, smtp_providers: [], image_options: [], google_presets: {} };
 
   function save() { try { localStorage.setItem(LS, JSON.stringify(S)); } catch (e) {} }
@@ -280,9 +281,14 @@
       // otherwise both cards claim it and the badge stops meaning anything.
       var badge = p.status !== "ready"
         ? '<span class="badge soon">Próximamente</span>'
-        : (p.id === META.default_provider
+        : (p.id === META.recommended_provider
             ? '<span class="badge">Recomendado</span>'
             : '<span class="badge alt">Disponible</span>');
+      // Say which one this machine is already set up for, so switching is a deliberate act.
+      if (p.status === "ready" && p.id === META.default_provider &&
+          p.id !== META.recommended_provider) {
+        badge += ' <span class="badge alt">En uso</span>';
+      }
       return '<div class="opt' + sel + dis + '" data-pid="' + p.id + '">' +
         '<div class="ic">' + esc(p.label[0]) + '</div>' +
         '<div class="grow"><div class="row" style="justify-content:space-between">' +
@@ -359,7 +365,7 @@
         var p = META.providers.filter(function (x) { return x.id === pid; })[0];
         if (!p || p.status !== "ready") { toast("Ese proveedor aún no está disponible."); return; }
         if (pid !== S.provider) S.brainOk = false;   // a different brain has not been tested
-        S.provider = pid; save(); render(); renderStepper();
+        S.provider = pid; S.providerPicked = true; save(); render(); renderStepper();
       };
     });
     var cp = el("claudePath");
@@ -2039,6 +2045,10 @@
         if (!S.hermes_config) S.hermes_config = d.hermes_config || "";
         if (!S.repo || S.repo === "Walt9819/olivaw") S.repo = d.repo || S.repo;
       }
+      // Open on the brain this machine was installed with, unless the owner has since picked
+      // one here: answering "Codex" in the installer and then finding Claude selected is being
+      // asked the same question twice.
+      if (!S.providerPicked && META.default_provider) S.provider = META.default_provider;
       // "Already set up" was only remembered in THIS browser, so a different browser or cleared
       // storage hid the extras step (channels, routines) for an agent that is demonstrably
       // running. Trust the machine over localStorage: a live bridge means setup happened.

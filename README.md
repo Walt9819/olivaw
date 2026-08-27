@@ -109,16 +109,19 @@ Prerequisites the user must have (installer guides these): Python 3, Node.js, He
 * **Codex** — `npm i -g @openai/codex`, then `codex login`. Needs a paid ChatGPT plan (Plus, Pro or
   Business), or an OpenAI API key in `CODEX_API_KEY`.
 
-Both are offered in the wizard's first step, which installs and signs into whichever you pick. The
-installers can also start from Codex directly, so nothing Claude-specific is installed for someone
-who does not use it:
+**The installer asks which one you want**, before it does any of the long work, and installs only
+that CLI — so nothing Claude-specific lands on the machine of someone who uses ChatGPT. The wizard
+then opens already set to that brain (you can still switch there; the choice is one click).
+
+The question is skipped where there is no console to answer it (a piped `curl | bash`, a headless
+run with a bot token), which defaults to Claude Code. To answer up front instead:
 
 ```powershell
-irm https://raw.githubusercontent.com/Walt9819/olivaw/main/install/install-windows.ps1 | iex   # Claude (default)
-install-windows.ps1 -Engine codex                                                             # Codex
+$env:OLIVAW_ENGINE='codex'; irm https://raw.githubusercontent.com/Walt9819/olivaw/main/install/install-windows.ps1 | iex
+install-windows.ps1 -Engine codex        # when running the file directly
 ```
 ```bash
-HB_ENGINE=codex bash ~/olivaw.command      # macOS / Linux
+HB_ENGINE=codex bash ~/olivaw.command    # macOS / Linux
 ```
 
 ### Choosing the brain (Claude Code or Codex)

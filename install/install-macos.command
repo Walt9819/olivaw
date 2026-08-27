@@ -13,6 +13,7 @@
 #   4. the brain CLI -> Claude Code (native installer), or Codex via npm when HB_ENGINE=codex
 #   5. olivaw      -> downloads + SHA-256-verifies the latest release
 #
+# It asks which brain you want; set HB_ENGINE=claude|codex to answer up front.
 # Non-technical (opens wizard):
 #   curl -fsSL https://raw.githubusercontent.com/Walt9819/olivaw/main/install/install-macos.command -o ~/olivaw.command && bash ~/olivaw.command
 # Advanced/headless: set HB_BOT_TOKEN + HB_CHAT_ID (and optionally HB_NO_WIZARD=1).
@@ -32,11 +33,35 @@ WORKSPACE="${HB_WORKSPACE:-$HOME/hermes-workspace}"
 BOT="${HB_BOT_TOKEN:-}"; CHAT="${HB_CHAT_ID:-}"; MAINT="${HB_MAINTAINER:-$CHAT}"
 LOCAL_SRC="${HB_LOCAL_SOURCE:-}"; LANG_="${HB_LANG:-es}"
 NO_WIZARD="${HB_NO_WIZARD:-}"; NO_AUTO="${HB_NO_AUTOINSTALL:-}"
-ENGINE="${HB_ENGINE:-claude}"          # which brain: claude | codex
-case "$ENGINE" in claude|codex) ;; *) ENGINE="claude" ;; esac
+ENGINE="${HB_ENGINE:-}"                # which brain: claude | codex
+case "$ENGINE" in claude|codex) ;; *) ENGINE="" ;; esac
 USE_WIZARD=1; { [ -n "$BOT" ] || [ -n "$NO_WIZARD" ]; } && USE_WIZARD=0
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 mkdir -p "$INSTALL_DIR" "$WORKSPACE"
+
+# ── which brain? asked FIRST, so nobody waits ten minutes to be asked a question ──
+ask_engine() {
+  # Only ask when stdin is a real terminal: piped into bash there is nobody to answer, and the
+  # install would hang forever.
+  [ -t 0 ] || { ENGINE="claude"; return; }
+  printf "\n"
+  say "El cerebro de tu agente:"
+  say "    1) Claude Code  - cuenta de pago de Claude (Pro o Max)   [recomendado]"
+  say "    2) Codex        - cuenta de pago de ChatGPT (Plus, Pro o Business)"
+  say "  Se instala y configura solo el que elijas. Puedes cambiarlo despues desde el asistente."
+  for _ in 1 2 3; do
+    printf "  Elige 1 o 2 [1]: "
+    read -r a || { ENGINE="claude"; return; }
+    case "$(printf '%s' "$a" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
+      ""|1|claude) ENGINE="claude"; return ;;
+      2|codex)     ENGINE="codex";  return ;;
+      *) warn "Responde 1 o 2." ;;
+    esac
+  done
+  ENGINE="claude"
+}
+if [ -z "$ENGINE" ]; then ask_engine; else say "Cerebro elegido por HB_ENGINE: $ENGINE"; fi
+ok "Cerebro: $ENGINE"
 
 # 1) Hermes
 step "1/5  Hermes"
@@ -78,6 +103,9 @@ if [ "$ENGINE" = "codex" ]; then
   step "4/5  Codex (el cerebro)"
   if have codex >/dev/null; then ok "Codex ya esta instalado."
   elif [ -n "$NO_AUTO" ]; then warn "Codex no encontrado y auto-install desactivado."
+  elif ! have npm >/dev/null; then
+    warn "Codex se instala con npm (Node.js) y no encontre npm en este equipo."
+    say "Instala Node.js (nodejs.org), abre una terminal nueva y vuelve a ejecutar esto."
   else
     say "Instalando Codex (npm install -g @openai/codex)..."
     npm install -g @openai/codex >/dev/null 2>&1 || warn "El instalador de Codex reporto un problema."
