@@ -51,6 +51,33 @@ function Refresh-Path {
 }
 function Have($n){ (Get-Command $n -ErrorAction SilentlyContinue).Source }
 
+# Run a native .exe safely under $ErrorActionPreference = "Stop".
+#
+# PowerShell 5.1 turns ANY line a native command writes to stderr into an ErrorRecord as soon as
+# that stream is redirected - and under EAP=Stop that ErrorRecord is terminating. Tools report
+# progress and warnings on stderr all the time (uv's "Downloading cpython..." is progress, npm
+# warns constantly), so a perfectly successful command would kill this installer. Both `2>&1` and
+# `2>$null` behave that way; only leaving stderr alone, or lowering EAP, is safe.
+#
+# Returns the exit code. Stdout comes back through -Capture when the caller needs it.
+function Native {
+  param([string]$Exe, [string[]]$Arguments = @(), [switch]$Quiet, [switch]$Capture)
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $global:LASTEXITCODE = 0
+    if ($Capture)   { return (& $Exe @Arguments 2>$null) }
+    if ($Quiet)     { & $Exe @Arguments 2>$null | Out-Null }
+    else            { & $Exe @Arguments }        # let the user watch a long download
+    return $global:LASTEXITCODE
+  } catch {
+    Warn "${Exe}: $($_.Exception.Message)"   # ${} or PowerShell reads $Exe: as a scope
+    return 1
+  } finally {
+    $ErrorActionPreference = $prev
+  }
+}
+
 Write-Host "`n=== olivaw installer (Windows) ===" -ForegroundColor White
 Write-Host "  Instalando todo automaticamente. Puede tardar varios minutos la primera vez.`n" -ForegroundColor DarkGray
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
@@ -92,10 +119,16 @@ if ($uv) { Ok "uv: $uv" } else { throw "No se pudo obtener uv (necesario para Py
 
 # 3) Python via uv (runs our bridge/supervisor/wizard) -----------------------
 Step "3/5  Python"
-& $uv python install 3.12 2>&1 | Out-Null
-$py = (& $uv python find 3.12 2>$null | Select-Object -First 1)
-if (-not $py -or -not (Test-Path $py)) { $py = (& $uv python find 2>$null | Select-Object -First 1) }
-if (-not $py -or -not (Test-Path $py)) { throw "uv no pudo proveer Python." }
+# Not silenced: this downloads ~21 MB and takes a while, and a progress bar is the difference
+# between "it is working" and "it is frozen" for someone watching a fresh install.
+Info "Preparando Python 3.12 (puede tardar; descarga ~21 MB la primera vez)..."
+$rc = Native $uv @("python","install","3.12")
+if ($rc -ne 0) { Warn "uv python install devolvio $rc; intento localizar Python igualmente." }
+$py = (Native $uv @("python","find","3.12") -Capture | Select-Object -First 1)
+if (-not $py -or -not (Test-Path $py)) { $py = (Native $uv @("python","find") -Capture | Select-Object -First 1) }
+if (-not $py -or -not (Test-Path $py)) {
+  throw "uv no pudo proveer Python 3.12. Ejecuta '$uv python install 3.12' en esta ventana para ver el motivo."
+}
 $pyDir = Split-Path $py
 $pyw = Join-Path $pyDir "pythonw.exe"; if (-not (Test-Path $pyw)) { $pyw = $py }
 Ok "Python: $py"
@@ -114,7 +147,7 @@ if ($Engine -eq "codex") {
     Warn "Codex no encontrado y auto-install desactivado."
   } else {
     Info "Instalando Codex (npm install -g @openai/codex)..."
-    try { & npm install -g @openai/codex 2>&1 | Out-Null } catch { Warn "Codex install: $($_.Exception.Message)" }
+    if ((Native "npm" @("install","-g","@openai/codex") -Quiet) -ne 0) { Warn "npm no pudo instalar Codex." }
     Refresh-Path
     $codex = Have codex
     if ($codex) { Ok "Codex instalado." } else { Warn "No pude confirmar Codex en PATH; el asistente lo revisara." }
