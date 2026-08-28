@@ -35,6 +35,7 @@ param(
   [string]$Lang = "es",
   [ValidateSet("claude","codex")]
   [string]$Engine = "claude",
+  [switch]$NoUi,
   [switch]$NoWizard,
   [switch]$NoAutoInstall
 )
@@ -46,10 +47,48 @@ function Info($m){ Write-Host "  $m" -ForegroundColor Cyan }
 function Ok($m){ Write-Host "  [ok] $m" -ForegroundColor Green }
 function Warn($m){ Write-Host "  [!] $m" -ForegroundColor Yellow }
 function Step($m){ Write-Host "`n> $m" -ForegroundColor White }
+# Where the tools this installer depends on actually land. A fresh install writes some of these
+# to the USER PATH only after the shell that will need them has already started, so re-reading the
+# registry is not enough on its own.
+function Tool-Dirs {
+  @(
+    (Join-Path $env:USERPROFILE ".local\bin"),          # uv, and the Python shims it creates
+    (Join-Path $env:LOCALAPPDATA "hermes\bin"),         # hermes + its bundled uv
+    (Join-Path $env:APPDATA "npm")                      # npm -g (codex lives here)
+  ) | Where-Object { $_ -and (Test-Path $_) }
+}
+
 function Refresh-Path {
   $m = [Environment]::GetEnvironmentVariable('Path','Machine')
   $u = [Environment]::GetEnvironmentVariable('Path','User')
-  $env:Path = (@($m,$u) | Where-Object { $_ } ) -join ';'
+  $parts = @($m,$u) | Where-Object { $_ }
+  $env:Path = ($parts -join ';')
+  # Add the known tool dirs to THIS session, so a tool installed a moment ago is findable even
+  # though the registry has not caught up.
+  foreach ($d in (Tool-Dirs)) {
+    if (($env:Path -split ';') -notcontains $d) { $env:Path = "$d;$env:Path" }
+  }
+}
+
+# Make it stick for every future shell, shortcut and background process. User scope only - the
+# machine PATH is not ours to touch - and idempotent.
+function Ensure-UserPath {
+  $added = @()
+  try {
+    $cur = [Environment]::GetEnvironmentVariable('Path','User')
+    $have = @()
+    if ($cur) { $have = $cur -split ';' | Where-Object { $_ } }
+    foreach ($d in (Tool-Dirs)) {
+      if ($have -notcontains $d) { $have += $d; $added += $d }
+    }
+    if ($added.Count -gt 0) {
+      [Environment]::SetEnvironmentVariable('Path', ($have -join ';'), 'User')
+      Ok ("PATH del usuario actualizado (" + ($added -join '; ') + ")")
+    }
+  } catch {
+    Warn "No pude actualizar el PATH del usuario: $($_.Exception.Message)"
+  }
+  return $added
 }
 function Have($n){ (Get-Command $n -ErrorAction SilentlyContinue).Source }
 
@@ -78,6 +117,235 @@ function Native {
   } finally {
     $ErrorActionPreference = $prev
   }
+}
+
+
+# ── the installer window ────────────────────────────────────────────────────
+# Everything before the browser wizard used to be raw console text. This is the same install,
+# with a face: one question, a progress bar, and plain-language status. It runs THIS script again
+# as a child (-NoUi) rather than duplicating any step, so there is only one installer to trust.
+function Get-SelfCopy {
+  if ($PSCommandPath -and (Test-Path $PSCommandPath)) { return $PSCommandPath }
+  # Piped through iex: the script cannot see its own text, so fetch the same file it came from.
+  $dst = Join-Path $env:TEMP "olivaw-install.ps1"
+  try {
+    $u = "https://raw.githubusercontent.com/$Repo/main/install/install-windows.ps1"
+    Invoke-WebRequest -Uri $u -OutFile $dst -UseBasicParsing -ErrorAction Stop
+    if ((Get-Item $dst).Length -gt 2000) { return $dst }
+  } catch { }
+  return ""
+}
+
+function Show-InstallUi {
+  param([string]$SelfPath)
+  try {
+    Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+    Add-Type -AssemblyName System.Drawing -ErrorAction Stop
+  } catch { return "console" }
+
+  $haveClaude = [bool](Have claude)
+  $haveCodex  = [bool](Have codex)
+
+  $f = New-Object System.Windows.Forms.Form
+  $f.Text = "Instalar Olivaw"
+  $f.Size = New-Object System.Drawing.Size(660, 560)
+  $f.StartPosition = "CenterScreen"
+  $f.FormBorderStyle = "FixedDialog"
+  $f.MaximizeBox = $false
+  $f.BackColor = [System.Drawing.Color]::White
+  $f.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+
+  $title = New-Object System.Windows.Forms.Label
+  $title.Text = "Vamos a instalar tu agente"
+  $title.Font = New-Object System.Drawing.Font("Segoe UI", 15, [System.Drawing.FontStyle]::Bold)
+  $title.Location = New-Object System.Drawing.Point(24, 20)
+  $title.Size = New-Object System.Drawing.Size(600, 32)
+  $f.Controls.Add($title)
+
+  $sub = New-Object System.Windows.Forms.Label
+  $sub.Text = "Se instala todo solo: Hermes, Python y el cerebro que elijas. Puede tardar varios minutos la primera vez. No tienes que hacer nada mas."
+  $sub.ForeColor = [System.Drawing.Color]::DimGray
+  $sub.Location = New-Object System.Drawing.Point(26, 52)
+  $sub.Size = New-Object System.Drawing.Size(600, 40)
+  $f.Controls.Add($sub)
+
+  $grp = New-Object System.Windows.Forms.GroupBox
+  $grp.Text = " El cerebro de tu agente "
+  $grp.Location = New-Object System.Drawing.Point(24, 100)
+  $grp.Size = New-Object System.Drawing.Size(600, 104)
+  $f.Controls.Add($grp)
+
+  $rbClaude = New-Object System.Windows.Forms.RadioButton
+  $rbClaude.Text = "Claude Code  -  cuenta de pago de Claude (Pro o Max)" + $(if ($haveClaude) { "   [ya instalado]" } else { "" })
+  $rbClaude.Location = New-Object System.Drawing.Point(18, 28)
+  $rbClaude.Size = New-Object System.Drawing.Size(560, 22)
+  $rbClaude.Checked = ($Engine -ne "codex")
+  $grp.Controls.Add($rbClaude)
+
+  $rbCodex = New-Object System.Windows.Forms.RadioButton
+  $rbCodex.Text = "Codex  -  cuenta de pago de ChatGPT (Plus, Pro o Business)" + $(if ($haveCodex) { "   [ya instalado]" } else { "" })
+  $rbCodex.Location = New-Object System.Drawing.Point(18, 54)
+  $rbCodex.Size = New-Object System.Drawing.Size(560, 22)
+  $rbCodex.Checked = ($Engine -eq "codex")
+  $grp.Controls.Add($rbCodex)
+
+  $hint = New-Object System.Windows.Forms.Label
+  $hint.Text = "Solo se instala el que elijas. Puedes cambiarlo despues."
+  $hint.ForeColor = [System.Drawing.Color]::DimGray
+  $hint.Location = New-Object System.Drawing.Point(20, 78)
+  $hint.Size = New-Object System.Drawing.Size(560, 18)
+  $grp.Controls.Add($hint)
+
+  $btn = New-Object System.Windows.Forms.Button
+  $btn.Text = "Instalar"
+  $btn.Location = New-Object System.Drawing.Point(24, 216)
+  $btn.Size = New-Object System.Drawing.Size(140, 34)
+  $btn.BackColor = [System.Drawing.Color]::FromArgb(91, 91, 214)
+  $btn.ForeColor = [System.Drawing.Color]::White
+  $btn.FlatStyle = "Flat"
+  $f.Controls.Add($btn)
+  $f.AcceptButton = $btn
+
+  $status = New-Object System.Windows.Forms.Label
+  $status.Text = ""
+  $status.Location = New-Object System.Drawing.Point(178, 226)
+  $status.Size = New-Object System.Drawing.Size(446, 20)
+  $f.Controls.Add($status)
+
+  $bar = New-Object System.Windows.Forms.ProgressBar
+  $bar.Location = New-Object System.Drawing.Point(24, 258)
+  $bar.Size = New-Object System.Drawing.Size(600, 12)
+  $bar.Minimum = 0; $bar.Maximum = 100
+  $f.Controls.Add($bar)
+
+  $box = New-Object System.Windows.Forms.TextBox
+  $box.Multiline = $true
+  $box.ScrollBars = "Vertical"
+  $box.ReadOnly = $true
+  $box.BackColor = [System.Drawing.Color]::FromArgb(248, 249, 255)
+  $box.Font = New-Object System.Drawing.Font("Consolas", 8.5)
+  $box.Location = New-Object System.Drawing.Point(24, 282)
+  $box.Size = New-Object System.Drawing.Size(600, 200)
+  $f.Controls.Add($box)
+
+  $copy = New-Object System.Windows.Forms.Button
+  $copy.Text = "Copiar detalles"
+  $copy.Location = New-Object System.Drawing.Point(474, 492)
+  $copy.Size = New-Object System.Drawing.Size(150, 28)
+  $copy.FlatStyle = "Flat"
+  $copy.Visible = $false
+  $f.Controls.Add($copy)
+
+  $state = [hashtable]::Synchronized(@{ proc = $null; pos = 0; log = ""; done = $false; result = "console" })
+  $logFile = Join-Path $env:TEMP ("olivaw-install-{0}.log" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
+
+  $append = {
+    param($text)
+    if (-not $text) { return }
+    $box.AppendText($text)
+    $box.SelectionStart = $box.TextLength
+    $box.ScrollToCaret()
+  }
+
+  $timer = New-Object System.Windows.Forms.Timer
+  $timer.Interval = 400
+  $timer.Add_Tick({
+    # Tail the child's redirected output. A file plus a timer beats stream events here: no
+    # cross-runspace handlers, and the log still exists afterwards for "copy the details".
+    if (Test-Path $logFile) {
+      try {
+        $fs = [System.IO.File]::Open($logFile, 'Open', 'Read', 'ReadWrite')
+        $fs.Seek($state.pos, 'Begin') | Out-Null
+        $sr = New-Object System.IO.StreamReader($fs)
+        $chunk = $sr.ReadToEnd()
+        $state.pos = $fs.Position
+        $sr.Close(); $fs.Close()
+        if ($chunk) {
+          $state.log += $chunk
+          & $append $chunk
+          foreach ($line in ($chunk -split "`r?`n")) {
+            if ($line -match '^\s*>\s*(\d)\s*/\s*5\s+(.*)$') {
+              $bar.Value = [Math]::Min(100, [int]$matches[1] * 18)
+              $status.Text = $matches[2].Trim()
+            }
+          }
+        }
+      } catch { }
+    }
+    if ($state.proc -and $state.proc.HasExited -and -not $state.done) {
+      $state.done = $true
+      $timer.Stop()
+      Start-Sleep -Milliseconds 300
+      $code = $null
+      try { $code = $state.proc.ExitCode } catch { }
+      if ($code -eq 0) {
+        $bar.Value = 100
+        $status.Text = "Listo"
+        & $append "`r`n=== Instalacion terminada ===`r`nSe abrio el asistente en tu navegador. Si no, usa el acceso 'Olivaw' del escritorio.`r`n"
+        $state.result = "done"
+        $btn.Text = "Cerrar"
+        $btn.Enabled = $true
+      } else {
+        $status.Text = "No se pudo terminar"
+        $shown = "desconocido"
+        if ($null -ne $code) { $shown = "$code" }
+        & $append "`r`n=== La instalacion fallo (codigo $shown) ===`r`nPulsa 'Copiar detalles' y envialos a quien te compartio Olivaw.`r`n"
+        $state.result = "failed"
+        $btn.Text = "Cerrar"
+        $btn.Enabled = $true
+        $copy.Visible = $true
+      }
+    }
+  })
+
+  $btn.Add_Click({
+    if ($state.done) { $f.Close(); return }
+    if ($state.proc) { return }
+    $chosen = "claude"
+    if ($rbCodex.Checked) { $chosen = "codex" }
+    $rbClaude.Enabled = $false; $rbCodex.Enabled = $false
+    $btn.Enabled = $false
+    $btn.Text = "Instalando..."
+    $status.Text = "Preparando..."
+    $bar.Value = 4
+    & $append ("Cerebro elegido: " + $(if ($chosen -eq "codex") { "Codex" } else { "Claude Code" }) + "`r`n")
+    $argList = @("-NoProfile","-ExecutionPolicy","Bypass","-File", $SelfPath,
+                 "-Engine", $chosen, "-NoUi", "-Repo", $Repo,
+                 "-InstallDir", $InstallDir, "-Workspace", $Workspace, "-Lang", $Lang)
+    if ($NoAutoInstall) { $argList += "-NoAutoInstall" }
+    try {
+      $state.proc = Start-Process -FilePath "powershell.exe" -ArgumentList $argList `
+        -RedirectStandardOutput $logFile -RedirectStandardError ($logFile + ".err") `
+        -NoNewWindow -PassThru
+      # Touch the handle once: a process from Start-Process -PassThru does not keep one, and
+      # without it .ExitCode comes back EMPTY when the child finishes - which read as "the
+      # install failed" on a perfectly good run.
+      $null = $state.proc.Handle
+      $timer.Start()
+    } catch {
+      & $append ("No pude lanzar la instalacion: " + $_.Exception.Message + "`r`n")
+      $state.result = "console"
+      $f.Close()
+    }
+  })
+
+  $copy.Add_Click({
+    try { Set-Clipboard -Value ($state.log + "`r`n(registro: $logFile)") } catch { }
+    $copy.Text = "Copiado"
+  })
+
+  $f.Add_FormClosing({
+    if ($state.proc -and -not $state.proc.HasExited) {
+      $ans = [System.Windows.Forms.MessageBox]::Show(
+        "La instalacion sigue en marcha. Si cierras ahora quedara a medias. Cerrar de todas formas?",
+        "Olivaw", "YesNo", "Warning")
+      if ($ans -eq "No") { $_.Cancel = $true; return }
+      try { $state.proc.Kill() } catch { }
+    }
+  })
+
+  [void]$f.ShowDialog()
+  return $state.result
 }
 
 Write-Host "`n=== olivaw installer (Windows) ===" -ForegroundColor White
@@ -109,6 +377,18 @@ function Ask-Engine {
     Warn "Responde 1 o 2."
   }
   return "claude"
+}
+
+# A window, when there is somebody to look at it. Falls through to the console flow for headless
+# installs, for -NoUi (the child process the window itself runs), and if WinForms is unavailable.
+if ($UseWizard -and -not $NoUi -and (Can-Prompt)) {
+  $self = Get-SelfCopy
+  if ($self) {
+    $uiResult = Show-InstallUi -SelfPath $self
+    if ($uiResult -ne "console") { return }
+  } else {
+    Info "No pude preparar la ventana de instalacion; sigo en esta consola."
+  }
 }
 
 if (-not $PSBoundParameters.ContainsKey('Engine')) {
@@ -144,7 +424,12 @@ if (Have hermes) {
 # own question wizard. Olivaw configures the model/owner-lock itself later, so defaults
 # are fine here. Best-effort; failure is non-fatal (the wizard still opens).
 if (Have hermes) {
-  try { Start-Process -FilePath "hermes" -ArgumentList "setup","--non-interactive" -Wait -NoNewWindow -ErrorAction SilentlyContinue | Out-Null } catch {}
+  # Quiet on purpose. Hermes prints a page of "configure Hermes using environment variables or
+  # config commands / run 'hermes setup' in an interactive terminal" - every one of which Olivaw
+  # runs itself a few seconds later. Showing it tells the owner to go do homework that is already
+  # being done for them.
+  Native "hermes" @("setup","--non-interactive") -Quiet | Out-Null
+  Ok "Hermes configurado por Olivaw (modelo, canal y candado de dueno). No tienes que responder nada."
 }
 
 # 2) uv (Python manager) -----------------------------------------------------
@@ -212,6 +497,11 @@ if ($Engine -eq "codex") {
     if ($claude) { Ok "Claude Code instalado." } else { Warn "No pude confirmar Claude en PATH; el asistente lo revisara." }
   }
 }
+
+# Everything that had to be installed is installed: make it findable from now on, so nobody has
+# to open a terminal and edit PATH the way the first tester had to.
+Refresh-Path
+Ensure-UserPath | Out-Null
 
 # 5) olivaw (download + verify + extract) ------------------------------------
 Step "5/5  olivaw"
@@ -321,7 +611,7 @@ if ($UseWizard) {
   } else {
     Info "1) Inicia sesion en Claude una vez:  claude"
   }
-  Info "2) Asegurate de que Hermes este configurado (hermes setup) y su gateway corriendo."
+  Info "2) Deja el gateway de Hermes corriendo:  hermes gateway start"
   Info "3) Escribe a tu bot de Telegram para probar."
   Write-Host "`nLas actualizaciones son automaticas y silenciosas.`n" -ForegroundColor Green
 }

@@ -39,10 +39,33 @@ USE_WIZARD=1; { [ -n "$BOT" ] || [ -n "$NO_WIZARD" ]; } && USE_WIZARD=0
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 mkdir -p "$INSTALL_DIR" "$WORKSPACE"
 
+# uv installs Python (and its shims) into ~/.local/bin and only warns when that is not on PATH.
+# Fixing it by hand is not something a non-technical owner can do, so do it for them - once,
+# marked, and idempotent.
+ensure_path() {
+  case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac
+  for rc in "$HOME/.zprofile" "$HOME/.bash_profile" "$HOME/.profile"; do
+    [ -e "$rc" ] || [ "$rc" = "$HOME/.zprofile" ] || continue
+    if ! grep -q "added by olivaw" "$rc" 2>/dev/null; then
+      printf '\n# added by olivaw: uv installs python shims here\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$rc"
+      ok "PATH actualizado en $(basename "$rc")"
+    fi
+  done
+}
+
 # ── which brain? asked FIRST, so nobody waits ten minutes to be asked a question ──
 ask_engine() {
-  # Only ask when stdin is a real terminal: piped into bash there is nobody to answer, and the
-  # install would hang forever.
+  # A real dialog first: osascript works even when this script was piped into bash, which is
+  # exactly when the terminal prompt below cannot be used.
+  if command -v osascript >/dev/null 2>&1; then
+    _pick="$(osascript -e 'set r to choose from list {"Claude Code  -  cuenta de pago de Claude (Pro o Max)", "Codex  -  cuenta de pago de ChatGPT (Plus, Pro o Business)"} with title "Instalar Olivaw" with prompt "El cerebro de tu agente:" default items {"Claude Code  -  cuenta de pago de Claude (Pro o Max)"} OK button name "Instalar" cancel button name "Cancelar"' 2>/dev/null || true)"
+    case "$_pick" in
+      Codex*)  ENGINE="codex";  return ;;
+      Claude*) ENGINE="claude"; return ;;
+      false)   say "Instalacion cancelada."; exit 0 ;;
+    esac
+  fi
+  # No dialog available: fall back to the terminal, and only if somebody can answer it.
   [ -t 0 ] || { ENGINE="claude"; return; }
   printf "\n"
   say "El cerebro de tu agente:"
@@ -75,7 +98,8 @@ else
 fi
 # Seed a non-interactive baseline so the user is NEVER dropped into Hermes' question wizard.
 # Olivaw configures model/owner-lock itself later; defaults are fine. Best-effort.
-if have hermes >/dev/null; then hermes setup --non-interactive >/dev/null 2>&1 || true; fi
+if have hermes >/dev/null; then hermes setup --non-interactive >/dev/null 2>&1 || true
+  ok "Hermes configurado por Olivaw. No tienes que responder nada."; fi
 
 # 2) uv
 step "2/5  uv (gestor de Python)"
@@ -124,6 +148,9 @@ else
 fi
 CLAUDE="$(have claude || true)"
 CODEX="$(have codex || true)"
+
+# Everything that had to be installed is installed: make it findable from now on.
+ensure_path
 
 # 5) olivaw
 step "5/5  olivaw"
@@ -212,7 +239,7 @@ if [ "$USE_WIZARD" = "1" ]; then
 else
   echo; echo "=== Casi listo ==="
   if [ "$ENGINE" = "codex" ]; then say "1) Inicia sesion en Codex una vez:  codex login"; else say "1) Inicia sesion en Claude una vez:  claude"; fi
-  say "2) Configura Hermes (hermes setup) y deja su gateway corriendo."
+  say "2) Deja el gateway de Hermes corriendo:  hermes gateway start"
   say "3) Escribe a tu bot de Telegram para probar."
   echo; printf "\033[32mLas actualizaciones son automaticas y silenciosas.\033[0m\n\n"
 fi

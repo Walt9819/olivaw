@@ -109,7 +109,26 @@ Prerequisites the user must have (installer guides these): Python 3, Node.js, He
 * **Codex** — `npm i -g @openai/codex`, then `codex login`. Needs a paid ChatGPT plan (Plus, Pro or
   Business), or an OpenAI API key in `CODEX_API_KEY`.
 
-**The installer asks which one you want**, before it does any of the long work, and installs only
+**The installer opens a small window** (WinForms on Windows, a native dialog on macOS — no
+dependencies either way), because the browser wizard cannot exist until Python and the release are
+installed, and that first stretch used to be a wall of console text. The window asks the one
+question, shows progress in plain language, and hands over to the browser at the end. It does not
+reimplement anything: it runs the same script as a child with `-NoUi` and streams its output, so
+there is only ever one installer. No desktop, no WinForms, or a headless run falls back to the
+console flow.
+
+Two things it now handles that a non-technical owner cannot:
+
+* **PATH.** uv installs Python's shims into `~/.local/bin` and merely *warns* when that is not on
+  PATH; the first tester had to add it by hand. The installer now adds the tool directories to the
+  session and persists the missing ones to the **user** PATH (idempotent, user scope only), so the
+  next terminal, the shortcut and the supervisor all find them.
+* **Hermes' questions.** `hermes setup --non-interactive` prints a page of "configure Hermes using
+  environment variables or config commands / run `hermes setup` in an interactive terminal" — every
+  one of which Olivaw runs itself seconds later. It is captured and replaced with one line saying
+  what happened, and nothing anywhere tells the owner to go run a setup wizard.
+
+**It asks which brain you want**, before it does any of the long work, and installs only
 that CLI — so nothing Claude-specific lands on the machine of someone who uses ChatGPT. The wizard
 then opens already set to that brain (you can still switch there; the choice is one click).
 
