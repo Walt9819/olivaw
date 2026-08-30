@@ -21,6 +21,8 @@ Exit codes are the contract for the caller:
     0  the owner has it, confirmed by the delivering service
     3  recorded and queued, but NOT confirmed - tell the client a human was notified only
        with care, and say so in your reply to the owner later
+    4  recorded, but the owner switched this reason off in the wizard. Not a failure, and
+       NOT a notification either - never tell the client a person was alerted
     2  bad usage (unknown reason code, missing required text)
 
 Stdlib only, and no imports from the rest of Olivaw, on purpose: the emergency path must
@@ -67,6 +69,86 @@ REASONS = {
 }
 
 PRIORITY_MARK = {"alta": "‼️", "media": ""}
+CUSTOM_ICON = "\U0001F4CC"
+
+# What each built-in reason means, in the words the agent needs to recognise it. The owner's
+# own reasons carry their own description, written in the wizard - that description is the
+# only thing that teaches the agent when to use it, so it is required there.
+REASON_HINTS = {
+    "angry": "el cliente se molesta, reclama o sube el tono",
+    "human_requested": "pide hablar con una persona, un humano, el dueño o el doctor",
+    "complaint": "presenta una queja formal sobre el servicio",
+    "legal": "menciona abogado, demanda, denuncia o Profeco",
+    "medical_urgent": "describe algo que suena a urgencia médica",
+    "payment_issue": "reclama un cobro, un cargo o un pago que no cuadra",
+    "refund": "pide reembolso o cancelar",
+    "repeated": "ya escribió varias veces lo mismo sin solución",
+    "vip": "es un contacto marcado como importante",
+    "data_request": "pide sus datos personales o habla de privacidad",
+    "agent_stuck": "no sabes qué responder (esto no es fallar; es lo correcto)",
+    "other": "algo que necesita al dueño y no encaja en los demás",
+}
+
+
+# ── owner preferences ────────────────────────────────────────────────────────
+# The taxonomy stays fixed at call time - the model still cannot invent a category. What the
+# owner controls, once, from the wizard, is WHICH reasons reach her and what her own extra
+# reasons mean. Absent a preferences file everything is on, so a fresh install never silently
+# swallows an escalation.
+
+def prefs_path():
+    return os.path.join(_state_dir(), "preferences.json")
+
+
+def load_prefs():
+    try:
+        with io.open(prefs_path(), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {"enabled": True, "reasons": None, "custom": []}
+    if not isinstance(data, dict):
+        return {"enabled": True, "reasons": None, "custom": []}
+    reasons = data.get("reasons")
+    return {
+        "enabled": bool(data.get("enabled", True)),
+        # None means "not configured yet" -> everything is on.
+        "reasons": list(reasons) if isinstance(reasons, list) else None,
+        "custom": [c for c in (data.get("custom") or []) if isinstance(c, dict) and c.get("key")],
+    }
+
+
+def effective_reasons(prefs=None):
+    """The full taxonomy: built-ins plus the owner's own, as {key: (label, priority, icon)}."""
+    prefs = prefs if prefs is not None else load_prefs()
+    out = dict(REASONS)
+    for c in prefs.get("custom") or []:
+        key = str(c.get("key") or "").strip()
+        if not key or key in REASONS:
+            continue
+        priority = c.get("priority") if c.get("priority") in ("alta", "media") else "media"
+        out[key] = (str(c.get("label") or key), priority, CUSTOM_ICON)
+    return out
+
+
+def reason_hints(prefs=None):
+    prefs = prefs if prefs is not None else load_prefs()
+    out = dict(REASON_HINTS)
+    for c in prefs.get("custom") or []:
+        key = str(c.get("key") or "").strip()
+        if key:
+            out[key] = str(c.get("description") or "").strip()
+    return out
+
+
+def is_muted(reason, prefs=None):
+    """True when the owner asked not to be told about this. Never a delivery failure."""
+    prefs = prefs if prefs is not None else load_prefs()
+    if not prefs.get("enabled", True):
+        return True
+    selected = prefs.get("reasons")
+    if selected is None:            # not configured -> everything reaches her
+        return False
+    return reason not in selected
 
 
 def _now():
@@ -74,6 +156,12 @@ def _now():
 
 
 def _hermes_home():
+    # Named Hermes profiles keep their own state under <home>/profiles/<name>, and the
+    # wizard sets this when it is acting on one, so a second agent's escalation settings
+    # never leak into the owner's main one.
+    override = os.environ.get("OLIVAW_ESCALATION_HOME")
+    if override:
+        return override
     env = os.environ.get("HERMES_HOME")
     if env:
         return env
@@ -155,7 +243,11 @@ def _wa_link(contact):
 
 def compose(rec):
     """The alert text. Fixed layout - the model supplies facts, never formatting."""
-    label, priority, icon = REASONS[rec["reason"]]
+    # Read from the record, not the table: a reason the owner defined herself is not in
+    # REASONS, and an old ledger row must still render after she renames one.
+    label = rec.get("reason_label") or rec["reason"]
+    priority = rec.get("priority") or "media"
+    icon = rec.get("icon") or CUSTOM_ICON
     mark = PRIORITY_MARK.get(priority, "")
     lines = [
         "%s %sATENCIÓN REQUERIDA — %s" % (icon, (mark + " ") if mark else "", label),
@@ -295,15 +387,17 @@ def deliver_hermes_cli(text, log=print):
 
 def escalate(reason, summary="", contact="", contact_name="", excerpt="",
              chat_link="", force=False, retry_pending=True, log=print):
-    if reason not in REASONS:
+    prefs = load_prefs()
+    table = effective_reasons(prefs)
+    if reason not in table:
         return {"ok": False, "code": 2,
-                "error": "reason must be one of: %s" % ", ".join(sorted(REASONS))}
+                "error": "reason must be one of: %s" % ", ".join(sorted(table))}
     if reason == "other" and not summary.strip():
         return {"ok": False, "code": 2,
                 "error": "reason 'other' requires --summary explaining what is happening"}
 
     now = _now()
-    label, priority, _icon = REASONS[reason]
+    label, priority, icon = table[reason]
     payload = {
         "reason": reason, "reason_label": label, "priority": priority,
         "summary": _clean(summary, 400),
@@ -331,6 +425,7 @@ def escalate(reason, summary="", contact="", contact_name="", excerpt="",
         "ts": time.time(),
         "local_time": now.strftime("%d/%m/%Y %H:%M"),
         "fingerprint": fingerprint,
+        "icon": icon,
         "delivered": False,
         "channel": None,
     })
@@ -341,6 +436,18 @@ def escalate(reason, summary="", contact="", contact_name="", excerpt="",
     # Layer 1: on disk before anything can go wrong on the network.
     if not _append(LEDGER(), rec):
         log("  WARNING: could not write the ledger at %s" % LEDGER())
+
+    # The owner said she does not want to hear about this one. That is a decision, not a
+    # failure: it is still on the ledger, it just does not ring her phone. Distinct from
+    # code 3 so the agent never tells a client "a person has been notified".
+    if is_muted(reason, prefs):
+        rec["muted"] = True
+        _rewrite(LEDGER(), [r for r in _load(LEDGER()) if r.get("id") != rec["id"]] + [rec])
+        log("  '%s' is switched off in the owner's preferences - recorded, not sent" % reason)
+        return {"ok": True, "code": 4, "id": rec["id"], "reason": reason,
+                "priority": priority, "delivered": False, "muted": True, "channel": None,
+                "detail": "El dueño desactivó los avisos para «%s». Queda registrado." % label,
+                "ledger": LEDGER()}
 
     env = _read_env()
     results = []
@@ -403,10 +510,13 @@ def main(argv=None):
     p = argparse.ArgumentParser(
         prog="escalate_owner",
         description="Alert the owner about a WhatsApp conversation that needs a human.")
-    # Not `required=True`: --list-reasons has to work on its own, and argparse would
-    # refuse the whole call before we ever got to it.
-    p.add_argument("--reason", choices=sorted(REASONS),
-                   help="Fixed category. Pick the closest; use 'other' only with --summary.")
+    # Deliberately no `choices` and no `required`: argparse fixes both at parse time, but
+    # the valid set depends on --home (a named profile has its own reasons) and
+    # --list-reasons must work with no --reason at all. Validated by hand below instead,
+    # against the profile actually asked for.
+    p.add_argument("--reason",
+                   help="Fixed category. Pick the closest; use 'other' only with --summary. "
+                        "See --list-reasons.")
     p.add_argument("--summary", default="", help="One line: what is happening.")
     p.add_argument("--contact", default="", help="Client phone or WhatsApp id.")
     p.add_argument("--contact-name", default="", help="Client name, if known.")
@@ -414,18 +524,34 @@ def main(argv=None):
     p.add_argument("--chat-link", default="", help="Link to open the chat.")
     p.add_argument("--force", action="store_true",
                    help="Send even if an identical alert went out in the last 5 minutes.")
+    p.add_argument("--home", default="",
+                   help="Hermes profile home, when this agent is not the default one.")
     p.add_argument("--json", action="store_true", help="Machine-readable output.")
     p.add_argument("--list-reasons", action="store_true", help="Print the taxonomy and exit.")
     a = p.parse_args(argv)
+    if a.home:
+        os.environ["OLIVAW_ESCALATION_HOME"] = a.home
+    table = effective_reasons()
 
     if a.list_reasons:
-        for k in sorted(REASONS):
-            label, pri, icon = REASONS[k]
-            print("%-16s %s %-34s prioridad %s" % (k, icon, label, pri))
+        prefs = load_prefs()
+        hints = reason_hints(prefs)
+        if not prefs.get("enabled", True):
+            print("(Los avisos al dueño están DESACTIVADOS en el asistente.)")
+            print("")
+        for k in sorted(table):
+            label, pri, icon = table[k]
+            state = "off" if is_muted(k, prefs) else " on"
+            own = "  (tuyo)" if k not in REASONS else ""
+            print("%s %-16s %s %-32s prioridad %-6s%s" % (state, k, icon, label, pri, own))
+            if hints.get(k):
+                print("      %s" % hints[k])
         return 0
 
     if not a.reason:
         p.error("--reason is required (or use --list-reasons to see the options)")
+    if a.reason not in table:
+        p.error("unknown --reason '%s'. Valid: %s" % (a.reason, ", ".join(sorted(table))))
 
     quiet = a.json
     log = (lambda m: None) if quiet else print
@@ -439,6 +565,8 @@ def main(argv=None):
         print("ERROR: %s" % r.get("error"))
     elif r.get("duplicate_of"):
         print("Ya avisado (%s). No se repite." % r["duplicate_of"])
+    elif r.get("muted"):
+        print(r["detail"])
     elif r["delivered"]:
         print("Avisado al dueño por %s. ID %s." % (r["channel"], r["id"]))
     else:

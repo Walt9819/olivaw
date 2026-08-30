@@ -11,8 +11,11 @@ Three things have to be true before the agent can be trusted with clients on Wha
 written into Hermes' skills directory with the real absolute paths baked in, because the
 install location differs per machine and a skill with a wrong path is worse than none.
 
-The skill is rewritten whenever the paths or the template change, and is otherwise left
-alone so an owner who edits it keeps their edits until the next version bump.
+The skill is generated, not seeded: it is rewritten whenever what it should say differs
+from what is on disk. That matters because its body lists the owner's own escalation
+reasons, which she can change in the wizard at any time - a skill still promising
+notifications for reasons she has since switched off would have the agent telling clients
+a person was alerted when nobody was.
 """
 
 import io
@@ -24,7 +27,6 @@ from . import wa_patch
 SKILL_NAME = "whatsapp-clientes"
 SKILL_VERSION = "1.0.0"
 
-# Bumping SKILL_VERSION is what authorises overwriting an edited skill file.
 _FRONTMATTER = """---
 name: {name}
 description: "Atención a clientes por WhatsApp: confirmar que un mensaje realmente se entregó, y avisar al dueño cuando una conversación necesita a una persona."
@@ -77,44 +79,34 @@ No redactes tú el aviso ni elijas por dónde mandarlo. Hay un script fijo que s
 de escribirlo, mandarlo, reintentarlo y dejar constancia:
 
 ```bash
-{python} "{escalate}" --reason <MOTIVO> \
+{python} "{escalate}"{home_arg} --reason <MOTIVO> \
   --summary "una línea de qué pasa" \
   --contact "+52..." --contact-name "Nombre" \
   --excerpt "lo que escribió el cliente, textual" --json
 ```
 
-Motivos válidos (elige el más cercano; `--list-reasons` los imprime):
-
-`angry` · `human_requested` · `complaint` · `legal` · `medical_urgent` ·
-`payment_issue` · `refund` · `repeated` · `vip` · `data_request` ·
-`agent_stuck` · `other` (este exige `--summary`)
-
-Códigos de salida: `0` el dueño ya lo tiene, confirmado · `3` quedó guardado y se
-reintentará, **todavía no confirmado** · `2` mal uso.
+Códigos de salida: `0` la dueña ya lo tiene, confirmado · `3` quedó guardado y se
+reintentará, **todavía no confirmado** · `4` quedó registrado pero ella desactivó ese
+aviso · `2` mal uso.
 
 ### Cuándo llamarlo
 
-Llámalo en cuanto ocurra, sin pedir permiso y sin esperar a terminar la conversación:
+Llámalo en cuanto ocurra, sin pedir permiso y sin esperar a terminar la conversación.
+Esta lista es la que **ella misma configuró** en el asistente:
 
-- el cliente se molesta, reclama o sube el tono → `angry`
-- pide hablar con una persona, un humano, el dueño o el doctor → `human_requested`
-- menciona abogado, demanda, denuncia o Profeco → `legal`
-- describe algo que suena a urgencia médica → `medical_urgent`
-- reclama un cobro, un cargo o un pago que no cuadra → `payment_issue`
-- pide reembolso o cancelar → `refund`
-- ya escribió varias veces lo mismo sin solución → `repeated`
-- **no sabes qué responder** → `agent_stuck` (esto no es fallar; es lo correcto)
+{reasons_block}
 
-Ante la duda, escala. Un aviso de más cuesta diez segundos de la atención del dueño; uno
-de menos cuesta un cliente.
+Ante la duda, escala. Un aviso de más cuesta diez segundos de su atención; uno de menos
+cuesta un cliente.
 
 ### Qué decirle al cliente
 
 Si el script salió con `0`, puedes decirle que ya avisaste a una persona. Si salió con
-`3`, dile solo que lo estás pasando a una persona — no prometas que ya está avisada,
-porque todavía no está confirmado.
+`3` o con `4`, dile solo que lo estás pasando a una persona — **no** prometas que ya
+está avisada, porque con `3` aún no está confirmado y con `4` ella eligió no recibir
+ese aviso.
 
-Nunca inventes tiempos de respuesta que el dueño no te haya dado.
+Nunca inventes tiempos de respuesta que ella no te haya dado.
 
 ## Si el puente no confirma entregas
 
@@ -171,7 +163,62 @@ def _repo_src():
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def render_skill():
+def _reasons_block(hermes_home=None):
+    """Her actual reasons, in her own words, as a table the agent can act on.
+
+    A reason the agent never reads about may as well not exist, so the wizard rewrites this
+    every time she saves. Muted reasons are still listed - the agent should keep recognising
+    the situation and keep it on the ledger - but flagged, so it never tells a client that a
+    person was alerted when nobody was.
+    """
+    try:
+        from . import escalation_prefs
+        s = escalation_prefs.summary_for_skill(home=hermes_home)
+    except Exception:  # noqa: BLE001
+        return ("Usa `--list-reasons` para ver los motivos disponibles y su estado.")
+
+    if not s["enabled"]:
+        return ("> Ella ha **desactivado** los avisos por Telegram. Sigue llamando al script\n"
+                "> cuando corresponda (queda registrado y ella puede revisarlo), pero saldrá\n"
+                "> con `4` y **no** le llegará nada: no le digas al cliente que ya avisaste.")
+
+    lines = []
+    if s["active"]:
+        lines.append("| motivo | cuándo usarlo | prioridad |")
+        lines.append("|---|---|---|")
+        for r in s["active"]:
+            mark = " ⟵ suyo" if r["custom"] else ""
+            lines.append("| `%s`%s | %s | %s |"
+                         % (r["key"], mark, r["description"] or r["label"], r["priority"]))
+    else:
+        lines.append("> No hay ningún motivo activo: no le llegará ningún aviso.")
+
+    if s["muted"]:
+        keys = " · ".join("`%s`" % r["key"] for r in s["muted"])
+        lines.append("")
+        lines.append("Desactivados por ella: %s. Puedes llamarlos igual — queda registrado —"
+                     % keys)
+        lines.append("pero saldrá con `4` y **no** le llegará aviso.")
+
+    if s["custom"]:
+        lines.append("")
+        lines.append("Los marcados «suyo» los definió ella; su descripción es literalmente")
+        lines.append("lo que quiere que reconozcas. Respétala tal cual.")
+    return "\n".join(lines)
+
+
+def _home_arg(hermes_home=None):
+    """Named profiles keep their own preferences, so the command must say which.
+
+    A flag rather than an environment variable: the agent runs this through
+    whatever shell it has, and `VAR=x cmd` is not valid on Windows.
+    """
+    if not hermes_home or os.path.abspath(hermes_home) == os.path.abspath(_hermes_home()):
+        return ""
+    return ' --home "%s"' % hermes_home
+
+
+def render_skill(hermes_home=None):
     src = _repo_src()
     return (_FRONTMATTER.format(name=SKILL_NAME, version=SKILL_VERSION)
             + _BODY.format(
@@ -179,6 +226,8 @@ def render_skill():
                 verify=os.path.join(src, "whatsapp_delivery.py"),
                 escalate=os.path.join(src, "tools", "escalate_owner.py"),
                 patch=os.path.join(src, "wizard", "wa_patch.py"),
+                reasons_block=_reasons_block(hermes_home),
+                home_arg=_home_arg(hermes_home),
             ))
 
 
@@ -193,17 +242,30 @@ def _installed_version(path):
 
 
 def install_skill(hermes_home=None, force=False, log=None):
-    """Write the skill, unless an equal-or-newer one is already installed."""
+    """Write the skill whenever what it should say differs from what is on disk.
+
+    Compared by CONTENT rather than by version, because the body now depends on the owner's
+    escalation preferences: she can change which reasons reach her without any version
+    changing, and a skill listing reasons she has since turned off would have the agent
+    promising notifications nobody gets. The file is generated - anything hand-written in it
+    is replaced.
+    """
     d = skill_dir(hermes_home)
     path = os.path.join(d, "SKILL.md")
     have = _installed_version(path)
-    if have == SKILL_VERSION and not force:
-        return {"ok": True, "changed": False, "path": path, "version": have,
-                "detail": "La habilidad ya está instalada."}
+    wanted = render_skill(hermes_home)
+    if not force:
+        try:
+            with io.open(path, encoding="utf-8") as fh:
+                if fh.read() == wanted:
+                    return {"ok": True, "changed": False, "path": path, "version": have,
+                            "detail": "La habilidad ya está al día."}
+        except OSError:
+            pass
     try:
         os.makedirs(d, exist_ok=True)
         with io.open(path, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(render_skill())
+            fh.write(wanted)
     except OSError as e:
         return {"ok": False, "changed": False, "path": path,
                 "detail": "No se pudo escribir la habilidad: %s" % e}

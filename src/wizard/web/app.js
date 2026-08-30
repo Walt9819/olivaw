@@ -850,7 +850,34 @@
       '<span class="hint">ej: 5215512345678</span></span>' +
       '<input type="text" id="waUsers" placeholder="5215512345678" value="' + esc(S.wa_users || "") + '"></label>' +
       '<div class="row"><button class="btn btn-soft btn-sm" id="waSave">Guardar y bloquear a mi número</button></div>' +
-      chLine("waPill") + '</details>' +
+      chLine("waPill") +
+
+      // WhatsApp is where CLIENTS write. The owner does not want every message - she wants
+      // the ones that need HER. Which ones, and what her own reasons mean, is decided here.
+      '<div class="hr"></div><b class="small">🔔 Avísame cuando un cliente necesite a una persona</b>' +
+      '<p class="small muted">Tu agente atiende WhatsApp solo. Cuando pase algo que te toca a ' +
+      'ti, te escribe <b>por Telegram</b>. Tú eliges cuándo.</p>' +
+      '<label class="row" style="gap:8px;align-items:center;margin:6px 0">' +
+      '<input type="checkbox" id="escOn"> <span>Sí, avísame por Telegram</span></label>' +
+      '<div id="escBody" style="display:none">' +
+      '<div id="escWarn"></div>' +
+      '<div class="small muted" style="margin:8px 0 4px">Marca los motivos por los que quieres que te avise:</div>' +
+      '<div id="escList"></div>' +
+      '<div class="hr"></div><b class="small">¿Falta alguno? Añádelo con tus palabras</b>' +
+      '<p class="small muted">Describe cuándo debe avisarte, como se lo explicarías a alguien ' +
+      'nuevo. Tu agente usa esa descripción para reconocerlo.</p>' +
+      '<label class="field" style="margin-top:8px"><span class="lab">Nombre corto ' +
+      '<span class="hint">ej: Pide cita urgente</span></span>' +
+      '<input type="text" id="escNewLabel" placeholder="Pide cita urgente"></label>' +
+      '<label class="field"><span class="lab">¿Cuándo debe avisarte? ' +
+      '<span class="hint">una o dos frases</span></span>' +
+      '<textarea id="escNewDesc" rows="2" placeholder="Cuando el paciente pide una cita para hoy o mañana, o dice que no puede esperar."></textarea></label>' +
+      '<label class="field"><span class="lab">Importancia</span>' +
+      '<select id="escNewPri"><option value="alta">Alta — avísame en cuanto pase</option>' +
+      '<option value="media">Media — puede esperar un poco</option></select></label>' +
+      '<div class="row"><button class="btn btn-soft btn-sm" id="escAdd">Añadir motivo</button></div>' +
+      '<div class="row" style="margin-top:10px"><button class="btn btn-primary btn-sm" id="escSave">Guardar avisos</button></div>' +
+      '</div>' + chLine("escPill") + '</details>' +
 
       // Google Workspace: Gmail (native email platform) + Google Chat
       '<details><summary>🟦 Google Workspace (Gmail y Google Chat)</summary>' +
@@ -1352,6 +1379,108 @@
                                               home_channel: (S.wa_users || "").split(",")[0].trim() });
       }, "Guardando…");
     };
+
+    // ── when should a WhatsApp conversation reach the owner? ──────────────────
+    // Server-owned state, deliberately: the escalation script reads the same file, so the
+    // browser must not keep its own idea of what is switched on.
+    var escPill = el("escPill");
+    var ESC = { catalog: [], enabled: false, reasons: [], custom: [], ready: true, detail: "" };
+    var escSeq = 0;
+
+    function escRow(item, isCustom) {
+      var on = ESC.reasons.indexOf(item.key) >= 0;
+      return '<label class="row" style="gap:8px;align-items:flex-start;padding:6px 0;' +
+        'border-bottom:1px solid var(--line-2)">' +
+        '<input type="checkbox" data-esc="' + esc(item.key) + '"' + (on ? " checked" : "") + '>' +
+        '<span class="grow"><b class="small">' + esc(item.label) + '</b>' +
+        (item.priority === "alta" ? ' <span class="chip">urgente</span>' : "") +
+        (isCustom ? ' <span class="chip">tuyo</span>' : "") +
+        '<br><span class="muted small">' + esc(item.description || "") + '</span></span>' +
+        (isCustom ? '<button class="btn btn-ghost btn-sm" data-escdel="' + esc(item.key) +
+          '" title="Quitar">✕</button>' : "") + '</label>';
+    }
+
+    function paintEsc() {
+      var body = el("escBody"), list = el("escList"), warn = el("escWarn");
+      if (el("escOn")) el("escOn").checked = !!ESC.enabled;
+      if (body) body.style.display = ESC.enabled ? "block" : "none";
+      if (warn) {
+        warn.innerHTML = ESC.ready ? "" :
+          '<div class="callout small">⚠️ ' + esc(ESC.detail || "") + '</div>';
+      }
+      if (!list) return;
+      list.innerHTML = ESC.catalog.map(function (c) { return escRow(c, false); })
+        .concat(ESC.custom.map(function (c) { return escRow(c, true); })).join("");
+      Array.prototype.forEach.call(list.querySelectorAll("[data-esc]"), function (cb) {
+        cb.onchange = function () {
+          var k = cb.getAttribute("data-esc"), i = ESC.reasons.indexOf(k);
+          if (cb.checked && i < 0) ESC.reasons.push(k);
+          if (!cb.checked && i >= 0) ESC.reasons.splice(i, 1);
+        };
+      });
+      Array.prototype.forEach.call(list.querySelectorAll("[data-escdel]"), function (b) {
+        b.onclick = function (e2) {
+          e2.preventDefault();
+          var k = b.getAttribute("data-escdel");
+          ESC.custom = ESC.custom.filter(function (c) { return c.key !== k; });
+          ESC.reasons = ESC.reasons.filter(function (r) { return r !== k; });
+          paintEsc();
+        };
+      });
+    }
+
+    function loadEsc() {
+      api("channel/escalation-get", { profile: prof }).then(function (r) {
+        if (!r || !r.ok) return;
+        ESC.catalog = r.catalog || [];
+        ESC.custom = (r.prefs && r.prefs.custom) || [];
+        ESC.reasons = (r.prefs && r.prefs.reasons) || [];
+        ESC.enabled = !!(r.prefs && r.prefs.enabled);
+        ESC.ready = !!r.telegram_ready;
+        ESC.detail = r.telegram_detail || "";
+        paintEsc();
+      });
+    }
+
+    if (el("escOn")) el("escOn").onchange = function () {
+      ESC.enabled = this.checked;
+      paintEsc();
+    };
+
+    if (el("escAdd")) el("escAdd").onclick = function () {
+      var lab = (el("escNewLabel") || {}).value || "";
+      var desc = (el("escNewDesc") || {}).value || "";
+      var pri = (el("escNewPri") || {}).value || "media";
+      if (!lab.trim() || !desc.trim()) {
+        toast("Ponle un nombre y describe cuándo debe avisarte.");
+        return;
+      }
+      // A provisional key so the checkbox has something to hang on; the server assigns
+      // the real one when it saves, and loadEsc() replaces this with it.
+      var key = "nuevo_" + (++escSeq);
+      ESC.custom.push({ key: key, label: lab.trim(), description: desc.trim(), priority: pri });
+      ESC.reasons.push(key);
+      el("escNewLabel").value = ""; el("escNewDesc").value = "";
+      paintEsc();
+    };
+
+    if (el("escSave")) el("escSave").onclick = function () {
+      escPill.style.display = "inline-flex";
+      var custom = ESC.custom.map(function (c) {
+        return { key: (String(c.key).indexOf("nuevo_") === 0 ? "" : c.key),
+                 label: c.label, description: c.description, priority: c.priority,
+                 selected: ESC.reasons.indexOf(c.key) >= 0 };
+      });
+      var builtin = ESC.reasons.filter(function (k) {
+        return ESC.catalog.some(function (c) { return c.key === k; });
+      });
+      runTest(this, escPill, function () {
+        return api("channel/escalation-save",
+                   { profile: prof, enabled: ESC.enabled, reasons: builtin, custom: custom });
+      }, "Guardando…").then(function () { loadEsc(); });
+    };
+
+    loadEsc();
 
     // Google Workspace (Gmail platform + Google Chat)
     var gwPill = el("gwPill"), gp = el("gwProv");

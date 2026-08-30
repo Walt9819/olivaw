@@ -461,12 +461,100 @@ def test_injected_js():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_escalation_prefs():
+    """What the owner ticks in the wizard is what the agent is told and what actually fires."""
+    section("escalation preferences: defaults")
+    home = tempfile.mkdtemp(prefix="prefs-")
+    os.environ["HERMES_HOME"] = home
+    io.open(os.path.join(home, ".env"), "w", encoding="utf-8").write(
+        "TELEGRAM_BOT_TOKEN=1:FAKE\nTELEGRAM_HOME_CHANNEL=8114329186\n")
+    from wizard import channels, escalation_prefs as P, wa_setup
+    import escalate_owner as E
+
+    try:
+        g = channels.escalation_get()
+        check("the catalog offers every built-in reason", len(g["catalog"]) == len(E.REASONS))
+        check("each catalog entry explains when to use it",
+              all(c["description"] for c in g["catalog"]))
+        check("an unconfigured install has everything ON, not everything off",
+              g["prefs"]["enabled"] and len(g["prefs"]["reasons"]) == len(E.REASONS))
+        check("and says it has not been configured yet", g["prefs"]["configured"] is False)
+        check("Telegram readiness is reported", g["telegram_ready"] is True)
+
+        section("escalation preferences: her own reasons")
+        r = channels.escalation_save(
+            enabled=True, reasons=["angry", "human_requested"],
+            custom=[{"key": "", "label": "Pide cita urgente", "priority": "alta",
+                     "selected": True,
+                     "description": "Cuando el paciente pide cita para hoy o mañana, o dice "
+                                    "que no puede esperar a la fecha que le diste."}])
+        check("saving succeeds", r["ok"], r.get("detail"))
+        g2 = channels.escalation_get()
+        custom = g2["prefs"]["custom"]
+        check("the server assigns a CLI-safe key from her label",
+              len(custom) == 1 and custom[0]["key"] == "pide_cita_urgente", custom)
+        check("a reason she just added is active without her ticking it",
+              "pide_cita_urgente" in g2["prefs"]["reasons"], g2["prefs"]["reasons"])
+        check("the ones she did not tick are off",
+              "refund" not in g2["prefs"]["reasons"])
+
+        section("escalation preferences: refusing what would not work")
+        bad = [({"key": "", "label": "Algo", "description": ""}, "no description"),
+               ({"key": "", "label": "Algo", "description": "corta"}, "a one-word description"),
+               ({"key": "", "label": "", "description": "una descripción larga y clara"}, "no label"),
+               ({"key": "angry", "label": "Enojo", "description": "una descripción larga"},
+                "a key that collides with a built-in")]
+        for entry, why in bad:
+            res = channels.escalation_save(enabled=True, reasons=[], custom=[entry])
+            check("rejects %s" % why, not res["ok"], res.get("detail"))
+        check("preferences were not clobbered by a rejected save",
+              "pide_cita_urgente" in channels.escalation_get()["prefs"]["reasons"])
+
+        section("escalation preferences: the agent is told exactly this")
+        block = wa_setup._reasons_block(home)
+        check("her own reason appears with her own words",
+              "pide_cita_urgente" in block and "no puede esperar" in block, block)
+        check("it is marked as hers", "suyo" in block)
+        check("switched-off reasons are named as switched off",
+              "`refund`" in block and "no** le llegará aviso" in block.replace("*", "*"), block)
+        skill = wa_setup.render_skill(home)
+        check("the skill embeds that block", "pide_cita_urgente" in skill)
+        check("the skill documents exit code 4", "`4`" in skill)
+
+        section("escalation preferences: a switched-off reason is recorded, not sent")
+        out = E.escalate("refund", summary="pide reembolso", contact="+5215551111111",
+                         log=lambda m: None)
+        check("exit code 4, not 0 and not 3", out["code"] == 4, out)
+        check("explicitly not delivered", out["delivered"] is False and out["muted"])
+        check("but it is on the ledger anyway",
+              any(x.get("id") == out["id"] for x in E._load(E.LEDGER())))
+
+        section("escalation preferences: switching it off entirely")
+        channels.escalation_save(enabled=False, reasons=["angry"], custom=[])
+        out2 = E.escalate("angry", summary="molesto", contact="+52155", log=lambda m: None)
+        check("even a ticked reason is muted when notifications are off", out2["code"] == 4)
+        check("the skill says so plainly",
+              "desactivado" in wa_setup._reasons_block(home).lower())
+
+        section("escalation preferences: a second agent keeps its own")
+        other = tempfile.mkdtemp(prefix="prefs2-")
+        P.save(enabled=True, reasons=["legal"], custom=[], regenerate_skill=False, home=other)
+        check("the other profile has its own selection",
+              P.load(home=other)["reasons"] == ["legal"])
+        check("and this one is untouched", P.load(home=home)["enabled"] is False)
+        shutil.rmtree(other, ignore_errors=True)
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+        os.environ.pop("HERMES_HOME", None)
+
+
 def main():
     test_patch()
     test_conflict_heal()
     test_injected_js()
     test_delivery()
     test_escalation()
+    test_escalation_prefs()
     print("\n%d passed, %d failed" % (len(PASSED), len(FAILED)))
     if FAILED:
         for f in FAILED:

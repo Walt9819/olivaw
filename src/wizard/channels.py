@@ -210,6 +210,55 @@ def whatsapp_save(profile=None, allowed_users="", home_channel=""):
     return hermes_ctl.set_env_vars(updates, profile=profile)
 
 
+# ── WhatsApp: when should the owner be pulled in? ────────────────────────────
+# WhatsApp is where CLIENTS write, so the interesting question is not "can she use it" but
+# "when does a conversation need HER". The taxonomy stays fixed in tools/escalate_owner.py;
+# what she chooses here is which of those reach her, plus reasons of her own - and a reason
+# of her own is worthless without a description, because that description is the only thing
+# that teaches the agent to recognise it.
+
+def escalation_get(profile=None):
+    from . import escalation_prefs
+    home = _hermes_home(profile)
+    prefs = escalation_prefs.load(home=home)
+    env = _read_env_file(os.path.join(home, ".env"))
+    token = (env.get("TELEGRAM_BOT_TOKEN") or "").strip()
+    chat = (env.get("TELEGRAM_HOME_CHANNEL")
+            or (env.get("TELEGRAM_ALLOWED_USERS") or "").split(",")[0]).strip()
+    return {
+        "ok": True,
+        "catalog": escalation_prefs.catalog(),
+        "prefs": prefs,
+        # The alert goes out over Telegram, so say plainly when that is not set up yet
+        # rather than letting her tick twelve boxes that can never fire.
+        "telegram_ready": bool(token and chat),
+        "telegram_detail": ("" if (token and chat) else
+                            "Configura Telegram arriba: los avisos se envían por ahí."),
+        "max_custom": escalation_prefs.MAX_CUSTOM,
+    }
+
+
+def escalation_save(profile=None, enabled=True, reasons=None, custom=None):
+    from . import escalation_prefs
+    return escalation_prefs.save(enabled=bool(enabled), reasons=reasons or [],
+                                 custom=custom or [], home=_hermes_home(profile))
+
+
+def _read_env_file(path):
+    out = {}
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return out
+
+
 # ── Slack ────────────────────────────────────────────────────────────────────
 def slack_manifest(profile=None, hermes=None):
     r = hermes_ctl._run(["slack", "manifest"], hermes, timeout=40, profile=profile)

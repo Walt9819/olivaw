@@ -722,6 +722,13 @@ class Handler(BaseHTTPRequestHandler):
         if sub == "whatsapp-save":
             return channels.whatsapp_save(profile, body.get("allowed_users", ""),
                                           body.get("home_channel", ""))
+        if sub == "escalation-get":
+            return channels.escalation_get(profile)
+        if sub == "escalation-save":
+            return channels.escalation_save(profile,
+                                            enabled=body.get("enabled", True),
+                                            reasons=body.get("reasons") or [],
+                                            custom=body.get("custom") or [])
         if sub == "email-platform-save":
             return channels.email_platform_save(
                 profile, body.get("address", ""), body.get("password", ""),
