@@ -470,6 +470,25 @@ TELEGRAM, in the order it breaks:
      state = connected_incomplete.
   Note `telegram.state` is measured against Telegram itself, not guessed from the log.
 
+WHATSAPP is where CLIENTS write, not the owner. Two things must hold, and both are Olivaw's
+doing, not Hermes':
+  1. Hermes' bridge.js is PATCHED to record delivery receipts. Stock Baileys reports ack progress
+     through messages.update / message-receipt.update and the stock bridge drops both, so /send
+     answers success the instant the socket takes the bytes and nothing can prove delivery.
+     `hermes update` git-stashes over that patch, so the supervisor re-applies it every update
+     cycle. State: python src/wizard/wa_patch.py status  ->  applied | absent | anchors_moved |
+     conflicted. `anchors_moved` means upstream moved the code and a human must re-aim the patch;
+     `conflicted` means a failed stash-restore left git markers and the bridge will not even parse
+     (apply() repairs that one itself, from git).
+  2. Deliveries are CHECKED, never assumed: python src/whatsapp_delivery.py --ids <id>.
+     delivered = the phone acked; sent = Meta's servers took it (counts as done - a phone that is
+     off never acks); pending/unknown/failed = it did NOT go out. `unknown` means the bridge never
+     saw that id.
+  Owner escalation is a FIXED script, not a model decision:
+  python src/tools/escalate_owner.py --reason <angry|human_requested|legal|...> ...
+  exit 0 = the owner has it (proved by Telegram's message_id), 3 = queued in the outbox and
+  retried on the next call, 2 = bad usage. Ledger and outbox live in <HERMES_HOME>/escalations/.
+
 TWO HERMES-ON-WINDOWS LOG LINES THAT LOOK FATAL AND ARE NOT. Never present these as the cause:
   - "AttributeError: module 'asyncio' has no attribute 'start_unix_server'" - a Unix-only watchdog
     on Windows. The gateway keeps working.

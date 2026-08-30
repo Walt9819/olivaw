@@ -51,6 +51,10 @@ try:
 except Exception:  # noqa: BLE001
     _registry = None
     _hctl = None
+try:
+    from wizard import wa_setup as _wa
+except Exception:  # noqa: BLE001
+    _wa = None
 
 
 # The update source is PINNED into the distributed code. A mutable `repo` in updater.config.json
@@ -782,6 +786,31 @@ def _ensure_app_shortcut():
         log(f"shortcut check skipped: {e}")
 
 
+def _ensure_whatsapp():
+    """Keep the WhatsApp delivery-receipt patch in place.
+
+    `hermes update` git-pulls over its own checkout and takes the patch with it, which
+    would silently return the agent to guessing whether messages were sent. The check is
+    two stat() calls when nothing moved, so it is cheap enough to run on every update
+    cycle; it only speaks up when it actually changed something or cannot proceed.
+    """
+    if not _wa:
+        return
+    try:
+        r = _wa.ensure()
+    except Exception as e:  # noqa: BLE001
+        log(f"whatsapp: receipt patch check failed: {e}")
+        return
+    patch, skill = r.get("patch", {}), r.get("skill", {})
+    if patch.get("changed"):
+        log(f"whatsapp: re-applied the delivery-receipt patch to {patch.get('path')}")
+    elif patch.get("state") == "anchors_moved":
+        log("whatsapp: Hermes' bridge changed shape; the receipt patch needs review "
+            "- deliveries cannot be confirmed until then")
+    if skill.get("changed"):
+        log(f"whatsapp: installed the client-handling skill at {skill.get('path')}")
+
+
 def main():
     cfg = load_config()
     log(f"supervisor up. install={INSTALL_DIR} version={read_version()} "
@@ -789,6 +818,7 @@ def main():
     _ensure_app_shortcut()
     state = {"child": start_bridge(cfg), "launcher_changed": False, "extra": {}}
     _reconcile_extras(cfg, state)
+    _ensure_whatsapp()
     last_check = 0.0
     while True:
         try:
@@ -826,6 +856,9 @@ def main():
             if time.time() - last_check >= poll:
                 last_check = time.time()
                 maybe_update(cfg, state)
+                # after any update - ours or Hermes' - make sure WhatsApp can still
+                # prove a delivery.
+                _ensure_whatsapp()
         except Exception as e:
             log(f"supervisor loop error: {e}")
         time.sleep(15)
