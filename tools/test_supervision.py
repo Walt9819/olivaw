@@ -1,4 +1,4 @@
-r"""The supervisor must not fight a gateway that is already running.
+r"""Nothing the supervisor watches may be restarted in a hot loop.
 
 Hermes' `gateway run` refuses to start a second gateway for a profile: it prints
 "Gateway already running (PID ...)" and exits 1 immediately. The supervisor judged the
@@ -7,10 +7,13 @@ agent produced 56 spawns in fourteen minutes and would have kept going indefinit
 burning a process launch every 15 seconds and drowning launcher.log in noise that hides
 real failures.
 
-Two defences, both tested here: ask Hermes before spawning, and back off when a start
-fails instead of retrying at full speed.
+The lesson is not "special-case the gateway". The main bridge and every extra agent's
+bridge had the same shape - "child is dead, start it again" on a 15-second timer - and
+would have produced the identical disturbance for a port already in use, a bad interpreter
+path, or any other refusal. All of them now share one restart policy, and this suite asserts
+that a permanently-failing child of ANY kind is attempted a handful of times, not hundreds.
 
-Run: python tools/test_gateway_supervision.py
+Run: python tools/test_supervision.py
 """
 
 import os
@@ -74,7 +77,7 @@ def main():
         check("nothing is spawned", got is None and not spawned, spawned)
         check("it is recorded as externally supervised", ent.get("gw_external") is True)
         check("and a cooldown stops us asking every 15s",
-              ent.get("gw_retry_at", 0) > 0)
+              ent.get("gw_rs", {}).get("retry_at", 0) > 0, ent)
 
         before = L._hctl.status_calls
         check("during the cooldown we do not even ask Hermes",
@@ -90,7 +93,7 @@ def main():
         check("with the per-profile wrapper and --external-supervisor",
               "gateway" in spawned[0] and "--external-supervisor" in spawned[0], spawned)
         check("the start time is recorded, so a quick exit can be detected",
-              ent.get("gw_started_at", 0) > 0)
+              ent.get("gw_rs", {}).get("started_at", 0) > 0, ent)
         check("it is no longer marked external", ent.get("gw_external") is False)
 
         section("backing off after immediate exits")
@@ -102,11 +105,12 @@ def main():
 
         section("the cooldown is honoured by the starter")
         L._hctl = FakeHctl(running=False)
-        ent = {"gw_retry_at": L.time.time() + 300}
+        ent = {"gw_rs": {"started_at": 0.0, "fails": 3,
+                         "retry_at": L.time.time() + 300}}
         spawned.clear()
         check("no spawn while backing off",
               L._start_gateway(AGENT, ent) is None and not spawned, spawned)
-        ent["gw_retry_at"] = 0
+        ent["gw_rs"]["retry_at"] = 0
         check("and it starts again once the wait has passed",
               L._start_gateway(AGENT, ent) is not None)
 
@@ -116,6 +120,42 @@ def main():
         quiet = dict(AGENT, gateway_enabled=False)
         check("nothing is spawned", L._start_gateway(quiet, {}) is None and not spawned)
 
+        section("the shared policy: quick deaths widen the gap, real runs reset it")
+        rs = {"started_at": L.time.time() - 1, "fails": 0, "retry_at": 0.0}
+        L._died(rs, "test")
+        check("a child that died in 1s counts as a failure", rs["fails"] == 1, rs)
+        check("and is not retried immediately", not L._may_start(rs))
+        L._died(rs, "test")
+        check("consecutive failures accumulate", rs["fails"] == 2, rs)
+        rs2 = {"started_at": L.time.time() - 3600, "fails": 3, "retry_at": 999}
+        L._died(rs2, "test")
+        check("a child that ran for an hour resets the counter", rs2["fails"] == 0, rs2)
+        check("and may start again at once", L._may_start(rs2))
+
+        section("a permanently-failing child is not retried hundreds of times")
+        # 24 hours of 15-second ticks against something that refuses to stay up.
+        TICKS, STEP = 5760, 15
+        clock = [1000.0]
+        real_time = L.time.time
+        L.time.time = lambda: clock[0]
+        try:
+            rs = {"started_at": 0.0, "fails": 0, "retry_at": 0.0}
+            attempts = 0
+            for _ in range(TICKS):
+                if L._may_start(rs):
+                    attempts += 1
+                    L._started(rs)
+                    clock[0] += 1          # it dies one second later
+                    L._died(rs, "doomed")
+                clock[0] += STEP
+        finally:
+            L.time.time = real_time
+        check("a whole day of ticks yields a handful of attempts, not thousands",
+              attempts <= 100, "attempts=%d over %d ticks" % (attempts, TICKS))
+        check("without the policy this would have been one per tick",
+              attempts < TICKS / 10, "attempts=%d" % attempts)
+        print("       %d attempts across 24h of 15s ticks (was: %d)" % (attempts, TICKS))
+
         section("a failure to spawn does not become a loop either")
         def boom(cmd, cwd=None, **kw):
             raise OSError("cannot start")
@@ -123,7 +163,7 @@ def main():
         L._hctl = FakeHctl(running=False)
         ent = {}
         check("returns None instead of raising", L._start_gateway(AGENT, ent) is None)
-        check("and sets a cooldown", ent.get("gw_retry_at", 0) > 0)
+        check("and sets a cooldown", ent.get("gw_rs", {}).get("retry_at", 0) > 0, ent)
     finally:
         L._hctl, L.subprocess.Popen, L.log = real_hctl, real_popen, real_log
 

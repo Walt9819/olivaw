@@ -285,9 +285,55 @@ def _agent_cfg(agent, base_cfg):
     }
 
 
-def _gw_backoff(fails):
-    """Seconds to wait after `fails` consecutive immediate gateway exits: 1, 2, 4, 8, 15 min."""
-    return min(60 * (2 ** min(max(fails, 1) - 1, 4)), 900)
+# ── restart policy, shared by EVERY supervised child ─────────────────────────
+# A child that dies within seconds is refusing to start, not crashing under load, and
+# retrying it on the next 15-second tick simply repeats the refusal. That is how a single
+# misconfigured agent turned into 56 process launches in fourteen minutes: `gateway run`
+# exits 1 immediately when another gateway already owns the profile, and the supervisor
+# obligingly started it again, forever.
+#
+# The lesson is not "special-case the gateway" - every keep-alive here could do the same,
+# so all of them go through this instead. A child that actually ran resets the counter; one
+# that never came up gets progressively more room, and says why once per attempt.
+MIN_LIFETIME = 20         # under this, it never really started
+BACKOFF_CAP = 900         # 15 minutes
+
+
+def _backoff(fails):
+    """Seconds to wait after `fails` consecutive immediate exits: 1, 2, 4, 8, 15 min."""
+    return min(60 * (2 ** min(max(fails, 1) - 1, 4)), BACKOFF_CAP)
+
+
+# Kept under its old name so existing callers/tests keep working.
+_gw_backoff = _backoff
+
+
+def _rs(holder, key):
+    """Restart bookkeeping for one supervised child, created on first use."""
+    return holder.setdefault(key, {"started_at": 0.0, "fails": 0, "retry_at": 0.0})
+
+
+def _may_start(rs):
+    return time.time() >= rs.get("retry_at", 0.0)
+
+
+def _started(rs):
+    rs["started_at"] = time.time()
+    return rs
+
+
+def _died(rs, label):
+    """Record a death and decide how long to wait. Call once per death, not per loop."""
+    lived = time.time() - rs.get("started_at", 0.0)
+    if lived >= MIN_LIFETIME:
+        rs["fails"] = 0
+        rs["retry_at"] = 0.0
+        return
+    rs["fails"] = rs.get("fails", 0) + 1
+    wait = _backoff(rs["fails"])
+    rs["retry_at"] = time.time() + wait
+    log(f"{label}: exited after {lived:.0f}s (attempt {rs['fails']}); "
+        f"not retrying for {int(wait / 60)} min")
 
 
 def _start_gateway(agent, ent):
@@ -303,9 +349,10 @@ def _start_gateway(agent, ent):
     """
     if not _hctl or not agent.get("gateway_enabled"):
         return None
-    now = time.time()
-    if now < ent.get("gw_retry_at", 0):
+    rs = _rs(ent, "gw_rs")
+    if not _may_start(rs):
         return None
+    now = time.time()
 
     slug, profile = agent.get("slug"), agent.get("profile")
     try:
@@ -319,7 +366,7 @@ def _start_gateway(agent, ent):
             log(f"agent '{slug}': its gateway is already running outside our supervision; "
                 f"leaving it alone")
             ent["gw_external"] = True
-        ent["gw_retry_at"] = now + 60      # re-check occasionally, cheaply
+        rs["retry_at"] = now + 60          # re-check occasionally, cheaply
         return None
     ent["gw_external"] = False
 
@@ -332,9 +379,9 @@ def _start_gateway(agent, ent):
         child = subprocess.Popen(cmd, cwd=INSTALL_DIR)
     except Exception as e:  # noqa: BLE001
         log(f"gateway start failed for '{slug}': {e}")
-        ent["gw_retry_at"] = now + 60
+        rs["retry_at"] = now + 60
         return None
-    ent["gw_started_at"] = now
+    _started(rs)
     return child
 
 
@@ -354,25 +401,20 @@ def _reconcile_extras(base_cfg, state):
         ent = extras.setdefault(slug, {"cfg": acfg, "child": None, "gw": None})
         ent["cfg"] = acfg
         ent["agent"] = agent
-        if not ent.get("child") or ent["child"].poll() is not None:
+        brs = _rs(ent, "bridge_rs")
+        child = ent.get("child")
+        if child is not None and child.poll() is not None:
+            _died(brs, f"agent '{slug}' bridge")
+            ent["child"] = None
+        if not ent.get("child") and _may_start(brs):
             log(f"starting bridge for agent '{slug}' on port {agent['port']}")
             ent["child"] = start_bridge(acfg)
+            _started(brs)
         # gateway keep-alive (only if the agent has a channel configured)
         if agent.get("gateway_enabled"):
             gw = ent.get("gw")
             if gw is not None and gw.poll() is not None:
-                # A gateway that dies immediately is refusing to start, not crashing under
-                # load. Restarting it on the next tick just repeats the refusal, so count
-                # the quick exits and widen the gap.
-                lived = time.time() - ent.get("gw_started_at", 0)
-                if lived < 20:
-                    ent["gw_fails"] = ent.get("gw_fails", 0) + 1
-                    wait = _gw_backoff(ent["gw_fails"])
-                    ent["gw_retry_at"] = time.time() + wait
-                    log(f"agent '{slug}': gateway exited after {lived:.0f}s "
-                        f"(attempt {ent['gw_fails']}); next try in {int(wait / 60)} min")
-                else:
-                    ent["gw_fails"] = 0
+                _died(_rs(ent, "gw_rs"), f"agent '{slug}' gateway")
                 ent["gw"] = None
             if not ent.get("gw"):
                 ent["gw"] = _start_gateway(agent, ent)
@@ -887,10 +929,15 @@ def main():
             # keep-alive: the question is "is the bridge serving?", not "is our handle
             # alive?" - an adopted bridge has no handle, and a dead handle whose port still
             # answers means someone else is serving.
-            ours_dead = (not state["child"]) or state["child"].poll() is not None
-            if ours_dead and not bridge_status(cfg):
+            mrs = _rs(state, "main_rs")
+            if state["child"] is not None and state["child"].poll() is not None:
+                _died(mrs, "bridge")
+                state["child"] = None
+            ours_dead = not state["child"]
+            if ours_dead and not bridge_status(cfg) and _may_start(mrs):
                 log("bridge not answering; (re)starting")
                 state["child"] = start_bridge(cfg)
+                _started(mrs)
             else:
                 # The owner changed the brain in the wizard: swap the running bridge for one on
                 # the new engine. Only when idle - a restart mid-turn loses that turn.
