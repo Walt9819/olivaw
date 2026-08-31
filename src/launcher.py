@@ -285,22 +285,57 @@ def _agent_cfg(agent, base_cfg):
     }
 
 
-def _start_gateway(agent):
+def _gw_backoff(fails):
+    """Seconds to wait after `fails` consecutive immediate gateway exits: 1, 2, 4, 8, 15 min."""
+    return min(60 * (2 ** min(max(fails, 1) - 1, 4)), 900)
+
+
+def _start_gateway(agent, ent):
     """Run this agent's Hermes gateway under OUR supervision (survives reboot with us).
-    Uses the per-profile wrapper: `<slug> gateway run --external-supervisor`. Returns the
-    Popen, or None if the agent has no channel configured yet / wrapper unavailable."""
+
+    Two things stop this from becoming a hot loop, both learned the hard way. `gateway run`
+    REFUSES when a gateway already owns that profile - it prints "Gateway already running
+    (PID ...)" and exits 1 immediately - so a plain "child is dead, start it again" retried
+    every 15 seconds, forever, spawning a process each time. So: ask Hermes first and leave
+    a healthy gateway alone, and when a start does fail, back off instead of hammering.
+
+    Returns the Popen, or None when there is nothing to start right now.
+    """
     if not _hctl or not agent.get("gateway_enabled"):
         return None
-    base = _hctl._base(agent.get("profile"))
+    now = time.time()
+    if now < ent.get("gw_retry_at", 0):
+        return None
+
+    slug, profile = agent.get("slug"), agent.get("profile")
+    try:
+        running = _hctl.gateway_status(profile=profile).get("running")
+    except Exception:  # noqa: BLE001
+        running = False
+    if running:
+        # Somebody else owns it - Hermes' own service, or a gateway started by the wizard.
+        # A second one would only fight it for the same Telegram poll.
+        if not ent.get("gw_external"):
+            log(f"agent '{slug}': its gateway is already running outside our supervision; "
+                f"leaving it alone")
+            ent["gw_external"] = True
+        ent["gw_retry_at"] = now + 60      # re-check occasionally, cheaply
+        return None
+    ent["gw_external"] = False
+
+    base = _hctl._base(profile)
     if not base:
         return None
     cmd = base + ["gateway", "run", "--external-supervisor", "-q"]
     try:
-        log(f"starting gateway for agent '{agent['slug']}'")
-        return subprocess.Popen(cmd, cwd=INSTALL_DIR)
+        log(f"starting gateway for agent '{slug}'")
+        child = subprocess.Popen(cmd, cwd=INSTALL_DIR)
     except Exception as e:  # noqa: BLE001
-        log(f"gateway start failed for '{agent.get('slug')}': {e}")
+        log(f"gateway start failed for '{slug}': {e}")
+        ent["gw_retry_at"] = now + 60
         return None
+    ent["gw_started_at"] = now
+    return child
 
 
 def _reconcile_extras(base_cfg, state):
@@ -324,8 +359,23 @@ def _reconcile_extras(base_cfg, state):
             ent["child"] = start_bridge(acfg)
         # gateway keep-alive (only if the agent has a channel configured)
         if agent.get("gateway_enabled"):
-            if not ent.get("gw") or ent["gw"].poll() is not None:
-                ent["gw"] = _start_gateway(agent)
+            gw = ent.get("gw")
+            if gw is not None and gw.poll() is not None:
+                # A gateway that dies immediately is refusing to start, not crashing under
+                # load. Restarting it on the next tick just repeats the refusal, so count
+                # the quick exits and widen the gap.
+                lived = time.time() - ent.get("gw_started_at", 0)
+                if lived < 20:
+                    ent["gw_fails"] = ent.get("gw_fails", 0) + 1
+                    wait = _gw_backoff(ent["gw_fails"])
+                    ent["gw_retry_at"] = time.time() + wait
+                    log(f"agent '{slug}': gateway exited after {lived:.0f}s "
+                        f"(attempt {ent['gw_fails']}); next try in {int(wait / 60)} min")
+                else:
+                    ent["gw_fails"] = 0
+                ent["gw"] = None
+            if not ent.get("gw"):
+                ent["gw"] = _start_gateway(agent, ent)
         elif ent.get("gw"):
             stop_bridge(ent["gw"]); ent["gw"] = None
     return extras
@@ -816,6 +866,14 @@ def main():
     log(f"supervisor up. install={INSTALL_DIR} version={read_version()} "
         f"repo={cfg.get('repo')} auto_update={cfg.get('auto_update')}")
     _ensure_app_shortcut()
+    if _registry:
+        # Same repair from the other side: whichever process starts first fixes it.
+        try:
+            adopted = _registry.reconcile(log=log)
+            if adopted:
+                log(f"adopted {len(adopted)} agent(s) that were registered next to the code")
+        except Exception as e:  # noqa: BLE001
+            log(f"could not reconcile the agent registry: {e}")
     state = {"child": start_bridge(cfg), "launcher_changed": False, "extra": {}}
     _reconcile_extras(cfg, state)
     _ensure_whatsapp()

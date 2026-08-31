@@ -15,9 +15,67 @@ import os
 import re
 
 _HERE = os.path.dirname(os.path.abspath(__file__))            # .../src/wizard
-INSTALL_ROOT = os.path.dirname(os.path.dirname(_HERE))         # folder holding src/, VERSION
+_CODE_ROOT = os.path.dirname(os.path.dirname(_HERE))           # folder holding src/, VERSION
 BASE_PORT = 8790          # default agent
 PORT_STEP = 2             # each agent uses an even port (bridge). +1 kept free as headroom
+
+# The file the installer writes. Its presence is what makes a directory "the install"
+# rather than "a copy of the code".
+_INSTALL_MARK = "updater.config.json"
+
+
+def _candidate_installs():
+    """Every place an Olivaw install has ever been put, newest naming first."""
+    out = []
+    if os.name == "nt":
+        local = os.environ.get("LOCALAPPDATA", "")
+        if local:
+            out += [os.path.join(local, "Olivaw"),
+                    os.path.join(local, "HermesBridge")]   # pre-rename installs
+    else:
+        home = os.path.expanduser("~")
+        out += [os.path.join(home, ".olivaw"),
+                os.path.join(home, ".hermes-bridge"),
+                os.path.join(home, "Library", "Application Support", "Olivaw")]
+    return out
+
+
+def install_root():
+    """The one directory holding this machine's agent state - agents.json and agents/.
+
+    Deliberately NOT "the folder this file lives in". Olivaw can be running from a source
+    checkout while the REAL install - the one whose supervisor reads agents.json and starts
+    each agent's bridge - sits somewhere else. When those two disagree, an agent created in
+    the wizard is written where nothing ever reads it: its Telegram bot answers, its brain
+    never starts, and the owner gets silence on a setup that reported success.
+
+    Resolution, most specific first:
+      1. OLIVAW_INSTALL_DIR - tests, and unusual layouts;
+      2. this code's own root IF it carries updater.config.json, i.e. this copy IS the
+         install (the normal case, and it keeps the supervisor's behaviour identical);
+      3. a real install found in a known location;
+      4. this code's own root, for a first run before anything has been installed.
+    """
+    env = (os.environ.get("OLIVAW_INSTALL_DIR") or "").strip()
+    if env:
+        return os.path.abspath(os.path.expanduser(env))
+
+    if os.path.isfile(os.path.join(_CODE_ROOT, _INSTALL_MARK)):
+        return _CODE_ROOT
+
+    found = [d for d in _candidate_installs()
+             if os.path.isfile(os.path.join(d, _INSTALL_MARK))]
+    if found:
+        # More than one only happens across a rename; the one written last is live.
+        found.sort(key=lambda d: os.path.getmtime(os.path.join(d, _INSTALL_MARK)),
+                   reverse=True)
+        return found[0]
+
+    return _CODE_ROOT
+
+
+# Kept as a module attribute because callers import it; resolved once at import, like before.
+INSTALL_ROOT = install_root()
 
 
 def registry_path(install_dir=None):
@@ -55,6 +113,46 @@ def get(slug, install_dir=None):
         if a.get("slug") == slug:
             return a
     return None
+
+
+def reconcile(install_dir=None, log=None):
+    """Adopt agents that a previous run registered next to the code instead of the install.
+
+    Anyone who ran the wizard from a checkout before install_root() existed has an
+    agents.json the supervisor never reads, and agents that answer on Telegram but have no
+    brain behind them. Merging is safe and one-directional: entries already in the canonical
+    registry win, orphans are added, and the stale file is left on disk rather than deleted
+    so the change is trivially reversible.
+
+    Returns the slugs it adopted.
+    """
+    target = install_dir or INSTALL_ROOT
+    stale = os.path.join(_CODE_ROOT, "agents.json")
+    if os.path.abspath(_CODE_ROOT) == os.path.abspath(target) or not os.path.isfile(stale):
+        return []
+    try:
+        with open(stale, encoding="utf-8") as fh:
+            orphans = (json.load(fh) or {}).get("agents") or []
+    except Exception:  # noqa: BLE001
+        return []
+    if not orphans:
+        return []
+
+    data = load(target)
+    known = {a.get("slug") for a in data["agents"]}
+    adopted = []
+    for a in orphans:
+        slug = a.get("slug")
+        if slug and slug not in known:
+            data["agents"].append(a)
+            known.add(slug)
+            adopted.append(slug)
+    if adopted:
+        save(data, target)
+        if log:
+            log("agents: adopted %s from %s (registered next to the code, where the "
+                "supervisor never looks)" % (", ".join(adopted), stale))
+    return adopted
 
 
 def upsert(agent, install_dir=None):

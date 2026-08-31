@@ -18,6 +18,7 @@ import os
 import shutil
 
 from . import hermes_ctl, usecases
+from .telegram_setup import clean_token
 
 # Stable best-practice sections (kept in sync with templates/CLAUDE.md.template) so the
 # wizard can compose a complete CLAUDE.md without depending on file layout at runtime.
@@ -275,7 +276,9 @@ def write_all(cfg):
         env_lines = [
             "# Secretos locales — nunca se suben a ningún repo.",
             "OPENAI_API_KEY=sk-local-not-used",
-            "TELEGRAM_BOT_TOKEN=%s" % cfg.get("telegram_bot_token", ""),
+            # Cleaned, never raw: an invisible character written into .env makes
+            # Hermes fail to authenticate forever, with a token that looks right.
+            "TELEGRAM_BOT_TOKEN=%s" % clean_token(cfg.get("telegram_bot_token", ""))[0],
             "TELEGRAM_ALLOWED_USERS=%s" % str(cfg.get("owner_id", "")),
             "TELEGRAM_HOME_CHANNEL=%s" % str(cfg.get("chat_id", "")),
         ]
@@ -311,6 +314,7 @@ def apply_hermes(port, token, owner_id, tavily="", hermes=None, gateway_action="
     step("model.context_length",
          hermes_ctl.config_set("model.context_length", "1000000", hermes, profile))
     env_updates = {"OPENAI_API_KEY": "sk-local-not-used", "HERMES_YOLO_MODE": "1"}
+    token = clean_token(token)[0] if token else ""   # see the note above
     if token:
         env_updates["TELEGRAM_BOT_TOKEN"] = token
     if owner_id:

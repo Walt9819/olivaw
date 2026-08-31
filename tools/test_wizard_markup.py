@@ -70,10 +70,35 @@ def main():
     for wid in ("waPair", "waQr", "waCloud", "waUsers", "waSave", "waPill", "waQrBox"):
         check("%s survived the edit" % wid, wid in rendered)
 
+    print("\n=== the agent's folder is asked for, not buried ===")
+    for wid in ("wsPath", "wsPick", "wsDefault", "wsInfo"):
+        check("%s is rendered" % wid, wid in rendered)
+    for wid in ("wsPick", "wsDefault"):
+        check("%s has a handler" % wid, ('el("%s")' % wid) in src)
+    # Two folds are titled "Opciones avanzadas" (the brain step has one too), so anchor on
+    # the Telegram one specifically - that is where the folder used to be hidden.
+    check("it sits on the agent step, ahead of Telegram's advanced fold",
+          src.index('id="wsPath"') < src.index("Opciones avanzadas (repositorio"))
+    check("and it is not inside any fold at all",
+          "<details" not in src[src.index("¿Dónde trabajará?"):src.index('id="wsPath"')])
+    check("the old duplicate box under advanced options is gone",
+          'field2("workspace"' not in src)
+    check("the folder is explained, not merely labelled",
+          "respaldar" in src and "trabajar" in src)
+    check("it does not overstate what lives there",
+          "no es donde se guarda su configuraci" in src.lower())
+    check("leaving it blank still sends a concrete path, not an empty string",
+          "S.workspace || S.wsSuggested" in src)
+
     print("\n=== it talks to endpoints the server actually serves ===")
     server = io.open(os.path.join(ROOT, "src", "wizard", "wizard_server.py"),
                      encoding="utf-8").read()
     called = sorted(set(re.findall(r'api\("channel/([a-z0-9-]+)"', src)))
+    plain = sorted(set(re.findall(r'api\("((?:workspace|telegram)/[a-z-]+)"', src)))
+    routed = set(re.findall(r'route == "([a-z0-9/_-]+)"', server))
+    missing_routes = [c for c in plain if c not in routed]
+    check("every workspace/telegram route the UI calls exists on the server",
+          not missing_routes, "unrouted: " + ", ".join(missing_routes))
     handled = set(re.findall(r'sub == "([a-z0-9-]+)"', server))
     unknown = [c for c in called if c not in handled]
     check("no channel endpoint is called that the server does not handle",

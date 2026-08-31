@@ -31,19 +31,36 @@ if __package__ in (None, ""):
     from wizard import (agents_registry, channels, checks, config_writer, hermes_ctl,
                         obsidian, proposals, providers, rescue, selfcare, telegram_health,
                         telegram_setup, usecases)
+    from wizard import workspace as wsdir   # aliased: `workspace` is a local
+                                            # variable name elsewhere in this file
     from wizard.procutil import http_json, which
 else:
     from . import (agents_registry, channels, checks, config_writer, hermes_ctl, obsidian,
                    proposals, providers, rescue, selfcare, telegram_health, telegram_setup,
                    usecases)
+    from . import workspace as wsdir        # aliased: see above
     from .procutil import http_json, which
 
 HERE = os.path.dirname(os.path.abspath(__file__))          # .../src/wizard
 SRC_DIR = os.path.dirname(HERE)                            # .../src
-INSTALL_DIR = os.path.dirname(SRC_DIR)                     # folder holding src/, VERSION
-WEB_DIR = os.path.join(HERE, "web")
+CODE_ROOT = os.path.dirname(SRC_DIR)                       # the copy of Olivaw running now
+
+# Where this MACHINE's Olivaw lives, which is not necessarily where this code lives. The
+# wizard can be started from a source checkout while the supervisor that actually reads
+# agents.json and launches each agent's bridge runs from the installed copy. Writing agent
+# state next to the code in that situation registers an agent nothing ever reads: its
+# Telegram bot answers and its brain never starts, so the owner gets silence from a setup
+# that said it succeeded.
+INSTALL_DIR = agents_registry.install_root()
+RUNNING_FROM_COPY = os.path.abspath(CODE_ROOT) != os.path.abspath(INSTALL_DIR)
+
+WEB_DIR = os.path.join(HERE, "web")                        # always the running code's UI
+# The throwaway "probar el cerebro" bridge is this code's job; the supervisor is the
+# install's, so starting the wrong launcher would leave two supervisors competing.
 BRIDGE_PY = os.path.join(SRC_DIR, "claude_bridge.py")
-LAUNCHER_PY = os.path.join(SRC_DIR, "launcher.py")
+_INSTALLED_LAUNCHER = os.path.join(INSTALL_DIR, "src", "launcher.py")
+LAUNCHER_PY = (_INSTALLED_LAUNCHER if os.path.isfile(_INSTALLED_LAUNCHER)
+               else os.path.join(SRC_DIR, "launcher.py"))
 TEST_PORT = 8788
 TEST_URL = "http://127.0.0.1:%d" % TEST_PORT
 
@@ -556,6 +573,19 @@ class Handler(BaseHTTPRequestHandler):
         if route.startswith("channel/"):
             return self._channel(route[len("channel/"):], body)
 
+        # Where the agent's own files live. Asked during creation rather than left to an
+        # advanced fold, because it decides what gets backed up and what a sync client
+        # will fight over.
+        if route == "workspace/suggest":
+            return {"ok": True,
+                    "path": wsdir.suggest(body.get("agent_name", "")),
+                    "legacy": wsdir.legacy_default(),
+                    "picker": wsdir.picker_available()}
+        if route == "workspace/inspect":
+            return wsdir.inspect(body.get("path", ""), install_dir=INSTALL_DIR)
+        if route == "workspace/pick":
+            return wsdir.pick(body.get("start", ""))
+
         if route == "apply":
             return self._apply(body)
 
@@ -811,6 +841,14 @@ def _free_port():
 
 
 def main():
+    # Repair a split registry before serving: an agent registered next to the code is
+    # invisible to the supervisor, which is why it can answer on Telegram and never think.
+    try:
+        adopted = agents_registry.reconcile(log=lambda m: print("  " + m))
+        if adopted:
+            print("  (se recuperaron agentes registrados en la copia del código)")
+    except Exception as e:  # noqa: BLE001
+        print("  aviso: no se pudo revisar el registro de agentes: %s" % e)
     port = _free_port()
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = "http://127.0.0.1:%d/?t=%s" % (port, TOKEN)

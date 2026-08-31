@@ -15,7 +15,8 @@
   var S = load() || {
     step: 0, provider: "claude-code",
     claude: "", node: "", hermes: "", hermes_config: "", python: "",
-    install_dir: "", workspace: "", repo: "Walt9819/olivaw",
+    install_dir: "", workspace: "", wsSuggested: "", tokenCleaned: "",
+    repo: "Walt9819/olivaw",
     brainOk: false, hermesOk: false,
     identity: { agent_name: "", owner_name: "", purpose: "", business: "", approach: "" },
     usecases: [],
@@ -405,7 +406,7 @@
     el("btnBrain").onclick = function () {
       pb.style.display = "inline-flex";
       runTest(this, pb, function () {
-        return api("test-brain", brainBody({ workspace: S.workspace }));
+        return api("test-brain", brainBody({ workspace: S.workspace || S.wsSuggested }));
       }, "Despertando al cerebro… (puede tardar)").then(function (r) {
         S.brainOk = !!(r && r.ok); save(); renderStepper();
         if (S.brainOk) toast("¡El cerebro está vivo! 🧠");
@@ -459,6 +460,27 @@
       field("business", "Contexto: tu negocio, persona o sitio web (opcional)", "Ej: iGalenus, salud digital, igalenus.com", id.business, true) +
       field("approach", "¿Por dónde debería empezar? (opcional)", "Ej: “Familiarízate con iGalenus por su web e industria.”", id.approach, true) +
       '</div>' +
+      // Where the agent's files live. Asked here, while the agent is being created, rather
+      // than left in an advanced fold: it decides where her own notes end up, what gets
+      // backed up, and what a sync client will fight over.
+      '<h2>¿Dónde trabajará?</h2>' +
+      '<div class="card pad">' +
+      '<p class="small muted" style="margin-top:0">Tu agente necesita una carpeta donde ' +
+      '<b>trabajar</b>. Es la que abre por defecto: ahí lee y escribe los archivos que le ' +
+      'pidas, lo que descargue o genere, y lo que organice para ti.</p>' +
+      '<p class="small muted">No es donde se guarda su configuración — de eso se encarga ' +
+      'Olivaw por su cuenta. Esta es la carpeta que <b>tú</b> abrirás para ver su trabajo, ' +
+      'y la que querrás <b>respaldar</b>. Si ya tienes una carpeta con el material con el ' +
+      'que quieres que trabaje, elígela. Si no, deja la recomendada: se puede cambiar ' +
+      'después.</p>' +
+      '<label class="field" style="margin-top:12px"><span class="lab">Carpeta de trabajo</span>' +
+      '<input type="text" id="wsPath" placeholder="' + esc(S.wsSuggested || "") + '" value="' +
+      esc(S.workspace || "") + '"></label>' +
+      '<div class="row">' +
+      '<button class="btn btn-soft btn-sm" id="wsPick">Elegir carpeta…</button>' +
+      '<button class="btn btn-ghost btn-sm" id="wsDefault">Usar la recomendada</button>' +
+      '</div><div id="wsInfo" style="margin-top:10px"></div></div>' +
+
       '<h2>¿En qué lo usarás? <span class="muted small">(elige una o varias)</span></h2>' +
       '<div class="chips" id="ucChips">' + chips + '</div>' +
       '<div class="card" style="margin-top:16px"><div class="row">' +
@@ -492,6 +514,76 @@
         if (r && r.ok) { el("previewWrap").style.display = "block"; el("previewMd").textContent = r.markdown; }
       });
     };
+
+    // ── the agent's folder ───────────────────────────────────────────────────
+    // Left empty on purpose when she does not care: the server falls back to the
+    // recommended path, so "skip" is the default rather than an extra decision.
+    function wsPaint(info) {
+      var box = el("wsInfo"); if (!box) return;
+      if (!info) { box.innerHTML = ""; return; }
+      var out = "";
+      if (!info.ok) {
+        out = '<div class="callout small">⚠️ ' + esc(info.detail || "No se puede usar.") + '</div>';
+      } else {
+        var head = info.reused
+          ? "✓ Ya hay un agente trabajando aquí. Seguirá con esos archivos."
+          : (info.exists ? "✓ La carpeta existe." : "✓ Se creará al activar.");
+        out = '<div class="callout small">' + esc(head) +
+          (info.free ? ' <span class="muted">(' + esc(info.free) + ' libres)</span>' : "") +
+          '<br><code class="small">' + esc(info.path) + '</code></div>';
+      }
+      (info.warnings || []).forEach(function (w) {
+        out += '<div class="small muted" style="margin-top:6px">• ' + esc(w) + '</div>';
+      });
+      box.innerHTML = out;
+    }
+
+    function wsCheck() {
+      var v = (el("wsPath") || {}).value || "";
+      S.workspace = v.trim();
+      save();
+      if (!S.workspace) {
+        // Nothing typed is a valid answer - show what that will actually mean.
+        wsPaint({ ok: true, exists: false, path: S.wsSuggested || "",
+                  warnings: ["Se usará la carpeta recomendada. Puedes cambiarla después."] });
+        return;
+      }
+      api("workspace/inspect", { path: S.workspace }).then(wsPaint);
+    }
+
+    if (el("wsPath")) {
+      var t = null;
+      el("wsPath").oninput = function () { clearTimeout(t); t = setTimeout(wsCheck, 350); };
+    }
+    if (el("wsDefault")) el("wsDefault").onclick = function () {
+      S.workspace = "";
+      if (el("wsPath")) el("wsPath").value = "";
+      save(); wsCheck();
+    };
+    if (el("wsPick")) el("wsPick").onclick = function () {
+      var b = this; b.disabled = true; b.textContent = "Elige en la ventana…";
+      api("workspace/pick", { start: S.workspace || S.wsSuggested || "" }).then(function (r) {
+        b.disabled = false; b.textContent = "Elegir carpeta…";
+        if (r && r.ok && r.path) {
+          S.workspace = r.path;
+          if (el("wsPath")) el("wsPath").value = r.path;
+          save(); wsCheck();
+        } else if (r && !r.cancelled && r.detail) {
+          toast(r.detail);
+        }
+      });
+    };
+
+    // Name the suggestion after the agent, then show what the current answer means.
+    api("workspace/suggest", { agent_name: (S.identity.agent_name || "") }).then(function (r) {
+      if (r && r.ok) {
+        S.wsSuggested = r.path;
+        if (el("wsPath")) el("wsPath").placeholder = r.path;
+        if (el("wsPick") && !r.picker) el("wsPick").style.display = "none";
+        save();
+      }
+      wsCheck();
+    });
   }
 
   // ── step 4: channel (Telegram, owner lock) ─────────────────────────────────
@@ -517,7 +609,17 @@
       '<label class="field"><span class="lab">Token del bot</span>' +
       '<input type="password" id="tgToken" placeholder="123456789:AA..." value="' + esc(S.token) + '"></label>' +
       '<div class="row"><button class="btn btn-primary" id="btnValidate">Validar token</button>' +
-      '<span id="pillTg" class="pill" style="display:none"></span></div></div>' +
+      '<span id="pillTg" class="pill" style="display:none"></span></div>' +
+      // Persistent confirmation. The pill that runTest writes is destroyed a moment later
+      // by the render() that follows a successful validation, so on its own the success
+      // message flashed and vanished - the token worked and the screen never said so.
+      (S.bot_username
+        ? '<div class="callout small" style="margin-top:12px">✅ Token válido. Tu bot es ' +
+          '<b>@' + esc(S.bot_username) + '</b>' +
+          (S.tokenCleaned ? ' <span class="muted">(limpiamos el texto que pegaste: ' +
+            esc(S.tokenCleaned) + ')</span>' : "") +
+          '<br><span class="muted">Sigue con el paso 2 para vincularte como dueño.</span></div>'
+        : "") + '</div>' +
 
       '<h2>2 · Vincula tu cuenta como dueño</h2>' +
       '<div class="card"><p class="small muted" style="margin-top:0">' +
@@ -540,7 +642,6 @@
       '<details><summary>Opciones avanzadas (repositorio, alertas)</summary>' +
       field2("repo", "Repositorio de actualizaciones", S.repo) +
       field2("maintainer_id", "Chat id para alertas de mantenimiento (opcional)", S.maintainer_id) +
-      field2("workspace", "Carpeta de trabajo del agente", S.workspace) +
       field2("install_dir", "Carpeta de instalación", S.install_dir) +
       '</details>';
   }
@@ -557,7 +658,16 @@
     el("btnValidate").onclick = function () {
       pillTg.style.display = "inline-flex";
       runTest(this, pillTg, function () { return api("telegram/validate", { token: S.token }); }).then(function (r) {
-        if (r && r.ok) { S.bot_username = r.username || ""; save(); render(); }
+        if (r && r.ok) {
+          // Keep the token the server actually authenticated with, not the raw paste.
+          // A copy from BotFather often carries an invisible character; storing the raw
+          // text would write a token into .env that looks right and authenticates nowhere.
+          if (r.token) S.token = r.token;
+          S.bot_username = r.username || "";
+          S.tokenCleaned = (r.notes && r.notes.length) ? r.notes.join(" y ") : "";
+          save(); render();
+          toast("Token válido: @" + (r.username || "tu bot"));
+        }
       });
     };
     var pillOwner = el("pillOwner");
@@ -568,7 +678,8 @@
           S.owner_id = String(r.owner_id); S.chat_id = String(r.chat_id);
           S.owner_username = r.name || r.username || "";
           if (!S.identity.owner_name) S.identity.owner_name = r.name || r.username || "";
-          save(); render(); toast("Dueño vinculado 🔒");
+          save(); render();
+          toast("Vinculado como dueño: " + (S.owner_username || S.owner_id));
         }
       });
     };
@@ -609,7 +720,7 @@
       sumline("✨", "Agente", (S.identity.agent_name || "sin nombre") + (S.identity.purpose ? " — " + S.identity.purpose : "")) +
       sumline("🧩", "Habilidades", S.usecases.length ? String(S.usecases.length) + " seleccionadas" : "ninguna") +
       sumline("🔒", "Dueño", S.owner_id ? (S.owner_username || S.owner_id) + " (id " + S.owner_id + ")" : "sin vincular") +
-      sumline("📁", "Carpeta", S.workspace || "(predeterminada)") +
+      sumline("📁", "Carpeta", S.workspace || S.wsSuggested || "(predeterminada)") +
       '</ul></div>' +
       '<div class="row"><button class="btn btn-primary" id="btnApply">Aplicar y activar</button>' +
       '<span id="pillApply" class="pill" style="display:none"></span></div>';
@@ -745,7 +856,7 @@
       var payload = {
         provider: S.provider, claude: S.claude || "", codex: S.codex || "",
         install_dir: S.install_dir,
-        workspace: S.workspace, repo: S.repo, token: S.token, owner_id: S.owner_id,
+        workspace: S.workspace || S.wsSuggested || "", repo: S.repo, token: S.token, owner_id: S.owner_id,
         chat_id: S.chat_id, maintainer_id: S.maintainer_id, lang: "es",
         identity: S.identity, usecase_ids: S.usecases, tavily_key: S.tavily_key,
         hermes_config: S.hermes_config,

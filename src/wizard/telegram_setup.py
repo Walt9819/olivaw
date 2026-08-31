@@ -7,13 +7,78 @@ rest automatically: validate it, capture the owner's chat id, brand the bot, and
 a confirmation message — so the flow feels one-tap even though BotFather is manual.
 """
 
+import re
+import unicodedata
+
 from .procutil import http_json
 
 API = "https://api.telegram.org/bot{token}/{method}"
 
+# A bot token is <digits>:<35-ish url-safe chars>. Anchored nowhere on purpose: we search
+# for it inside whatever was pasted, because people copy the whole BotFather line.
+TOKEN_RE = re.compile(r"(\d{5,}):([A-Za-z0-9_-]{20,})")
+
+# Characters that survive .trim() and .strip() and then destroy the request.
+# - Cf (format): zero-width space U+200B, BOM U+FEFF, LRM/RLM U+200E/200F, soft hyphen U+00AD
+# - the quote marks a phone keyboard or a chat client substitutes
+_QUOTES = "\"'`‘’“”«»"
+
+
+def clean_token(raw):
+    """Recover the real token from whatever the owner actually pasted.
+
+    This is the single most common way setup fails, and the reason it fails REPEATEDLY: a
+    copy from BotFather - especially on a phone, or out of Telegram Desktop - routinely
+    carries an invisible character (zero-width space, BOM, a directional mark) or the
+    surrounding sentence. Both `str.strip()` and JavaScript's `trim()` remove whitespace
+    only, so the junk sails through, and urllib then raises deep in the stack with
+    "'ascii' codec can't encode character '\\u200b'". The old message told the owner to copy
+    the token again from BotFather - which reproduces the identical character, forever.
+
+    Returns (token, notes). `notes` names what had to be removed, so the UI can say the
+    paste was repaired instead of pretending nothing happened.
+    """
+    text = str(raw or "")
+    notes = []
+
+    # Strip invisible formatting characters anywhere in the string, not just the ends.
+    stripped = "".join(c for c in text if unicodedata.category(c) != "Cf")
+    if stripped != text:
+        notes.append("caracteres invisibles")
+        text = stripped
+
+    # Non-breaking and other exotic spaces, plus ordinary whitespace and quoting.
+    text = "".join(" " if (c.isspace() or c == " ") else c for c in text)
+    text = text.strip().strip(_QUOTES).strip()
+
+    m = TOKEN_RE.search(text)
+    if not m:
+        # A token contains no whitespace, so if we still cannot find one, the paste was
+        # probably wrapped across lines by a narrow terminal or chat bubble. Closing the
+        # gaps is safe precisely because no legitimate token has a space in it.
+        squeezed = "".join(text.split())
+        m = TOKEN_RE.search(squeezed)
+        if not m:
+            return "", notes
+        notes.append("saltos de línea dentro del token")
+        text = squeezed
+    token = "%s:%s" % (m.group(1), m.group(2))
+    # Anything around the token means they copied more than the token itself.
+    if text != token and "texto de más alrededor del token" not in notes:
+        notes.append("texto de más alrededor del token")
+    return token, notes
+
+
+def _looks_like_token(token):
+    return bool(token) and token.isascii() and TOKEN_RE.fullmatch(token) is not None
+
 
 def _call(token, method, params=None, timeout=25):
-    url = API.format(token=token.strip(), method=method)
+    """Call the Bot API. Never lets a malformed token reach urllib as an exception."""
+    clean, _notes = clean_token(token)
+    if not _looks_like_token(clean):
+        return False, {"ok": False, "description": "malformed token (not sent)"}
+    url = API.format(token=clean, method=method)
     ok, data, status = http_json(url, data=(params or {}), method="POST",
                                  timeout=timeout)
     if isinstance(data, dict) and "ok" in data:
@@ -22,16 +87,43 @@ def _call(token, method, params=None, timeout=25):
 
 
 def validate(token):
-    """getMe -> confirm the token is real and return the bot's identity."""
-    ok, data = _call(token, "getMe", timeout=15)
+    """getMe -> confirm the token is real and return the bot's identity.
+
+    Returns the CLEANED token so the caller stores what actually worked. Writing the raw
+    paste into .env is how an install ends up permanently broken with a token that looks
+    correct in an editor.
+    """
+    clean, notes = clean_token(token)
+    if not clean:
+        return {"ok": False, "token": "",
+                "detail": "Eso no parece un token. Debe verse así: "
+                          "123456789:AAG… (números, dos puntos, y una clave larga). "
+                          "Pega solo esa línea, tal como te la dio BotFather."}
+
+    ok, data = _call(clean, "getMe", timeout=15)
     if not ok:
-        return {"ok": False,
-                "detail": "Ese token no funcionó. Cópialo completo desde BotFather.",
-                "error": (data.get("description") if isinstance(data, dict) else "")}
+        desc = (data.get("description") if isinstance(data, dict) else "") or ""
+        if "401" in desc or "Unauthorized" in desc or "unauthorized" in desc.lower():
+            detail = ("Telegram rechazó ese token. Suele pasar cuando generaste uno nuevo: "
+                      "BotFather invalida el anterior. Pide /token otra vez y usa el último.")
+        elif "404" in desc or "Not Found" in desc:
+            detail = "Ese token no existe. Revisa que sea el del bot correcto."
+        elif not desc or "codec" in desc or "control characters" in desc:
+            # Never surface a Python encoding error to somebody setting up a chatbot.
+            detail = ("No pudimos usar ese texto como token. Pega solo la línea del token, "
+                      "sin comillas ni palabras alrededor.")
+        else:
+            detail = "Telegram no aceptó el token: %s" % desc[:120]
+        return {"ok": False, "token": "", "detail": detail}
+
     r = data.get("result", {})
+    detail = "Bot válido: @%s" % r.get("username", "?")
+    if notes:
+        detail += " (limpiamos %s del texto que pegaste)" % " y ".join(notes)
     return {"ok": True, "bot_id": r.get("id"),
             "username": r.get("username"), "name": r.get("first_name"),
-            "detail": "Bot válido: @%s" % r.get("username", "?")}
+            "token": clean, "cleaned": bool(notes), "notes": notes,
+            "detail": detail}
 
 
 def capture_owner(token, code=None):
