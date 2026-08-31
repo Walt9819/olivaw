@@ -156,6 +156,49 @@ def main():
               attempts < TICKS / 10, "attempts=%d" % attempts)
         print("       %d attempts across 24h of 15s ticks (was: %d)" % (attempts, TICKS))
 
+        section("an ADOPTED bridge must not be 'started' on every tick")
+        # The subtle one, and the reason the first fix was not enough: start_bridge()
+        # adopts a port that is already serving and returns None. No child is ever
+        # created, so no child can ever die, so a backoff keyed on deaths never engages.
+        # The branch simply fired forever. This drives the real keep-alive loop.
+        agent = dict(AGENT, gateway_enabled=False)
+        starts, lines = [], []
+        real = (L._load_extra_agents, L.bridge_status, L.start_bridge, L.log)
+        L._load_extra_agents = lambda: [agent]
+        L.bridge_status = lambda cfg: True          # something is already serving 8792
+        L.start_bridge = lambda cfg: (starts.append(cfg) or None)
+        L.log = lambda m: lines.append(m)
+        try:
+            state = {"extra": {}}
+            for _ in range(200):                    # ~50 minutes of ticks
+                L._reconcile_extras({"env": {}, "bridge_cmd": [sys.executable]}, state)
+            check("start_bridge is not called for a port already served",
+                  not starts, "called %d times" % len(starts))
+            said = [m for m in lines if "starting bridge for agent" in m]
+            check("and it does not announce a start it never makes",
+                  not said, "logged %d times" % len(said))
+            adopted = [m for m in lines if "adopting it" in m]
+            check("the adoption is reported exactly once, not every tick",
+                  len(adopted) == 1, "logged %d times" % len(adopted))
+
+            section("but a port that goes quiet IS started")
+            L.bridge_status = lambda cfg: False
+            state["extra"]["daneel"]["bridge_rs"]["retry_at"] = 0
+            L._reconcile_extras({"env": {}, "bridge_cmd": [sys.executable]}, state)
+            check("a real start happens once the port stops answering", len(starts) == 1,
+                  "called %d times" % len(starts))
+
+            section("and a bridge that refuses to start is not hammered")
+            starts.clear()
+            state = {"extra": {}}
+            for _ in range(200):
+                L._reconcile_extras({"env": {}, "bridge_cmd": [sys.executable]}, state)
+            check("200 ticks against a refusing bridge yield a handful of attempts",
+                  len(starts) <= 60, "called %d times over 200 ticks" % len(starts))
+            print("       %d start attempts across 200 ticks (was: 200)" % len(starts))
+        finally:
+            (L._load_extra_agents, L.bridge_status, L.start_bridge, L.log) = real
+
         section("a failure to spawn does not become a loop either")
         def boom(cmd, cwd=None, **kw):
             raise OSError("cannot start")

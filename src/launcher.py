@@ -407,9 +407,25 @@ def _reconcile_extras(base_cfg, state):
             _died(brs, f"agent '{slug}' bridge")
             ent["child"] = None
         if not ent.get("child") and _may_start(brs):
-            log(f"starting bridge for agent '{slug}' on port {agent['port']}")
-            ent["child"] = start_bridge(acfg)
-            _started(brs)
+            # "No child of ours" is not the same as "not running". start_bridge() ADOPTS a
+            # port that is already serving and returns None - so without this check the
+            # branch below fires every 15 seconds forever, logging a start that never
+            # happens. The backoff cannot catch it either: there is no child to die.
+            if bridge_status(acfg):
+                if not ent.get("bridge_external"):
+                    log(f"agent '{slug}': a bridge is already serving port "
+                        f"{agent['port']}; adopting it")
+                    ent["bridge_external"] = True
+                brs["retry_at"] = time.time() + 60      # re-check occasionally
+            else:
+                ent["bridge_external"] = False
+                log(f"starting bridge for agent '{slug}' on port {agent['port']}")
+                ent["child"] = start_bridge(acfg)
+                if ent["child"]:
+                    _started(brs)
+                else:
+                    # Refused to start (missing script, taken port). Do not hammer it.
+                    brs["retry_at"] = time.time() + 60
         # gateway keep-alive (only if the agent has a channel configured)
         if agent.get("gateway_enabled"):
             gw = ent.get("gw")
