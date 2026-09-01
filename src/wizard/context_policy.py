@@ -611,15 +611,15 @@ Dos cosas lo acotan, y las dos son ajustables:
 ## Ver cómo estás ahora
 
 ```bash
-{python} "{script}"{profile}
+"{python}" "{script}"{profile}
 ```
 
 ## Cambiarlo
 
 ```bash
-{python} "{script}"{profile} --preset ahorro
-{python} "{script}"{profile} --idle-minutes 240 --compact-at 0.15
-{python} "{script}"{profile} --list-presets
+"{python}" "{script}"{profile} --preset ahorro
+"{python}" "{script}"{profile} --idle-minutes 240 --compact-at 0.15
+"{python}" "{script}"{profile} --list-presets
 ```
 
 Preajustes: `ahorro` · `equilibrado` (el de fábrica de Olivaw) · `memoria` · `nunca`.

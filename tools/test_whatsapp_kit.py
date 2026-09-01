@@ -524,6 +524,14 @@ def test_escalation_prefs():
         skill = wa_setup.render_skill(home)
         check("the skill embeds that block", "pide_cita_urgente" in skill)
         check("the skill documents exit code 4", "`4`" in skill)
+        # The interpreter on Windows lives under "Program Files". Unquoted, the path splits
+        # at the space and the agent's shell says C:\Program does not exist - every command
+        # in the skill fails, and nothing in the message points at the quoting.
+        cmds = [ln.strip() for ln in skill.splitlines()
+                if (".py" in ln and ("python" in ln.lower() or ln.startswith('"')))]
+        check("the skill has command lines to check", len(cmds) >= 3, cmds)
+        unquoted = [c for c in cmds if not c.startswith('"')]
+        check("every one quotes the interpreter, spaces and all", not unquoted, unquoted)
 
         section("escalation preferences: a switched-off reason is recorded, not sent")
         out = E.escalate("refund", summary="pide reembolso", contact="+5215551111111",

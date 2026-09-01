@@ -325,6 +325,16 @@ other_top_level: 3
               "--profile" not in cp.render_skill(None))
         check("it never tells the agent to run pythonw, which eats stdout",
               "pythonw" not in skill.lower())
+        # The interpreter on Windows is under "Program Files". An unquoted path splits at
+        # the space and the agent's shell reports that C:\Program does not exist - a skill
+        # whose every command line fails, with no hint as to why.
+        cmds = [ln.strip() for ln in skill.splitlines()
+                if "conversation_policy.py" in ln and not ln.startswith("#")]
+        check("the skill actually contains command lines", len(cmds) >= 3, cmds)
+        bad = [c for c in cmds if not c.startswith('"')]
+        check("every command line quotes the interpreter, spaces and all", not bad, bad)
+        check("and quotes the script path too",
+              all('" "' in c for c in cmds), cmds)
         check("it forbids the agent restarting its own gateway",
               "No reinicies el gateway" in skill)
         check("and it explains what actually happens instead",

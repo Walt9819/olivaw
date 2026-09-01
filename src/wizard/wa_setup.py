@@ -50,7 +50,7 @@ El puente responde `success: true` en cuanto entrega los bytes al socket. Eso **
 entrega. Después de enviar por WhatsApp, comprueba con el id que te devolvió el envío:
 
 ```bash
-{python} "{verify}" --ids <MESSAGE_ID> --json
+"{python}" "{verify}" --ids <MESSAGE_ID> --json
 ```
 
 Códigos de salida: `0` salió de verdad · `1` no salió · `2` no se pudo comprobar.
@@ -70,7 +70,7 @@ Si sale `unknown` o `failed`, **vuelve a enviar**. Si sale `unverifiable`, dilo 
 palabras: no inventes que se entregó. Para enviar y comprobar en un paso:
 
 ```bash
-{python} "{verify}" --chat <JID> --send "texto" --json
+"{python}" "{verify}" --chat <JID> --send "texto" --json
 ```
 
 ## 2. Cuando haga falta una persona, llama al script
@@ -79,7 +79,7 @@ No redactes tú el aviso ni elijas por dónde mandarlo. Hay un script fijo que s
 de escribirlo, mandarlo, reintentarlo y dejar constancia:
 
 ```bash
-{python} "{escalate}"{home_arg} --reason <MOTIVO> \
+"{python}" "{escalate}"{home_arg} --reason <MOTIVO> \
   --summary "una línea de qué pasa" \
   --contact "+52..." --contact-name "Nombre" \
   --excerpt "lo que escribió el cliente, textual" --json
@@ -113,14 +113,14 @@ Nunca inventes tiempos de respuesta que ella no te haya dado.
 Comprueba el estado con:
 
 ```bash
-{python} "{verify}" --health
+"{python}" "{verify}" --health
 ```
 
 Si dice `receipts=False`, el parche no está puesto (o `hermes update` lo quitó). Se
 vuelve a poner con:
 
 ```bash
-{python} "{patch}" ensure
+"{python}" "{patch}" ensure
 ```
 """
 
