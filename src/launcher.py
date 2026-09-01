@@ -55,6 +55,10 @@ try:
     from wizard import wa_setup as _wa
 except Exception:  # noqa: BLE001
     _wa = None
+try:
+    from wizard import context_policy as _ctxpol
+except Exception:  # noqa: BLE001
+    _ctxpol = None
 
 
 # The update source is PINNED into the distributed code. A mutable `repo` in updater.config.json
@@ -919,6 +923,78 @@ def _ensure_whatsapp():
         log(f"whatsapp: installed the client-handling skill at {skill.get('path')}")
 
 
+def _ensure_context_policy():
+    """Give every agent a conversation that ends, once.
+
+    Hermes starts a profile on "never restart the conversation, summarise at half the
+    window". Against the 1M window Olivaw advertises that is ~500k tokens of thread
+    resent on every turn, and it is why an agent created here could empty its owner's
+    quota in an afternoon while the owner's own agent - configured by hand, long ago -
+    ran all week on the same allowance.
+
+    Runs at startup, before the keep-alive loop, so a gateway restart here cannot race
+    the supervisor's own gateway supervision. Writes nothing to a profile that already
+    has a policy: "never restart" is a legitimate choice and must survive this.
+    """
+    if not _ctxpol:
+        return
+    try:
+        results = _ctxpol.ensure_all(agents=_load_extra_agents(), log=log)
+    except Exception as e:  # noqa: BLE001
+        log(f"context policy: check failed: {e}")
+        return
+    for r in results:
+        if r.get("changed"):
+            log(f"context policy: {r['profile']} had none - {r.get('summary', '')}")
+        elif r.get("reason") == "failed":
+            log(f"context policy: could not configure {r['profile']}: {r.get('detail', '')}")
+        if (r.get("skill") or {}).get("changed"):
+            log(f"context policy: taught {r['profile']} how to change it "
+                f"({r['skill'].get('path')})")
+
+
+def _activate_pending_policy(cfg, state):
+    """Restart a gateway whose conversation policy changed, once that agent is idle.
+
+    The agent can change its own policy, but it cannot restart its own gateway: doing so
+    kills the turn it is answering, so the owner's question disappears instead of being
+    answered. It leaves a note; this collects it at a moment when nothing is in flight -
+    the same rule the engine swap follows.
+
+    Bounded on purpose. A gateway that will not come back is retried three times, five
+    minutes apart, and then left alone: a restart attempted on every 15-second tick is the
+    exact shape of the respawn storm this supervisor already learned to avoid.
+    """
+    if not _ctxpol:
+        return
+    try:
+        waiting = _ctxpol.pending()
+    except Exception:  # noqa: BLE001
+        return
+    for key in waiting:
+        target = cfg if key == "default" else None
+        prof = None if key == "default" else key
+        if prof:
+            for slug, ent in state.get("extra", {}).items():
+                if slug == key or (ent.get("agent") or {}).get("profile") == key:
+                    target = ent.get("cfg")
+                    break
+        if target is not None and not is_idle(target):
+            continue          # mid-turn: try again on a later tick
+        try:
+            res = _ctxpol.activate(profile=prof, log=log)
+        except Exception as e:  # noqa: BLE001
+            res = {"ok": False, "detail": str(e)}
+        if res.get("ok"):
+            _ctxpol.clear_pending(prof)
+            log(f"context policy: {key} activated ("
+                f"{'gateway restarted' if res.get('restarted') else 'gateway was down'})")
+        else:
+            tries = _ctxpol.note_activation_failure(prof)
+            log(f"context policy: could not activate {key} "
+                f"(attempt {tries}/{_ctxpol.MAX_ACTIVATION_TRIES}): {res.get('detail', '')}")
+
+
 def main():
     cfg = load_config()
     log(f"supervisor up. install={INSTALL_DIR} version={read_version()} "
@@ -935,6 +1011,7 @@ def main():
     state = {"child": start_bridge(cfg), "launcher_changed": False, "extra": {}}
     _reconcile_extras(cfg, state)
     _ensure_whatsapp()
+    _ensure_context_policy()
     last_check = 0.0
     while True:
         try:
@@ -973,6 +1050,9 @@ def main():
                     log(f"engine change to {swap[1]} pending: waiting for the agent to go idle")
             # keep-alive + pick up newly-created / removed extra agents each loop
             _reconcile_extras(cfg, state)
+            # an agent that changed its own conversation policy is waiting for us to make
+            # it real; do it while it is not answering anyone
+            _activate_pending_policy(cfg, state)
             # periodic update check
             if time.time() - last_check >= poll:
                 last_check = time.time()

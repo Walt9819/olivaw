@@ -17,7 +17,7 @@ import json
 import os
 import shutil
 
-from . import hermes_ctl, usecases
+from . import context_policy, hermes_ctl, usecases
 from .telegram_setup import clean_token
 
 # Stable best-practice sections (kept in sync with templates/CLAUDE.md.template) so the
@@ -313,6 +313,12 @@ def apply_hermes(port, token, owner_id, tavily="", hermes=None, gateway_action="
          hermes_ctl.config_set("model.base_url", "http://127.0.0.1:%d/v1" % port, hermes, profile))
     step("model.context_length",
          hermes_ctl.config_set("model.context_length", "1000000", hermes, profile))
+    # How long the conversation lives. Hermes ships a new profile with "never restart" and
+    # "summarise at half the window" — against the 1M we just advertised, that is half a
+    # million tokens of thread dragged into every single turn. An agent set up without this
+    # step works perfectly and empties its owner's quota in days. See context_policy.py.
+    step("duración de la conversación",
+         context_policy.apply(context_policy.DEFAULTS, hermes, profile))
     env_updates = {"OPENAI_API_KEY": "sk-local-not-used", "HERMES_YOLO_MODE": "1"}
     token = clean_token(token)[0] if token else ""   # see the note above
     if token:

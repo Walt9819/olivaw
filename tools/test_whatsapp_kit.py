@@ -415,13 +415,17 @@ def test_escalation():
         section("escalate_owner: the command line the skill documents")
         env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
         script = os.path.join(SRC, "tools", "escalate_owner.py")
-        lr = subprocess.run([sys.executable, script, "--list-reasons"],
-                            capture_output=True, text=True, env=env, timeout=60)
+        # Decode the child as UTF-8 explicitly. text=True alone decodes with the PARENT's
+        # locale, which is cp1252 on a Spanish Windows - so the reader thread died on the
+        # first emoji in the reason table and handed back stdout=None, with returncode 0.
+        # The assertion below then failed on a TypeError that said nothing about encodings.
+        utf8 = {"capture_output": True, "text": True, "env": env, "timeout": 60,
+                "encoding": "utf-8", "errors": "replace"}
+        lr = subprocess.run([sys.executable, script, "--list-reasons"], **utf8)
         check("--list-reasons works on its own", lr.returncode == 0, lr.stderr[-300:])
         check("it lists every reason",
               all(k in lr.stdout for k in E.REASONS), lr.stdout)
-        missing = subprocess.run([sys.executable, script, "--summary", "x"],
-                                 capture_output=True, text=True, env=env, timeout=60)
+        missing = subprocess.run([sys.executable, script, "--summary", "x"], **utf8)
         check("a call with no --reason is still refused", missing.returncode == 2)
     finally:
         srv.shutdown()

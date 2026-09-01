@@ -907,6 +907,37 @@
       '<p class="lead">Tu agente ya vive en Telegram. Aquí puedes darle más capacidades ' +
       '(imágenes, video), conectar herramientas externas, y sumar más canales. Todo es opcional.</p>' +
 
+      // Conversation lifetime. First, and open by default, because it is the single
+      // biggest driver of what the agent costs to run — and Hermes' own default is the
+      // expensive one: never restart, summarise at half a million tokens.
+      '<details open><summary>⏱️ Duración de la conversación <span class="chip">gasto</span></summary>' +
+      '<p class="small muted">Cada mensaje que le mandas arrastra <b>toda la conversación anterior</b>. ' +
+      'Si nunca empieza de cero, cada respuesta cuesta más que la anterior y te quedas sin saldo en ' +
+      'días. Aquí decides cada cuánto <b>empieza una conversación nueva</b> y cuándo <b>resume</b> ' +
+      'lo hablado para seguir sin cargarlo todo.</p>' +
+      '<div id="polWarn"></div>' +
+      '<div id="polPresets"></div>' +
+      '<div class="callout small" id="polSummary" style="margin-top:10px"></div>' +
+      '<details style="margin-top:10px"><summary>Ajustes finos</summary>' +
+      '<label class="field" style="margin-top:8px"><span class="lab">Cuándo empieza de cero</span>' +
+      '<select id="polMode">' +
+      '<option value="both">Por inactividad y cada madrugada</option>' +
+      '<option value="idle">Sólo por inactividad</option>' +
+      '<option value="daily">Sólo cada madrugada</option>' +
+      '<option value="none">Nunca (sólo resume)</option></select></label>' +
+      '<label class="field"><span class="lab">Minutos sin hablar antes de empezar de cero ' +
+      '<span class="hint">150 = 2½ h</span></span>' +
+      '<input type="number" id="polIdle" min="15" max="10080" step="15"></label>' +
+      '<label class="field"><span class="lab">Hora del reinicio diario <span class="hint">0–23</span></span>' +
+      '<input type="number" id="polHour" min="0" max="23" step="1"></label>' +
+      '<label class="field"><span class="lab">Resumir al llegar al … % de su memoria ' +
+      '<span class="hint">más bajo = más barato</span></span>' +
+      '<input type="number" id="polPct" min="3" max="90" step="1"></label>' +
+      '</details>' +
+      '<div class="row" style="margin-top:10px">' +
+      '<button class="btn btn-primary btn-sm" id="polSave">Guardar duración</button></div>' +
+      chLine("polPill") + '</details>' +
+
       // Conversation memory / history (resume past conversations)
       '<details open><summary>🧠 Memoria de conversaciones (recordar y retomar)</summary>' +
       '<p class="small muted">Deja que tu agente <b>recuerde y retome</b> conversaciones pasadas: ' +
@@ -1492,6 +1523,120 @@
     };
 
     // ── when should a WhatsApp conversation reach the owner? ──────────────────
+    // ── conversation lifetime ──────────────────────────────────────────────
+    // Server-owned like the escalation panel, and for a stronger reason: the agent itself
+    // can change this (tools/conversation_policy.py), so a value cached in the browser
+    // would quietly overwrite a choice the agent made on the owner's behalf.
+    var polPill = el("polPill");
+    var POL = { policy: {}, defaults: {}, presets: [], preset: "", ctx: 0,
+                configured: false, loaded: false };
+
+    // Mirrors context_policy.trigger_tokens() so the summary shows the size Hermes will
+    // ACTUALLY use: it never triggers under 64k tokens whatever the percentage says, and
+    // raises the trigger to 75% for windows under 512k.
+    function polTokens(pct, ctx) {
+      if (!ctx || ctx <= 0) return 0;
+      var p = ctx < 512000 ? Math.max(pct, 0.75) : pct;
+      var v = Math.max(Math.floor(ctx * p), 64000);
+      if (v >= ctx) return Math.max(1, Math.min(Math.floor(ctx * 0.85), ctx - 1));
+      return v;
+    }
+    function polSay(p) {
+      var mins = p.idle_minutes || 0, first;
+      var when = mins < 60 ? (mins + " min")
+        : (String(Math.round(mins / 6) / 10).replace(/\.0$/, "") + " h");
+      var hh = ("0" + (p.at_hour || 0)).slice(-2) + ":00";
+      if (p.mode === "both") first = "Empieza de cero tras " + when + " sin hablar, y cada día a las " + hh;
+      else if (p.mode === "idle") first = "Empieza de cero tras " + when + " sin hablar";
+      else if (p.mode === "daily") first = "Empieza de cero cada día a las " + hh;
+      else first = "No empieza de cero nunca por su cuenta";
+      if (!p.compact) return first + ". No resume: la conversación crece sin límite.";
+      var t = polTokens(p.compact_at || 0.1, POL.ctx);
+      return first + ". Resume al llegar a " +
+        (t ? ("unos " + t.toLocaleString("es") + " tokens") :
+             (Math.round((p.compact_at || 0) * 100) + "% de su memoria")) + ".";
+    }
+    function polPresetRow(pr) {
+      return '<label class="row" style="gap:8px;align-items:flex-start;padding:6px 0;' +
+        'border-bottom:1px solid var(--line-2)">' +
+        '<input type="radio" name="polpreset" data-pol="' + esc(pr.id) + '"' +
+        (POL.preset === pr.id ? " checked" : "") + '>' +
+        '<span class="grow"><b class="small">' + esc(pr.label) + '</b><br>' +
+        '<span class="muted small">' + esc(pr.note) + '</span></span></label>';
+    }
+    function paintPol() {
+      if (!POL.loaded) return;
+      var box = el("polPresets"), warn = el("polWarn");
+      if (warn) {
+        warn.innerHTML = POL.configured ? "" :
+          '<div class="callout small">Este agente todavía usa los valores de fábrica de ' +
+          'Hermes: <b>no empieza de cero nunca</b> y sólo resume al medio millón de tokens. ' +
+          'Elige uno de abajo y guarda.</div>';
+      }
+      if (box) {
+        box.innerHTML = POL.presets.map(polPresetRow).join("") +
+          (POL.preset === "personalizado" ?
+            '<div class="small muted" style="padding:6px 0">Ahora mismo tienes una ' +
+            'combinación propia (ver «Ajustes finos»).</div>' : "");
+        Array.prototype.forEach.call(box.querySelectorAll("[data-pol]"), function (r) {
+          r.onchange = function () {
+            POL.preset = r.getAttribute("data-pol");
+            var found = null;
+            POL.presets.forEach(function (p) { if (p.id === POL.preset) found = p; });
+            if (found) POL.policy = polMerge(found.values);
+            paintPol();
+          };
+        });
+      }
+      [["polMode", "mode"], ["polIdle", "idle_minutes"], ["polHour", "at_hour"]]
+        .forEach(function (pr) { var i = el(pr[0]); if (i) i.value = POL.policy[pr[1]]; });
+      if (el("polPct")) el("polPct").value = Math.round((POL.policy.compact_at || 0) * 100);
+      var s = el("polSummary");
+      if (s) s.innerHTML = "📋 " + esc(polSay(POL.policy));
+    }
+    // A preset names only what it changes, and the rest comes from Olivaw's defaults —
+    // NOT from whatever is configured now. That is what context_policy.preset_policy()
+    // does on the server and in the CLI, and this preview has to agree with it: a panel
+    // that shows one thing and saves another is worse than no preview.
+    function polMerge(values) {
+      var out = {}, k;
+      for (k in POL.defaults) if (POL.defaults.hasOwnProperty(k)) out[k] = POL.defaults[k];
+      for (k in (values || {})) if (values.hasOwnProperty(k)) out[k] = values[k];
+      return out;
+    }
+    function polRead() {
+      var m = el("polMode"), i = el("polIdle"), h = el("polHour"), p = el("polPct");
+      if (m) POL.policy.mode = m.value;
+      if (i) POL.policy.idle_minutes = parseInt(i.value, 10) || POL.policy.idle_minutes;
+      if (h) POL.policy.at_hour = parseInt(h.value, 10) || 0;
+      if (p) POL.policy.compact_at = (parseFloat(p.value) || 10) / 100;
+      POL.preset = "personalizado";
+    }
+    ["polMode", "polIdle", "polHour", "polPct"].forEach(function (id) {
+      var i = el(id);
+      if (i) i.onchange = function () { polRead(); var s = el("polSummary");
+        if (s) s.innerHTML = "📋 " + esc(polSay(POL.policy)); };
+    });
+    function loadPol() {
+      api("policy/get", { profile: prof }).then(function (r) {
+        if (!r || !r.ok) return;
+        POL.policy = r.policy || {}; POL.presets = r.presets || [];
+        POL.defaults = r.defaults || {};
+        POL.preset = r.preset || ""; POL.ctx = r.context_length || 0;
+        POL.configured = !!r.configured; POL.loaded = true;
+        paintPol();
+      });
+    }
+    if (el("polSave")) el("polSave").onclick = function () {
+      polPill.style.display = "inline-flex";
+      // The gateway holds this setting in memory from boot, so saving restarts it — which
+      // drops whatever turn is in flight. Say so before doing it, not after.
+      runTest(this, polPill, function () {
+        return api("policy/save", { profile: prof, preset: POL.preset, policy: POL.policy });
+      }, "Guardando y reiniciando…").then(function () { loadPol(); });
+    };
+    loadPol();
+
     // Server-owned state, deliberately: the escalation script reads the same file, so the
     // browser must not keep its own idea of what is switched on.
     var escPill = el("escPill");

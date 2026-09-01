@@ -42,6 +42,16 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
+# Everything this prints is Spanish with emoji, and the agent reads it back through a pipe.
+# A piped stdout on Windows defaults to cp1252, where "dueño" alone raises
+# UnicodeEncodeError - so `--list-reasons` would hand the agent a traceback instead of its
+# escalation reasons. PYTHONIOENCODING only helps when someone remembered to set it.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):  # pragma: no cover
+        pass
+
 TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 MAX_TELEGRAM = 4096
 EXCERPT_LIMIT = 700

@@ -94,7 +94,7 @@ def main():
     server = io.open(os.path.join(ROOT, "src", "wizard", "wizard_server.py"),
                      encoding="utf-8").read()
     called = sorted(set(re.findall(r'api\("channel/([a-z0-9-]+)"', src)))
-    plain = sorted(set(re.findall(r'api\("((?:workspace|telegram)/[a-z-]+)"', src)))
+    plain = sorted(set(re.findall(r'api\("((?:workspace|telegram|policy)/[a-z-]+)"', src)))
     routed = set(re.findall(r'route == "([a-z0-9/_-]+)"', server))
     missing_routes = [c for c in plain if c not in routed]
     check("every workspace/telegram route the UI calls exists on the server",
@@ -105,6 +105,24 @@ def main():
           not unknown, "unhandled: " + ", ".join(unknown))
     for ep in ("escalation-get", "escalation-save"):
         check("%s is both called and handled" % ep, ep in called and ep in handled)
+    # The conversation-lifetime panel is the one whose absence is silent AND expensive: a
+    # dead save button leaves the agent on Hermes' "never restart" default, and the owner
+    # only finds out from the bill.
+    for ep in ("policy/get", "policy/save"):
+        check("%s is both called and routed" % ep,
+              ('api("%s"' % ep) in src and ep in routed, ep)
+    # The preview and the save must agree on what a preset means. The server builds one
+    # from Olivaw's defaults plus the preset's own keys (context_policy.preset_policy);
+    # a browser that instead layered it over the CURRENT policy would show "empieza de
+    # cero cada 2.5 h" and then save "nunca", because the recommended preset changes
+    # nothing by name.
+    merge = re.search(r"function polMerge\(values\)\s*\{(.*?)\n    \}", src, re.S)
+    check("polMerge builds a preset from the defaults, as the server does",
+          bool(merge) and "POL.defaults" in merge.group(1)
+          and "POL.policy" not in merge.group(1),
+          merge.group(1) if merge else "polMerge not found")
+    check("and the server actually sends those defaults",
+          '"defaults": context_policy.DEFAULTS' in server)
 
     print("\n=== the panel cannot promise what Telegram cannot deliver ===")
     check("the save button posts enabled/reasons/custom together",

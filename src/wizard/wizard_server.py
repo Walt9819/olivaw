@@ -28,16 +28,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 # allow running as a script (python src/wizard/wizard_server.py) or as a module
 if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from wizard import (agents_registry, channels, checks, config_writer, hermes_ctl,
-                        obsidian, proposals, providers, rescue, selfcare, telegram_health,
-                        telegram_setup, usecases)
+    from wizard import (agents_registry, channels, checks, config_writer, context_policy,
+                        hermes_ctl, obsidian, proposals, providers, rescue, selfcare,
+                        telegram_health, telegram_setup, usecases)
     from wizard import workspace as wsdir   # aliased: `workspace` is a local
                                             # variable name elsewhere in this file
     from wizard.procutil import http_json, which
 else:
-    from . import (agents_registry, channels, checks, config_writer, hermes_ctl, obsidian,
-                   proposals, providers, rescue, selfcare, telegram_health, telegram_setup,
-                   usecases)
+    from . import (agents_registry, channels, checks, config_writer, context_policy,
+                   hermes_ctl, obsidian, proposals, providers, rescue, selfcare,
+                   telegram_health, telegram_setup, usecases)
     from . import workspace as wsdir        # aliased: see above
     from .procutil import http_json, which
 
@@ -586,6 +586,14 @@ class Handler(BaseHTTPRequestHandler):
         if route == "workspace/pick":
             return wsdir.pick(body.get("start", ""))
 
+        # How long a conversation lives before it is summarised or started over. The single
+        # biggest driver of what an agent costs to run, and Hermes' own default is the
+        # expensive one, so it is a visible setting rather than a buried preference.
+        if route == "policy/get":
+            return self._policy_get(body.get("profile") or None)
+        if route == "policy/save":
+            return self._policy_save(body)
+
         if route == "apply":
             return self._apply(body)
 
@@ -786,6 +794,39 @@ class Handler(BaseHTTPRequestHandler):
         if sub == "mcp-add":
             return channels.mcp_add(body.get("name", ""), body.get("url", ""), profile)
         return {"ok": False, "detail": "canal desconocido"}
+
+    # ── conversation lifetime ───────────────────────────────────────────────
+    def _policy_get(self, profile):
+        st = context_policy.read(profile=profile)
+        return {"ok": True, "presets": context_policy.PRESETS,
+                "limits": {k: list(v) for k, v in context_policy.LIMITS.items()},
+                "modes": list(context_policy.MODES),
+                "defaults": context_policy.DEFAULTS, **st}
+
+    def _policy_save(self, body):
+        profile = body.get("profile") or None
+        preset = body.get("preset") or ""
+        if preset and preset != "personalizado":
+            wanted = context_policy.preset_policy(preset)
+        else:
+            wanted = dict(context_policy.read(profile=profile)["policy"])
+            wanted.update({k: v for k, v in (body.get("policy") or {}).items()
+                           if k in context_policy.DEFAULTS})
+        res = context_policy.apply(wanted, profile=profile)
+        # Written but not in effect is the failure mode that looks like success: the gateway
+        # reads session_reset once, at boot, so without this the panel says "guardado" and
+        # the agent goes on with the old policy until something else restarts it.
+        activation = None
+        if res["ok"] and res.get("written"):
+            activation = context_policy.activate(profile=profile)
+            if not activation.get("restarted"):
+                res["detail"] += " " + activation.get("detail", "")
+        # Report the file as it now reads, without letting a successful re-read paper over a
+        # failed write: `ok` stays the write's own verdict.
+        out = dict(context_policy.read(profile=profile))
+        out.update(res)
+        out["activation"] = activation
+        return out
 
     def _agent_action(self, slug, action):
         hp = which("hermes")
