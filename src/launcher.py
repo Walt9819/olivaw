@@ -961,6 +961,30 @@ def _ensure_context_policy():
                 f"({r['skill'].get('path')})")
 
 
+def _skill_needs_reload(profile, what):
+    """A skill written to disk is NOT a skill the running agent can see.
+
+    Hermes builds its skill index into the system prompt and caches it in-process, keyed on
+    the skills directory and the toolset - with no mtime and no TTL. A gateway that was
+    already up when the skill landed keeps the index it built at boot, for as long as it
+    runs. The file is there, `skills_list` would find it, and the model is never told.
+
+    That is what made "the new skills do not work" true while every check passed: a fresh
+    Python process reading the same directory sees them immediately, which is exactly what
+    a verification script is. Only the long-lived gateway is stale.
+
+    So the same handoff the conversation policy uses: leave a note, and let the supervisor
+    restart that profile's gateway once the agent is idle.
+    """
+    if not _ctxpol:
+        return
+    try:
+        _ctxpol.mark_pending(None if profile == "default" else profile)
+        log(f"{what}: {profile} needs a gateway restart to see it; queued for when idle")
+    except Exception as e:  # noqa: BLE001
+        log(f"{what}: could not queue a reload for {profile}: {e}")
+
+
 def _ensure_browser_skill():
     """Tell every agent it can browse. Never changes which browser it drives.
 
@@ -980,6 +1004,7 @@ def _ensure_browser_skill():
     for r in results:
         if r.get("changed"):
             log(f"browser: taught {r['profile']} that it can browse ({r.get('path')})")
+            _skill_needs_reload(r["profile"], "browser")
         elif not r.get("ok"):
             log(f"browser: could not teach {r['profile']}: {r.get('detail', '')}")
 
@@ -1003,6 +1028,7 @@ def _ensure_image_skill():
     for r in results:
         if r.get("changed"):
             log(f"images: taught {r['profile']} the free Gemini route ({r.get('path')})")
+            _skill_needs_reload(r["profile"], "images")
         elif r.get("reason") == "codex-builtin":
             log(f"images: {r['profile']} runs on Codex - it generates images itself")
         elif not r.get("ok"):

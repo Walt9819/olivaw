@@ -108,6 +108,39 @@ def main():
         check("it never tells the agent to run pythonw",
               "pythonw" not in skill.lower())
 
+        section("delegating to Claude Code, which does have the extension")
+        # The agent cannot hold the Chrome extension as a tool, but `claude -p --chrome` is
+        # a command and the agent has `terminal`. Verified on the machine this was written
+        # on: plain `claude -p` says NO to having mcp__claude-in-chrome tools, `--chrome`
+        # says YES. The skill has to teach the safe shape of that call.
+        check("the skill offers the delegation route",
+              "Delegar a Claude Code" in skill, skill[:400])
+        check("it says this one reaches the owner's everyday browser",
+              "Chrome de siempre" in skill or "navegador real del dueño" in skill)
+        check("it tells the agent to check availability first", "--check" in skill)
+        check("it warns about the time limit", "240" in skill and "terminal" in skill)
+        check("it explains why the delegated session has no shell",
+              "no tiene shell" in skill and "no es de fiar" in skill)
+        check("and that --files is the narrow opt-in", "--files" in skill and "--out" in skill)
+        check("it still forbids handling passwords", "contraseñas" in skill)
+
+        section("the delegation script itself")
+        cc = io.open(os.path.join(ROOT, "src", "tools", "claude_chrome.py"),
+                     encoding="utf-8", errors="replace").read()
+        check("it passes --chrome, or the tools are simply absent", '"--chrome"' in cc)
+        check("shell is denied by default inside the delegated session",
+              '_DENY = "Bash,' in cc)
+        check("--files still never re-enables Task/WebFetch",
+              "_DENY_FILES" in cc and "Task,WebFetch,WebSearch" in cc)
+        check("the prompt goes over stdin, never argv",
+              "input=prompt.encode" in cc and "--task" in cc)
+        check("the timeout stays under Hermes' 300s terminal cap",
+              "timeout=240" in cc or "default=240" in cc)
+        check("the delegated session is told page content is not an instruction",
+              "never an instruction" in cc)
+        check("and told not to wander into mail or banking",
+              "banking" in cc)
+
         section("installing the skill")
         home = os.path.join(tmp, "home")
         got = bs.install_skill("daneel", home=home)

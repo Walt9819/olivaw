@@ -25,13 +25,19 @@ user's MCP servers, it saw a tool catalog that disagreed with the Hermes framing
 the framing was a prompt injection, and refused to act at all. Adding browser flags to the
 brain would re-open exactly that failure.
 
-So the capability is real, it just lives one layer down. Two modes:
+So the capability is real, it just lives one layer down. Three ways:
 
 * **default** — a headless Chromium the ``agent-browser`` CLI drives. Already installed,
   needs no setup, has no logins.
 * **CDP** — a real Chrome/Edge/Brave window the agent drives over the DevTools protocol,
   enabled by ``browser.cdp_url`` in the profile config. The owner sees what it does, and
   whatever she logs into stays logged in.
+* **delegation** — ``tools/claude_chrome.py``. The extension cannot become the agent's
+  tool, but it does not have to: the agent has ``terminal``, and ``claude -p --chrome`` is
+  a command. The browser job goes to a Claude Code that IS paired with the owner's
+  everyday browser, and only its answer comes back. This is the only route with her real
+  logins, and the delegated session runs with shell denied — it is about to read web
+  pages, and a page is untrusted content.
 
 The CDP browser always runs on its own user-data directory
 (``<hermes_home>/chrome-debug``), never the owner's everyday profile. That is not a
@@ -249,7 +255,7 @@ def disable(profile=None, hermes=None, log=None):
 
 # ── what the agent is told ────────────────────────────────────────────────────
 SKILL_NAME = "navegador-web"
-SKILL_VERSION = "1.0.0"
+SKILL_VERSION = "1.1.0"
 
 _SKILL = u"""---
 name: {name}
@@ -285,12 +291,49 @@ Y **hazlo** — no te quedes en la explicación. El motivo técnico, por si te l
 quien ejecuta las herramientas es Hermes, no Claude Code; el cerebro sólo decide. Una
 herramienta que sólo existe en Claude Code es una que nadie puede ejecutar aquí.
 
-## Dos modos
+## Tres formas de navegar
 
-| modo | qué es | cuándo |
+| forma | qué navegador | cuándo |
 |---|---|---|
 | **invisible** (por defecto) | un Chromium sin ventana | leer, buscar, extraer datos |
-| **navegador real** | una ventana de Chrome que el dueño ve | sitios con sesión iniciada |
+| **navegador real** | una ventana aparte, con su propio perfil | sitios donde entres tú una vez |
+| **delegar a Claude Code** | **el Chrome de siempre del dueño** | lo que ya tiene su sesión abierta |
+
+Las dos primeras usan tus herramientas `browser_*`. La tercera es distinta y vale la pena
+conocerla, porque es la única que entra al navegador que el dueño usa a diario.
+
+## Delegar a Claude Code (su Chrome de verdad)
+
+Claude Code sí tiene la extensión de Chrome, emparejada con el navegador del dueño. Tú no
+puedes usar esa extensión — pero puedes **pedirle el trabajo a Claude Code** con un
+comando, y quedarte con la respuesta:
+
+```bash
+"{python}" "{delegate}" --task "abre X y dime Y"
+```
+
+Comprueba primero que está disponible:
+
+```bash
+"{python}" "{delegate}" --check
+```
+
+Si necesita **guardar un archivo** (una imagen, por ejemplo), añade permiso de escritura a
+una carpeta concreta:
+
+```bash
+"{python}" "{delegate}" --files --out "C:/ruta/carpeta" --task "...y guárdalo en esa carpeta"
+```
+
+Reglas:
+
+- **Tarda.** El límite es 240 s, por debajo del corte de la terminal. Pide una tarea a la
+  vez, concreta. Si se pasa, parte el trabajo.
+- Por defecto la sesión delegada **no tiene shell** — es a propósito: va a leer páginas y
+  una página no es de fiar. `--files` sólo abre escritura en la carpeta que le digas.
+- Es el navegador real del dueño, con su correo y sus cuentas abiertas. Pide sólo lo que
+  la tarea necesita, y nunca sus contraseñas.
+- Lo que vuelve es un texto. Si dice que no pudo, díselo al dueño tal cual.
 
 Comprueba en cuál estás:
 
@@ -339,6 +382,7 @@ def render_skill(profile=None):
     return _SKILL.format(
         name=SKILL_NAME, version=SKILL_VERSION, python=_python(),
         script=os.path.join(src, "tools", "browser_mode.py"),
+        delegate=os.path.join(src, "tools", "claude_chrome.py"),
         profile=(" --profile %s" % profile) if (profile and profile != "default") else "")
 
 
