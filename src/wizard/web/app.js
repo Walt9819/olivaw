@@ -938,6 +938,21 @@
       '<button class="btn btn-primary btn-sm" id="polSave">Guardar duración</button></div>' +
       chLine("polPill") + '</details>' +
 
+      // Which browser the agent drives. It ALWAYS has browser tools; this only decides
+      // whether they move an invisible Chromium or a window the owner can watch.
+      '<details><summary>🌐 Navegador</summary>' +
+      '<p class="small muted">Tu agente ya sabe navegar por internet — abrir páginas, leer, ' +
+      'hacer clic, llenar formularios. Aquí eliges <b>en qué navegador</b>.</p>' +
+      '<div id="brwBox" class="small muted">Comprobando…</div>' +
+      '<div class="row" style="margin-top:10px">' +
+      '<button class="btn btn-primary btn-sm" id="brwOn">Usar un navegador real</button>' +
+      '<button class="btn btn-soft btn-sm" id="brwOff">Volver al invisible</button></div>' +
+      '<p class="small muted" style="margin-top:8px">El navegador real se abre en tu ' +
+      'pantalla con un <b>perfil aparte</b> del Chrome que usas a diario: entra una vez a ' +
+      'lo que necesite (tu correo, un panel) y queda guardado ahí, sin tocar tus sesiones ' +
+      'normales. Úsalo sólo para sitios donde te fíes de lo que el agente haga.</p>' +
+      chLine("brwPill") + '</details>' +
+
       // Conversation memory / history (resume past conversations)
       '<details open><summary>🧠 Memoria de conversaciones (recordar y retomar)</summary>' +
       '<p class="small muted">Deja que tu agente <b>recuerde y retome</b> conversaciones pasadas: ' +
@@ -1523,6 +1538,45 @@
     };
 
     // ── when should a WhatsApp conversation reach the owner? ──────────────────
+    // ── which browser the agent drives ─────────────────────────────────────
+    var brwPill = el("brwPill");
+    function paintBrw(st) {
+      var box = el("brwBox");
+      if (!box) return;
+      if (!st || !st.ok) { box.innerHTML = "No pude comprobarlo."; return; }
+      if (st.mode === "cdp" && st.connected) {
+        box.innerHTML = '✅ <b>Navegador real</b> — ' + esc(st.browser || "Chrome") +
+          '. Tu agente maneja esa ventana; lo que abras ahí lo ve él.' +
+          '<br><span class="muted">Perfil: ' + esc(st.data_dir || "") + '</span>';
+      } else if (st.mode === "cdp") {
+        box.innerHTML = '⚠️ Está configurado en navegador real, pero la ventana ' +
+          '<b>ya no está abierta</b>. Pulsa «Usar un navegador real» para reabrirla.';
+      } else if (!st.browser_found) {
+        box.innerHTML = '🔍 Ahora usa un <b>navegador invisible</b>. No encontré Chrome, ' +
+          'Edge ni Brave en este equipo, así que el modo real no está disponible.';
+      } else {
+        box.innerHTML = '🔍 Ahora usa un <b>navegador invisible</b>: puede leer y buscar, ' +
+          'pero no tiene ninguna sesión iniciada. Para sitios donde haga falta entrar con ' +
+          'tu cuenta, usa el navegador real.';
+      }
+    }
+    function loadBrw() {
+      api("browser/status", { profile: prof }).then(paintBrw);
+    }
+    if (el("brwOn")) el("brwOn").onclick = function () {
+      brwPill.style.display = "inline-flex";
+      runTest(this, brwPill, function () {
+        return api("browser/enable", { profile: prof });
+      }, "Abriendo…").then(loadBrw);
+    };
+    if (el("brwOff")) el("brwOff").onclick = function () {
+      brwPill.style.display = "inline-flex";
+      runTest(this, brwPill, function () {
+        return api("browser/disable", { profile: prof });
+      }, "Cambiando…").then(loadBrw);
+    };
+    loadBrw();
+
     // ── conversation lifetime ──────────────────────────────────────────────
     // Server-owned like the escalation panel, and for a stronger reason: the agent itself
     // can change this (tools/conversation_policy.py), so a value cached in the browser

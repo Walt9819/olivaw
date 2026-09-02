@@ -28,16 +28,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 # allow running as a script (python src/wizard/wizard_server.py) or as a module
 if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from wizard import (agents_registry, channels, checks, config_writer, context_policy,
-                        hermes_ctl, obsidian, proposals, providers, rescue, selfcare,
-                        telegram_health, telegram_setup, usecases)
+    from wizard import (agents_registry, browser_setup, channels, checks, config_writer,
+                        context_policy, hermes_ctl, obsidian, proposals, providers, rescue,
+                        selfcare, telegram_health, telegram_setup, usecases)
     from wizard import workspace as wsdir   # aliased: `workspace` is a local
                                             # variable name elsewhere in this file
     from wizard.procutil import http_json, which
 else:
-    from . import (agents_registry, channels, checks, config_writer, context_policy,
-                   hermes_ctl, obsidian, proposals, providers, rescue, selfcare,
-                   telegram_health, telegram_setup, usecases)
+    from . import (agents_registry, browser_setup, channels, checks, config_writer,
+                   context_policy, hermes_ctl, obsidian, proposals, providers, rescue,
+                   selfcare, telegram_health, telegram_setup, usecases)
     from . import workspace as wsdir        # aliased: see above
     from .procutil import http_json, which
 
@@ -593,6 +593,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._policy_get(body.get("profile") or None)
         if route == "policy/save":
             return self._policy_save(body)
+
+        # Which browser the agent drives. Turning this on opens a real window on the
+        # owner's screen, so it is a button she presses, never something we decide.
+        if route == "browser/status":
+            return browser_setup.status(body.get("profile") or None)
+        if route == "browser/enable":
+            return browser_setup.enable(body.get("profile") or None)
+        if route == "browser/disable":
+            return browser_setup.disable(body.get("profile") or None)
 
         if route == "apply":
             return self._apply(body)

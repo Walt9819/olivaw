@@ -59,6 +59,10 @@ try:
     from wizard import context_policy as _ctxpol
 except Exception:  # noqa: BLE001
     _ctxpol = None
+try:
+    from wizard import browser_setup as _browser
+except Exception:  # noqa: BLE001
+    _browser = None
 
 
 # The update source is PINNED into the distributed code. A mutable `repo` in updater.config.json
@@ -953,6 +957,29 @@ def _ensure_context_policy():
                 f"({r['skill'].get('path')})")
 
 
+def _ensure_browser_skill():
+    """Tell every agent it can browse. Never changes which browser it drives.
+
+    An agent that believes it cannot browse does not browse - and this one told its owner
+    exactly that, because he asked about Claude Code's Chrome extension and it answered
+    about the extension instead of about itself. The twelve browser tools were in its
+    catalog the whole time. Installing the skill is the fix; switching to a visible browser
+    opens a window on someone's screen and stays a deliberate choice in the wizard.
+    """
+    if not _browser:
+        return
+    try:
+        results = _browser.ensure_all(agents=_load_extra_agents(), log=log)
+    except Exception as e:  # noqa: BLE001
+        log(f"browser: skill check failed: {e}")
+        return
+    for r in results:
+        if r.get("changed"):
+            log(f"browser: taught {r['profile']} that it can browse ({r.get('path')})")
+        elif not r.get("ok"):
+            log(f"browser: could not teach {r['profile']}: {r.get('detail', '')}")
+
+
 def _activate_pending_policy(cfg, state):
     """Restart a gateway whose conversation policy changed, once that agent is idle.
 
@@ -1012,6 +1039,7 @@ def main():
     _reconcile_extras(cfg, state)
     _ensure_whatsapp()
     _ensure_context_policy()
+    _ensure_browser_skill()
     last_check = 0.0
     while True:
         try:
