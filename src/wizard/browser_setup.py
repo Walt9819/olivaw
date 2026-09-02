@@ -329,8 +329,11 @@ Reglas:
 
 - **Tarda.** El límite es 240 s, por debajo del corte de la terminal. Pide una tarea a la
   vez, concreta. Si se pasa, parte el trabajo.
-- Por defecto la sesión delegada **no tiene shell** — es a propósito: va a leer páginas y
-  una página no es de fiar. `--files` sólo abre escritura en la carpeta que le digas.
+- Por defecto la sesión delegada **no tiene shell ni escritura** — es a propósito: va a
+  leer páginas, y una página no es de fiar.
+- `--files` le devuelve **escritura y shell**, con `--add-dir` apuntando a esa carpeta.
+  Úsalo **sólo** cuando la tarea tenga que producir un archivo, y dile en el prompt
+  exactamente qué archivo y dónde. Si sólo necesitas mirar o leer algo, no lo uses.
 - Es el navegador real del dueño, con su correo y sus cuentas abiertas. Pide sólo lo que
   la tarea necesita, y nunca sus contraseñas.
 - Lo que vuelve es un texto. Si dice que no pudo, díselo al dueño tal cual.

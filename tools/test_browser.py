@@ -121,7 +121,15 @@ def main():
         check("it warns about the time limit", "240" in skill and "terminal" in skill)
         check("it explains why the delegated session has no shell",
               "no tiene shell" in skill and "no es de fiar" in skill)
-        check("and that --files is the narrow opt-in", "--files" in skill and "--out" in skill)
+        check("and that --files is the opt-in", "--files" in skill and "--out" in skill)
+        # --files re-enables Bash as well as Write (a file-producing skill needs both), so
+        # the skill must not describe it as "writes only" — an agent told it is narrower
+        # than it is will reach for it casually.
+        check("--files is described honestly as returning shell too",
+              "escritura y shell" in skill, skill)
+        check("and told to use it only when a file must be produced",
+              "sólo** cuando la tarea tenga que producir un archivo" in skill
+              or "sólo cuando la tarea tenga que producir un archivo" in skill.replace("**", ""))
         check("it still forbids handling passwords", "contraseñas" in skill)
 
         section("the delegation script itself")
@@ -132,6 +140,8 @@ def main():
               '_DENY = "Bash,' in cc)
         check("--files still never re-enables Task/WebFetch",
               "_DENY_FILES" in cc and "Task,WebFetch,WebSearch" in cc)
+        check("the script says out loud that --files returns shell, not just writes",
+              "shell AND writes come back" in cc, cc[:0] or "comment missing")
         check("the prompt goes over stdin, never argv",
               "input=prompt.encode" in cc and "--task" in cc)
         check("the timeout stays under Hermes' 300s terminal cap",
