@@ -151,6 +151,28 @@ def main():
         check("and told not to wander into mail or banking",
               "banking" in cc)
 
+        section("why the debug window starts logged out, and what the panel says")
+        # Chrome 136 ignores --remote-debugging-port on the default user-data-dir, and a
+        # non-standard dir uses a DIFFERENT encryption key on purpose. So the window is
+        # blank by design and copying a profile in would not carry logins either. An owner
+        # who is not told this concludes the feature is broken - which is what happened.
+        app = io.open(os.path.join(ROOT, "src", "wizard", "web", "app.js"),
+                      encoding="utf-8", errors="replace").read()
+        check("the panel explains the blank profile is Chrome's rule, not ours",
+              "Chrome 136" in app, "no explanation in the panel")
+        check("and that copying a profile would not help either",
+              "copiar tu perfil tampoco" in app)
+        check("it says the login persists once made", "para siempre" in app)
+        check("it offers the route that DOES have her sessions",
+              "brwDeleg" in app and "Chrome de siempre" in app)
+
+        section("delegation availability is cheap to ask")
+        st = bs.delegation_status()
+        check("it answers without spawning anything", isinstance(st.get("ready"), bool), st)
+        check("it reports each precondition separately, so the reason is actionable",
+              all(k in st for k in ("claude", "installed", "paired")), st)
+        check("and carries a sentence the panel can show", bool(st.get("detail")), st)
+
         section("installing the skill")
         home = os.path.join(tmp, "home")
         got = bs.install_skill("daneel", home=home)

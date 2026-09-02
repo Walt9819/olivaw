@@ -603,6 +603,10 @@ class Handler(BaseHTTPRequestHandler):
             return browser_setup.status(body.get("profile") or None)
         if route == "browser/enable":
             return browser_setup.enable(body.get("profile") or None)
+        if route == "browser/delegation":
+            return browser_setup.delegation_status()
+        if route == "browser/delegation-test":
+            return browser_setup.delegation_check()
         if route == "browser/disable":
             return browser_setup.disable(body.get("profile") or None)
 

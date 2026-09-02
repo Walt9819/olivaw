@@ -947,11 +947,22 @@
       '<div class="row" style="margin-top:10px">' +
       '<button class="btn btn-primary btn-sm" id="brwOn">Usar un navegador real</button>' +
       '<button class="btn btn-soft btn-sm" id="brwOff">Volver al invisible</button></div>' +
-      '<p class="small muted" style="margin-top:8px">El navegador real se abre en tu ' +
-      'pantalla con un <b>perfil aparte</b> del Chrome que usas a diario: entra una vez a ' +
-      'lo que necesite (tu correo, un panel) y queda guardado ahí, sin tocar tus sesiones ' +
-      'normales. Úsalo sólo para sitios donde te fíes de lo que el agente haga.</p>' +
-      chLine("brwPill") + '</details>' +
+      '<p class="small muted" style="margin-top:8px">El navegador real se abre <b>sin tus ' +
+      'sesiones</b>, y no es un capricho nuestro: desde Chrome 136, el modo que permite ' +
+      'controlarlo <b>sólo funciona con un perfil aparte</b>, y ese perfil usa otra clave de ' +
+      'cifrado a propósito — por eso copiar tu perfil tampoco traería tus sesiones. Entra ' +
+      'una vez a lo que necesite y queda guardado ahí para siempre.</p>' +
+      chLine("brwPill") +
+
+      '<div class="hr"></div><b class="small">¿Y usar tu Chrome de siempre, ya con sesión?</b>' +
+      '<p class="small muted">Sí se puede, por otra vía: tu agente le <b>encarga</b> la tarea ' +
+      'a Claude Code, que sí está conectado a tu navegador de siempre, y se queda con la ' +
+      'respuesta. No hay que iniciar sesión en nada.</p>' +
+      '<div id="brwDeleg" class="small muted">Comprobando…</div>' +
+      '<div class="row" style="margin-top:8px">' +
+      '<button class="btn btn-soft btn-sm" id="brwDelegTest">Probar de verdad ' +
+      '<span class="muted">(tarda ~1 min)</span></button></div>' +
+      chLine("brwDelegPill") + '</details>' +
 
       // Conversation memory / history (resume past conversations)
       '<details open><summary>🧠 Memoria de conversaciones (recordar y retomar)</summary>' +
@@ -1588,7 +1599,22 @@
     }
     function loadBrw() {
       api("browser/status", { profile: prof }).then(paintBrw);
+      // Fast signals only (CLI on PATH + extension paired). The honest confirmation costs a
+      // whole `claude -p` round trip, so it stays behind a button rather than making the
+      // panel sit there for a minute.
+      api("browser/delegation", {}).then(function (d) {
+        var box = el("brwDeleg");
+        if (!box || !d) return;
+        box.innerHTML = (d.ready ? "✅ " : "○ ") + esc(d.detail || "");
+      });
     }
+    var brwDelegPill = el("brwDelegPill");
+    if (el("brwDelegTest")) el("brwDelegTest").onclick = function () {
+      brwDelegPill.style.display = "inline-flex";
+      runTest(this, brwDelegPill, function () {
+        return api("browser/delegation-test", {});
+      }, "Preguntándole a Claude Code…");
+    };
     if (el("brwOn")) el("brwOn").onclick = function () {
       brwPill.style.display = "inline-flex";
       runTest(this, brwPill, function () {

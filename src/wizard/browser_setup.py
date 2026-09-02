@@ -253,6 +253,69 @@ def disable(profile=None, hermes=None, log=None):
                       if res.get("ok") else res.get("detail", "")}
 
 
+# ── the other route: Claude Code, which is paired with the REAL browser ───────
+# Why this exists as a separate answer, rather than "just point CDP at her profile":
+# since Chrome 136, --remote-debugging-port is IGNORED on the default user-data-dir, and a
+# non-standard directory deliberately uses a DIFFERENT ENCRYPTION KEY. So the debug window
+# starts logged out, and copying her profile into it would not carry the logins either -
+# that is the whole point of the change. The only way to drive a browser that is already
+# signed in is to ask something that is attached to it, which the extension is.
+def delegation_status():
+    """Can a browser job be handed to Claude Code? Fast enough for a panel.
+
+    Deliberately NOT the real probe: that spawns a `claude -p` round trip and takes the
+    better part of a minute. This reads the two facts that decide it - the CLI is on PATH,
+    and the Chrome extension is paired on this machine - and leaves the slow confirmation
+    to a button the owner presses.
+    """
+    exe = shutil.which("claude") or shutil.which("claude.cmd") or shutil.which("claude.exe")
+    paired, installed, device = False, False, ""
+    try:
+        with open(os.path.join(os.path.expanduser("~"), ".claude.json"),
+                  encoding="utf-8") as fh:
+            data = json.load(fh)
+        installed = bool(data.get("cachedChromeExtensionInstalled"))
+        ext = data.get("chromeExtension") or {}
+        paired = bool(ext.get("pairedDeviceId"))
+        device = str(ext.get("pairedDeviceName") or "")
+    except (OSError, ValueError, TypeError):
+        pass
+    ready = bool(exe) and installed and paired
+    if not exe:
+        detail = "No hay Claude Code en este equipo."
+    elif not installed:
+        detail = "Claude Code está, pero la extensión de Chrome no está instalada."
+    elif not paired:
+        detail = "La extensión está instalada pero no emparejada con un navegador."
+    else:
+        detail = "Listo: puede usar tu Chrome de siempre%s." % (
+            (" (%s)" % device) if device else "")
+    return {"ok": True, "ready": ready, "claude": bool(exe), "installed": installed,
+            "paired": paired, "device": device, "detail": detail}
+
+
+def delegation_check(timeout=180):
+    """The slow, real confirmation: ask a delegated session whether it has the tools."""
+    script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          "tools", "claude_chrome.py")
+    import sys
+    exe = sys.executable
+    if os.path.basename(exe or "").lower() == "pythonw.exe":
+        console = os.path.join(os.path.dirname(exe), "python.exe")
+        if os.path.isfile(console):
+            exe = console
+    try:
+        p = subprocess.run([exe, script, "--check"], stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "detail": "Claude Code no respondió a tiempo."}
+    except OSError as e:
+        return {"ok": False, "detail": "No se pudo comprobar: %s" % e}
+    out = (p.stdout or b"").decode("utf-8", "replace").strip()
+    return {"ok": p.returncode == 0, "detail": out.splitlines()[0] if out else
+            (p.stderr or b"").decode("utf-8", "replace")[:200]}
+
+
 # ── what the agent is told ────────────────────────────────────────────────────
 SKILL_NAME = "navegador-web"
 SKILL_VERSION = "1.1.0"
