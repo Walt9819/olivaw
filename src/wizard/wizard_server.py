@@ -29,15 +29,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from wizard import (agents_registry, browser_setup, channels, checks, config_writer,
-                        context_policy, hermes_ctl, obsidian, proposals, providers, rescue,
-                        selfcare, telegram_health, telegram_setup, usecases)
+                        context_policy, hermes_ctl, image_setup, obsidian, proposals,
+                        providers, rescue, selfcare, telegram_health, telegram_setup, usecases)
     from wizard import workspace as wsdir   # aliased: `workspace` is a local
                                             # variable name elsewhere in this file
     from wizard.procutil import http_json, which
 else:
     from . import (agents_registry, browser_setup, channels, checks, config_writer,
-                   context_policy, hermes_ctl, obsidian, proposals, providers, rescue,
-                   selfcare, telegram_health, telegram_setup, usecases)
+                   context_policy, hermes_ctl, image_setup, obsidian, proposals, providers,
+                   rescue, selfcare, telegram_health, telegram_setup, usecases)
     from . import workspace as wsdir        # aliased: see above
     from .procutil import http_json, which
 
@@ -596,6 +596,9 @@ class Handler(BaseHTTPRequestHandler):
 
         # Which browser the agent drives. Turning this on opens a real window on the
         # owner's screen, so it is a button she presses, never something we decide.
+        if route == "images/status":
+            return image_setup.status(body.get("profile") or None, install_dir=INSTALL_DIR)
+
         if route == "browser/status":
             return browser_setup.status(body.get("profile") or None)
         if route == "browser/enable":

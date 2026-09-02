@@ -94,7 +94,7 @@ def main():
     server = io.open(os.path.join(ROOT, "src", "wizard", "wizard_server.py"),
                      encoding="utf-8").read()
     called = sorted(set(re.findall(r'api\("channel/([a-z0-9-]+)"', src)))
-    plain = sorted(set(re.findall(r'api\("((?:workspace|telegram|policy|browser)/[a-z-]+)"', src)))
+    plain = sorted(set(re.findall(r'api\("((?:workspace|telegram|policy|browser|images)/[a-z-]+)"', src)))
     routed = set(re.findall(r'route == "([a-z0-9/_-]+)"', server))
     missing_routes = [c for c in plain if c not in routed]
     check("every workspace/telegram route the UI calls exists on the server",

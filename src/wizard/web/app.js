@@ -975,6 +975,7 @@
           (o.link ? ' <a href="' + esc(o.link) + '" target="_blank" rel="noopener noreferrer">abrir</a>' : '') +
           '</div></div></div>';
       }).join("") +
+      '<div id="imgRoutes" style="margin-top:10px"></div>' +
       '<div class="row" style="margin-top:8px"><button class="btn btn-soft btn-sm" id="capImg">Configurar imágenes en Hermes</button></div>' +
       chLine("capPill") + '</details>' +
 
@@ -1538,6 +1539,31 @@
     };
 
     // ── when should a WhatsApp conversation reach the owner? ──────────────────
+    // ── how this agent makes images ────────────────────────────────────────
+    // Which route is right depends on the brain, so the server decides and this only
+    // renders it. A Codex agent needs no setup at all; a Claude one has a free route the
+    // old card never mentioned, because that card only knew about API keys.
+    function loadImg() {
+      api("images/status", { profile: prof }).then(function (r) {
+        var box = el("imgRoutes");
+        if (!box || !r || !r.ok) return;
+        box.innerHTML = '<div class="small muted" style="margin-bottom:6px">' +
+          'Cerebro de este agente: <b>' + esc(r.engine === "codex" ? "Codex" : "Claude Code") +
+          '</b></div>' +
+          r.routes.map(function (rt) {
+            var mark = rt.ready ? "✅" : (rt.available ? "○" : "—");
+            var best = rt.id === r.recommended
+              ? ' <span class="chip">recomendado</span>' : "";
+            return '<div class="row" style="gap:8px;align-items:flex-start;padding:5px 0;' +
+              'border-bottom:1px solid var(--line-2)"><span>' + mark + '</span>' +
+              '<div class="grow"><b class="small">' + esc(rt.label) + '</b>' + best +
+              '<br><span class="muted small">' + esc(rt.cost) + ' — ' + esc(rt.note) +
+              '</span></div></div>';
+          }).join("");
+      });
+    }
+    loadImg();
+
     // ── which browser the agent drives ─────────────────────────────────────
     var brwPill = el("brwPill");
     function paintBrw(st) {

@@ -182,6 +182,12 @@ def _config_flags(effort):
         # The brain reasons; the runtime acts. The tools are off (see tool_off_flags); this is
         # the backstop for anything that survives that - notably unified_exec, which this CLI
         # will not let us disable. Read-only means no writes, no installs, no network.
+        #
+        # NOT loosened for image generation, deliberately. Codex's built-in `image_gen` writes
+        # to $CODEX_HOME/generated_images/, and whether this sandbox governs a first-party tool
+        # (as opposed to the shell) is undocumented and untested here - no codex on the machine
+        # this was written on. If it turns out to be blocked, the fix is a narrow writable_roots
+        # entry for that one directory, NOT switching the whole brain to workspace-write.
         "-c", 'sandbox_mode="read-only"',
         "-c", 'approval_policy="never"',
         # Mirror the Claude path's --strict-mcp-config: the owner's own MCP servers are

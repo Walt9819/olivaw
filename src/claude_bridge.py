@@ -177,6 +177,22 @@ RUNTIME_SYSTEM_PROMPT = (
     "runtime attached under that marker; every other action goes through the runtime's listed tools."
 )
 
+# Codex carries its own image generation (`image_gen`, gpt-image-2), billed to the owner's
+# ChatGPT subscription and needing no API key. It is the one brain-side capability that fits
+# this architecture: it does not ask the runtime to execute anything it does not know about -
+# it produces a FILE, and files already have a way home through the MEDIA: contract. Without
+# this clause the brain sits on a capability nobody told it counts, and answers that it
+# cannot make images while holding the only free way to make them.
+if ENGINE == "codex":
+    RUNTIME_SYSTEM_PROMPT += (
+        "\nYou can generate images yourself with your own built-in image tool - it needs no "
+        "API key. It is the ONLY action you may take directly; everything else goes through "
+        "the runtime's listed tools. Use it when asked for an image and the tool catalog has "
+        "no image tool of its own. It writes a file: put that absolute path in your final "
+        "answer as a line 'MEDIA:<path>' and the runtime sends the image to the user. Report "
+        "the real path it wrote - never invent one, and if generation failed, say so."
+    )
+
 MODEL_NAME = "claude-code"
 # Profile key used when the router names no model tier. Empty under Claude, so the default
 # path keeps adding no addendum at all.

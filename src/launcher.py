@@ -63,6 +63,10 @@ try:
     from wizard import browser_setup as _browser
 except Exception:  # noqa: BLE001
     _browser = None
+try:
+    from wizard import image_setup as _images
+except Exception:  # noqa: BLE001
+    _images = None
 
 
 # The update source is PINNED into the distributed code. A mutable `repo` in updater.config.json
@@ -980,6 +984,31 @@ def _ensure_browser_skill():
             log(f"browser: could not teach {r['profile']}: {r.get('detail', '')}")
 
 
+def _ensure_image_skill():
+    """Teach the free image route to every agent that has no image tool of its own.
+
+    A Claude-Code brain cannot draw. Hermes can, but only after the owner has chosen a
+    provider and pasted an API key - so in practice a fresh agent says it cannot make
+    images, and that is the end of it. Gemini through the agent's own browser costs
+    nothing and needs one login, so the agent should at least know to offer it.
+    """
+    if not _images:
+        return
+    try:
+        results = _images.ensure_all(agents=_load_extra_agents(), log=log,
+                                     install_dir=INSTALL_DIR)
+    except Exception as e:  # noqa: BLE001
+        log(f"images: skill check failed: {e}")
+        return
+    for r in results:
+        if r.get("changed"):
+            log(f"images: taught {r['profile']} the free Gemini route ({r.get('path')})")
+        elif r.get("reason") == "codex-builtin":
+            log(f"images: {r['profile']} runs on Codex - it generates images itself")
+        elif not r.get("ok"):
+            log(f"images: could not teach {r['profile']}: {r.get('detail', '')}")
+
+
 def _activate_pending_policy(cfg, state):
     """Restart a gateway whose conversation policy changed, once that agent is idle.
 
@@ -1040,6 +1069,7 @@ def main():
     _ensure_whatsapp()
     _ensure_context_policy()
     _ensure_browser_skill()
+    _ensure_image_skill()
     last_check = 0.0
     while True:
         try:
