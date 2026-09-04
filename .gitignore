@@ -43,3 +43,6 @@ SECURITY_REVIEW.md
 # SOS console conversations (local, private — transcripts of the owner's own machine)
 rescue-console.jsonl
 console/
+
+# Generated while designing the icon; not part of the payload
+tools/olivaw-preview.png

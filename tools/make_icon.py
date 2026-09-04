@@ -26,7 +26,10 @@ except ImportError:                                   # pragma: no cover - dev m
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "src", "assets", "olivaw.ico")
-PREVIEW = os.path.join(ROOT, "src", "assets", "olivaw-preview.png")
+# A contact sheet to eyeball the small sizes. Lives next to this tool and is NOT
+# committed: everything under src/ is copied onto every install, and this is only
+# ever looked at while designing the icon.
+PREVIEW = os.path.join(ROOT, "tools", "olivaw-preview.png")
 
 N = 1024                                              # supersampled master
 STOPS = [(0.00, (0x6d, 0x5e, 0xfc)),                  # --accent  violet
