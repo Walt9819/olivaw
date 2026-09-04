@@ -25,6 +25,7 @@ never to touch the Olivaw installation or its code.
 import os
 import re
 import subprocess
+from winspawn import CREATE_NEW_PROCESS_GROUP, quiet
 
 from .procutil import run, which
 
@@ -456,9 +457,12 @@ def run_now(key):
     try:
         kwargs = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL,
                   "stdin": subprocess.DEVNULL, "cwd": workspace_dir()}
+        # `hermes` is a console program: DETACHED_PROCESS would leave it with no console
+        # and it would allocate a VISIBLE one on its first write. quiet() gives it a
+        # hidden one instead; a new process group is enough to outlive us.
         if os.name == "nt":
-            kwargs["creationflags"] = 0x00000008 | 0x08000000   # DETACHED | NO_WINDOW
-        subprocess.Popen([hp, "cron", "run", job["id"]], **kwargs)
+            kwargs["creationflags"] = CREATE_NEW_PROCESS_GROUP
+        subprocess.Popen([hp, "cron", "run", job["id"]], **quiet(**kwargs))
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "detail": "No pude lanzarla: %s" % e}
     return {"ok": True, "job_id": job["id"],

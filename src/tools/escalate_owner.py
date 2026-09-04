@@ -42,6 +42,12 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
+# The stdlib-only rule above is why this does not import winspawn.quiet like the rest of
+# Olivaw does: the flag is one integer, and the emergency path is not worth a dependency.
+# Same reason as everywhere else - `hermes send` is a console program, and a windowless
+# parent makes Windows allocate (and show) a console for it. See src/winspawn.py.
+_QUIET = {"creationflags": 0x08000000} if os.name == "nt" else {}   # CREATE_NO_WINDOW
+
 # Everything this prints is Spanish with emoji, and the agent reads it back through a pipe.
 # A piped stdout on Windows defaults to cp1252, where "dueño" alone raises
 # UnicodeEncodeError - so `--list-reasons` would hand the agent a traceback instead of its
@@ -383,7 +389,7 @@ def deliver_hermes_cli(text, log=print):
         return {"ok": False, "channel": "hermes-cli", "error": "hermes not on PATH"}
     try:
         p = subprocess.run([exe, "send", "--to", "telegram", text],
-                           capture_output=True, text=True, timeout=60)
+                           capture_output=True, text=True, timeout=60, **_QUIET)
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "channel": "hermes-cli", "error": str(e)[:200]}
     if p.returncode == 0:

@@ -46,6 +46,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+from winspawn import quiet
 
 IS_WIN = os.name == "nt"
 
@@ -306,8 +307,9 @@ def _spawn(cmd, prompt, timeout, cwd, attempts=3):
                 raise last or RuntimeError("codex CLI not found on disk")
             exe = cands[min(i - 1, len(cands) - 1)]
         try:
-            return subprocess.run([exe] + cmd[1:], input=(prompt or "").encode("utf-8"),
-                                  capture_output=True, timeout=timeout, cwd=cwd, shell=False)
+            return subprocess.run([exe] + cmd[1:], **quiet(
+                input=(prompt or "").encode("utf-8"),
+                capture_output=True, timeout=timeout, cwd=cwd, shell=False))
         except OSError as e:  # noqa: PERF203 - retrying is the point
             if getattr(e, "winerror", None) not in _LAUNCH_ERRNOS and e.errno != 2:
                 raise
@@ -405,8 +407,9 @@ def version():
     if not exe:
         return ""
     try:
-        r = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=45,
-                           encoding="utf-8", errors="replace")
+        r = subprocess.run([exe, "--version"], **quiet(
+            capture_output=True, text=True, timeout=45,
+            encoding="utf-8", errors="replace"))
         out = ((r.stdout or "") + " " + (r.stderr or "")).strip()
         m = _VERSION_RE.search(out)
         return (m.group(1) if m else out.splitlines()[0] if out else "")
@@ -421,8 +424,9 @@ def login_status():
         return {"ok": False, "signed_in": False, "found": False,
                 "detail": "Codex todavía no está instalado."}
     try:
-        r = subprocess.run([exe, "login", "status"], capture_output=True, text=True, timeout=60,
-                           encoding="utf-8", errors="replace")
+        r = subprocess.run([exe, "login", "status"], **quiet(
+            capture_output=True, text=True, timeout=60,
+            encoding="utf-8", errors="replace"))
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "signed_in": False, "found": True,
                 "detail": "Codex no respondió: %s" % e}

@@ -36,12 +36,19 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
 import urllib.parse
 import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# src/ on the path explicitly: today this file is always launched as a script, so its own
+# directory happens to be sys.path[0] - but "happens to be" is how the Olivaw shortcut
+# broke, and a silent ModuleNotFoundError under pythonw takes the whole agent down.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from winspawn import quiet          # noqa: E402 (needs the path above)
 
 MAX_IMAGE_BYTES = 20 * 1024 * 1024  # cap materialized images (DoS / memory)
 
@@ -1428,14 +1435,13 @@ def _spawn_claude(cmd, prompt, attempts=4):
             exe = cands[min(i - 1, len(cands) - 1)]
             log.warning("claude launch retry %d using %s", i, exe)
         try:
-            return subprocess.run(
-                [exe] + cmd[1:],
+            return subprocess.run([exe] + cmd[1:], **quiet(
                 input=prompt.encode("utf-8"),
                 capture_output=True,
                 timeout=SUBPROCESS_TIMEOUT,
                 cwd=WORKSPACE,
                 shell=False,
-            )
+            ))
         except OSError as e:                  # noqa: PERF203 - retry is the point
             if getattr(e, "winerror", None) not in _LAUNCH_ERRNOS and e.errno != 2:
                 raise

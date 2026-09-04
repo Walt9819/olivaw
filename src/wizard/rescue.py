@@ -38,6 +38,7 @@ TIMEOUT = 300
 
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
+from winspawn import quiet          # noqa: E402 (needs the path above)
 try:
     import codex_engine
 except Exception:  # noqa: BLE001 - the console must still open on an install without it
@@ -605,8 +606,9 @@ def ask(question, allow_fix=False, install_dir=None, history=None):
     else:
         cmd += ["--tools", ""]      # diagnosis only: no tools, cannot change anything
     try:
-        proc = subprocess.run(cmd, input=prompt.encode("utf-8"), capture_output=True,
-                              timeout=TIMEOUT, cwd=inst, shell=False)
+        proc = subprocess.run(cmd, **quiet(input=prompt.encode("utf-8"),
+                              capture_output=True, timeout=TIMEOUT, cwd=inst,
+                              shell=False))
     except subprocess.TimeoutExpired:
         return {"ok": False, "detail": "Claude tardó demasiado en responder. Intenta de nuevo."}
     except Exception as e:  # noqa: BLE001
@@ -972,8 +974,8 @@ def _stream(job_id, cmd, prompt, inst):
     """Run one Claude turn, feeding events to the job. Returns (ok, returncode, stderr, sid)."""
     with _JOBS_LOCK:
         before = (_JOBS.get(job_id) or {}).get("reply") or ""
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, cwd=inst, shell=False)
+    proc = subprocess.Popen(cmd, **quiet(stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, cwd=inst, shell=False))
     _job_put(job_id, proc=proc)
     try:
         proc.stdin.write(prompt.encode("utf-8"))

@@ -6,6 +6,8 @@ import shutil
 import subprocess
 import urllib.error
 import urllib.request
+from winspawn import quiet
+
 
 IS_WIN = os.name == "nt"
 
@@ -28,16 +30,20 @@ def run(cmd, timeout=25, cwd=None, env=None):
 
     `cmd` is a list. On Windows, .cmd/.bat shims need shell resolution, which
     subprocess handles when given the full path; we pass the list as-is.
+
+    Always windowless: the callers are `pythonw` daemons, and every hermes_ctl call
+    lands here, including the supervisor's once-a-minute gateway check. Without
+    quiet() that check opens a terminal window on the owner's desktop (see winspawn).
     """
     try:
         merged = None
         if env:
             merged = os.environ.copy()
             merged.update({k: str(v) for k, v in env.items()})
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout,
+        proc = subprocess.run(cmd, **quiet(
+            capture_output=True, text=True, timeout=timeout,
             cwd=cwd, env=merged, encoding="utf-8", errors="replace",
-        )
+        ))
         out = (proc.stdout or "").strip()
         err = (proc.stderr or "").strip()
         return {"ok": proc.returncode == 0, "code": proc.returncode,

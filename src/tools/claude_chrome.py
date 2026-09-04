@@ -40,6 +40,9 @@ import shutil
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from winspawn import quiet          # noqa: E402  (needs the path above)
+
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8", errors="replace")
@@ -83,9 +86,9 @@ def run(task, files=False, out_dir="", timeout=240, model=""):
         cmd += ["--add-dir", out_dir]
     prompt = _GUARD + "\n\nTAREA:\n" + task
     try:
-        p = subprocess.run(cmd, input=prompt.encode("utf-8"),
+        p = subprocess.run(cmd, **quiet(input=prompt.encode("utf-8"),
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                           timeout=timeout)
+                           timeout=timeout))
     except subprocess.TimeoutExpired:
         return 3, "", ("La sesión de Claude Code no terminó en %ds. Vuelve a intentarlo con "
                        "una tarea más corta." % timeout)

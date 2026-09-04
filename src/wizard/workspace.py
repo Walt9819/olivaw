@@ -30,6 +30,7 @@ import os
 import shutil
 import subprocess
 import sys
+from winspawn import quiet
 
 IS_WIN = sys.platform.startswith("win")
 IS_MAC = sys.platform == "darwin"
@@ -248,23 +249,27 @@ def pick(start="", timeout=180):
         if IS_WIN:
             exe = shutil.which("powershell") or "powershell.exe"
             env = dict(os.environ, OLIVAW_PICK_START=start)
+            # quiet() suppresses the powershell console window; the picker itself is a
+            # WPF dialog created by the script, so the owner still sees it.
             p = subprocess.run([exe, "-NoProfile", "-STA", "-NonInteractive",
                                 "-ExecutionPolicy", "Bypass", "-Command", _PS_PICKER],
-                               capture_output=True, text=True, timeout=timeout, env=env)
+                               **quiet(capture_output=True, text=True,
+                                       timeout=timeout, env=env))
             out = (p.stdout or "").strip()
         elif IS_MAC:
             script = ('set f to choose folder with prompt "Elige la carpeta donde vivirá '
                       'tu agente" default location POSIX file "%s"\n'
                       'return POSIX path of f' % start)
             p = subprocess.run(["osascript", "-e", script],
-                               capture_output=True, text=True, timeout=timeout)
+                               **quiet(capture_output=True, text=True, timeout=timeout))
             out = (p.stdout or "").strip()
         else:
             tool = shutil.which("zenity")
             if tool:
                 p = subprocess.run([tool, "--file-selection", "--directory",
                                     "--filename", start + os.sep],
-                                   capture_output=True, text=True, timeout=timeout)
+                                   **quiet(capture_output=True, text=True,
+                                           timeout=timeout))
             else:
                 tool = shutil.which("kdialog")
                 if not tool:
@@ -272,7 +277,8 @@ def pick(start="", timeout=180):
                             "detail": "Escribe la ruta a mano: este sistema no tiene un "
                                       "selector de carpetas."}
                 p = subprocess.run([tool, "--getexistingdirectory", start],
-                                   capture_output=True, text=True, timeout=timeout)
+                                   **quiet(capture_output=True, text=True,
+                                           timeout=timeout))
             out = (p.stdout or "").strip()
     except subprocess.TimeoutExpired:
         return {"ok": False, "cancelled": True, "detail": ""}

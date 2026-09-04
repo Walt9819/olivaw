@@ -27,7 +27,12 @@ import json
 import os
 import re
 import shutil
+import sys
 import time
+
+# runnable directly (`python src/wizard/wa_patch.py`), so src/ has to be importable
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from winspawn import quiet          # noqa: E402 (needs the path above)
 
 PATCH_VERSION = 1
 MARK = "olivaw-receipts"
@@ -463,13 +468,15 @@ def _heal_conflict(path, say):
 
     repo = os.path.dirname(path)
     try:
-        inside = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], cwd=repo,
-                                capture_output=True, text=True, timeout=20)
+        inside = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"],
+                                **quiet(cwd=repo, capture_output=True, text=True,
+                                        timeout=20))
         if inside.returncode != 0 or "true" not in inside.stdout:
             say("wa_patch: bridge.js is conflicted and not under git - manual fix needed")
             return False
-        r = subprocess.run(["git", "checkout", "--", os.path.basename(path)], cwd=repo,
-                           capture_output=True, text=True, timeout=40)
+        r = subprocess.run(["git", "checkout", "--", os.path.basename(path)],
+                           **quiet(cwd=repo, capture_output=True, text=True,
+                                   timeout=40))
     except Exception as e:  # noqa: BLE001
         say("wa_patch: could not restore bridge.js from git: %s" % e)
         return False

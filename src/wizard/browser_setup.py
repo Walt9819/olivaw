@@ -52,6 +52,7 @@ import shutil
 import subprocess
 import urllib.error
 import urllib.request
+from winspawn import quiet
 
 from . import hermes_ctl
 
@@ -305,8 +306,8 @@ def delegation_check(timeout=180):
         if os.path.isfile(console):
             exe = console
     try:
-        p = subprocess.run([exe, script, "--check"], stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE, timeout=timeout)
+        p = subprocess.run([exe, script, "--check"], **quiet(
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout))
     except subprocess.TimeoutExpired:
         return {"ok": False, "detail": "Claude Code no respondió a tiempo."}
     except OSError as e:

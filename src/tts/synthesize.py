@@ -26,6 +26,9 @@ import argparse
 import subprocess
 import tempfile
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from winspawn import quiet          # noqa: E402  (needs the path above)
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 # Keep model weights local & self-contained (mirrors stt/models), instead of the
 # global HF cache — so the whole tts/ folder is portable and predictable.
@@ -181,7 +184,7 @@ def to_voice_note(samples, sr, out_path):
             "-c:a", "libopus", "-b:a", "32k", "-ac", "1",
             "-application", "voip",
             out_path,
-        ], check=True)
+        ], **quiet(check=True))
     finally:
         try:
             os.remove(wav_path)
