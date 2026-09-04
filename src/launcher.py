@@ -1121,7 +1121,8 @@ def _ensure_app_shortcut():
             _write_launcher_vbs(sos_vbs, pyw, wiz, sos=True)
         start_menu = _start_menu_dir()
         sos_lnk = os.path.join(start_menu, "Olivaw SOS.lnk")
-        _make_lnk(sos_lnk, sos_vbs, "Hablar con Claude sobre Olivaw (ayuda directa)", ico)
+        # The Start-Menu tooltip is a label too: it says Olivaw, like the screen it opens.
+        _make_lnk(sos_lnk, sos_vbs, "Hablar con Olivaw (ayuda directa)", ico)
 
         # Recreate the desktop shortcut if the user lost it (WScript can make .lnk files).
         desktop = _desktop_dir()

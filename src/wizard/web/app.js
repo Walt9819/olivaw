@@ -2961,7 +2961,7 @@
       var arch = SOS.conv && SOS.conv.archived;
       badge.innerHTML = SOS.conv
         ? (arch ? '<span class="badge">solo lectura</span>'
-                : '<span class="muted small">Claude recuerda esta conversación</span>')
+                : '<span class="muted small">Olivaw recuerda esta conversación</span>')
         : '<span class="muted small">Cuéntame qué está pasando</span>';
     }
     var comp = el("sosCompose");
@@ -3014,7 +3014,7 @@
       if (!box) return;
       if (!c || !c.ok) { box.innerHTML = '<span class="muted small">No pude leer el estado.</span>'; return; }
       // Name the brain this install actually runs, everywhere the console mentions it.
-      paintBrainName(c.engine === "codex" ? "Codex" : "Claude");
+      paintSosLabels(c.engine === "codex" ? "Codex" : "Claude Code");
       var b = (c.bridges || []).map(function (x) {
         return '<span class="pill ' + (x.up ? "ok" : "err") + '" style="margin:0 6px 0 0">' +
           (x.up ? "✓" : "✕") + " puente :" + esc(x.port) + '</span>';
@@ -3059,19 +3059,36 @@
   function finishLive() {
     if (!LIVE) return;
     var cid = LIVE.conversation_id;
+    // Adopt the finished turn locally FIRST. This used to null LIVE - the only copy of the
+    // answer on screen - and then hope rescue/conversation handed it back. When that call
+    // failed, or simply ran before the turn had been written, the question and the answer
+    // vanished with nothing left to reopen. Reported as "the response arrived and then the
+    // message was deleted". The reload below is now a reconciliation, never the only copy.
+    var justDone = { ts: Date.now() / 1000, question: LIVE.question, mode: LIVE.mode,
+                     reply: LIVE.reply || "", ask: LIVE.ask || null,
+                     events: LIVE.events || [] };
     LIVE = null;
+    SOS.turns = (SOS.turns || []).concat([justDone]);
+    paintMsgs(true);
     var sb = el("rescueSend"); if (sb) { sb.disabled = false; sb.textContent = "Preguntar"; }
-    // The server owns the transcript now: reload the conversation so what we show is exactly
-    // what was persisted (and will still be there tomorrow).
-    if (cid) {
-      api("rescue/conversation", { id: cid }).then(function (r) {
-        var stick = atBottom();
-        if (r && r.ok) { SOS.conv = r.conversation; SOS.turns = r.conversation.turns || []; }
-        paintMsgs(stick); loadList(); if (stick) scrollDown();
-      });
-    } else {
-      paintMsgs(); loadList();
-    }
+    if (!cid) { loadList(); return; }
+    // The server owns the transcript, so prefer its version - but only when it actually has
+    // one at least as complete as what we are holding. A short answer must never overwrite
+    // a longer transcript.
+    api("rescue/conversation", { id: cid }).then(function (r) {
+      var stick = atBottom();
+      var srv = (r && r.ok && r.conversation) ? r.conversation : null;
+      if (srv && (srv.turns || []).length >= (SOS.turns || []).length) {
+        SOS.conv = srv;
+        SOS.turns = srv.turns || [];
+      } else if (srv) {
+        // Keep our turns; take the metadata (title, session, archived flag).
+        var mine = SOS.turns;
+        SOS.conv = srv;
+        SOS.turns = mine;
+      }
+      paintMsgs(stick); loadList(); if (stick) scrollDown();
+    }).catch(function () { loadList(); });
   }
 
   function askSos() {
@@ -3112,22 +3129,29 @@
       });
   }
 
-  // The console talks to whichever brain this install runs, so it must not be labelled "Claude"
-  // on a Codex machine — this is the screen people open when they are already lost.
-  function paintBrainName(brain) {
-    if (!brain) return;
+  // This screen is Olivaw talking to its owner, so it says Olivaw - on a Claude machine and
+  // on a Codex one alike. It used to introduce itself by the brain's brand name, which on a
+  // Codex install made the help screen present itself as somebody else's product, and in
+  // either case named something the owner never chose to talk to. The brain is still stated
+  // where it is a technical fact: the event stream reports which CLI actually ran, and the
+  // "cerebro" section is where it can be changed.
+  function paintSosLabels(brain) {
     var sub = el("sosSub");
     if (sub) {
-      sub.textContent = "Habla con " + brain + " sobre tu instalación — sin pasar por tu agente";
+      sub.textContent = "Habla con Olivaw sobre tu instalación — sin pasar por tu agente";
     }
     Array.prototype.forEach.call(document.querySelectorAll("[data-brain-name]"), function (n) {
-      n.textContent = "Habla con " + brain;
+      n.textContent = "Habla con Olivaw";
     });
     var fab = el("sosFab");
-    if (fab) fab.title = "¿Algo falla? Habla con " + brain;
+    // The tooltip is the one place the brain stays visible: useful when diagnosing, and it
+    // is not the label anybody reads first.
+    if (fab) {
+      fab.title = "¿Algo falla? Habla con Olivaw" + (brain ? " (motor: " + brain + ")" : "");
+    }
     var foot = el("sosSideFoot");
     if (foot) {
-      foot.textContent = "Se guardan en tu equipo y " + brain + " mantiene el contexto: " +
+      foot.textContent = "Se guardan en tu equipo y Olivaw mantiene el contexto: " +
         "puedes retomarlas cuando quieras.";
     }
   }

@@ -27,7 +27,7 @@
       <nav class="tree" id="navTree" hidden></nav>
 
       <button class="btn btn-soft btn-sm" id="helpBtn" style="width:100%;justify-content:center">
-        🆘 ¿Algo falla? <span data-brain-name>Habla con Claude</span>
+        🆘 ¿Algo falla? <span data-brain-name>Habla con Olivaw</span>
       </button>
       <button class="btn btn-ghost btn-sm" id="closeBtn" hidden
               style="width:100%;justify-content:center">Cerrar</button>
@@ -57,8 +57,8 @@
 
   <!-- Always-reachable SOS: the sidebar (and its help button) is hidden on narrow windows,
        which is exactly when something is broken and help must still be one click away. -->
-  <button class="sos-fab" id="sosFab" title="¿Algo falla? Habla con tu cerebro"
-          aria-label="Ayuda: hablar con Claude">🆘</button>
+  <button class="sos-fab" id="sosFab" title="¿Algo falla? Habla con Olivaw"
+          aria-label="Ayuda: hablar con Olivaw">🆘</button>
 
   <!-- SOS console: an overlay, opened only by the 🆘 button (or #rescue). Not a wizard step:
        it is support, not setup — and it must be reachable at any moment, even mid-install. -->
@@ -68,7 +68,7 @@
         <span class="sos-mark">🆘</span>
         <span>
           <b>Ayuda directa</b>
-          <span class="muted small" id="sosSub">Habla con Claude sobre tu instalación — sin pasar por tu agente</span>
+          <span class="muted small" id="sosSub">Habla con Olivaw sobre tu instalación — sin pasar por tu agente</span>
         </span>
       </div>
       <div class="row">
@@ -80,8 +80,8 @@
       <aside class="sos-side">
         <div class="sos-side-head">Conversaciones</div>
         <div class="sos-list" id="sosList"></div>
-        <div class="sos-side-foot muted small" id="sosSideFoot">Se guardan en tu equipo y el
-          cerebro mantiene el contexto: puedes retomarlas cuando quieras.</div>
+        <div class="sos-side-foot muted small" id="sosSideFoot">Se guardan en tu equipo y Olivaw
+          mantiene el contexto: puedes retomarlas cuando quieras.</div>
       </aside>
       <section class="sos-chat">
         <div class="sos-chat-head">

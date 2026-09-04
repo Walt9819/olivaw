@@ -1095,11 +1095,19 @@ def _run_job(job_id, question, allow_fix, install_dir, conv_id=None, exe=None, e
     except Exception as e:  # noqa: BLE001
         _job_event(job_id, "error", "Fallo interno: %s" % e)
     finally:
-        _job_put(job_id, done=True)
+        # Persist BEFORE announcing done, never after. The browser polls this job every
+        # 800ms and, the moment it sees done, re-reads the conversation from disk to show
+        # the authoritative transcript. Announcing first opened a window in which that
+        # read returned a conversation WITHOUT the turn just finished - and the UI, having
+        # dropped its own copy, showed nothing at all. On a fast answer the window was
+        # wide enough to hit every time: "the response arrived and then the message was
+        # deleted". Saving first closes it; a save that throws is swallowed by _save_turn,
+        # so this cannot leave a job hanging as unfinished.
         with _JOBS_LOCK:
             job = dict(_JOBS.get(job_id) or {})
         _save_turn(inst, conv_id, question, "fix" if allow_fix else "diagnose",
                    job.get("reply", ""), job.get("events", []), job.get("ask"))
+        _job_put(job_id, done=True)
 
 
 def _save_turn(install_dir, conv_id, question, mode, reply, events, ask=None):

@@ -171,7 +171,9 @@ if (cut < 0) { console.log("  FAIL app.js is not the expected IIFE"); process.ex
 const HOOK = "\n  globalThis.__ol = { CONSOLE: CONSOLE, S: S, META: META, STEPS: STEPS," +
   " curSec: curSec, curAgent: curAgent, allAgents: allAgents, goSec: goSec," +
   " hasAnyAgent: hasAnyAgent, unfold: unfold, secPolicy: secPolicy, rChannels: rChannels," +
-  " targetProfile: targetProfile, render: render, enterSetup: enterSetup };\n";
+  " targetProfile: targetProfile, render: render, enterSetup: enterSetup," +
+  " SOS: SOS, openSos: openSos, sendTurn: sendTurn, paintMsgs: paintMsgs," +
+  " get LIVE(){ return LIVE } };\n";
 const hooked = src.slice(0, cut) + HOOK + src.slice(cut);
 
 let loadErr = null;
@@ -433,6 +435,110 @@ ok("and it is a machine-wide action, not one agent's",
    !CALLS.filter((c) => c.route === "update/apply")
       .some((c) => Object.prototype.hasOwnProperty.call(c.body, "profile")),
    JSON.stringify(CALLS));
+
+// ── the SOS console keeps what it was told ─────────────────────────────────────
+// Reported from a real machine: "once the response arrived, the message is deleted and the
+// conversation is not saved". The server half was proven healthy first - the turn lands on
+// disk, the session id is recorded, the listing returns it - so the loss is here, in the
+// browser. finishLive() nulls LIVE (the only copy of the answer on screen) and then waits
+// for rescue/conversation to hand back the persisted transcript. Any answer that call fails
+// to give back takes the conversation with it.
+console.log("\n=== the SOS console does not lose what it just showed you ===");
+let SOS_TURNS = [];
+let SOS_CONV_OK = true;
+CANNED["rescue/context"] = { ok: true, version: "1.0.44", brain: "Claude Code",
+                             engine: "claude" };
+CANNED["rescue/conversations"] = { ok: true, conversations: [] };
+const realFetch = global.fetch;
+global.fetch = (url, opt) => {
+  const route = String(url).replace(/^\/api\//, "");
+  let body = {};
+  try { body = JSON.parse((opt && opt.body) || "{}"); } catch (e) { /* keep {} */ }
+  if (route === "rescue/start") {
+    CALLS.push({ route, body });
+    return Promise.resolve({ json: () => Promise.resolve({
+      ok: true, job_id: "job1", conversation_id: "aabbccddeeff0011",
+      title: body.question.slice(0, 30), engine: "claude", brain: "Claude Code",
+      mode: "diagnose" }) });
+  }
+  if (route === "rescue/poll") {
+    CALLS.push({ route, body });
+    // The turn is persisted by the time the job reports done - that is what the server
+    // does in its finally, and it was verified against the real store.
+    SOS_TURNS = [{ ts: 1, question: "por que falla mi agente", mode: "diagnose",
+                   reply: "Esta es la respuesta.", events: [] }];
+    return Promise.resolve({ json: () => Promise.resolve({
+      ok: true, events: [{ kind: "text", text: "Esta es la respuesta." }], cursor: 1,
+      done: true, reply: "Esta es la respuesta.",
+      conversation_id: "aabbccddeeff0011" }) });
+  }
+  if (route === "rescue/conversation") {
+    CALLS.push({ route, body });
+    return Promise.resolve({ json: () => Promise.resolve(
+      SOS_CONV_OK
+        ? { ok: true, conversation: { id: "aabbccddeeff0011", title: "por que falla",
+                                      turns: SOS_TURNS, resumable: true } }
+        : { ok: false, detail: "no pude abrirla" }) });
+  }
+  return realFetch(url, opt);
+};
+async function settle(n) {
+  for (let i = 0; i < (n || 40); i++) await new Promise((r) => setTimeout(r, 5));
+}
+
+OL.openSos();
+await settle(10);
+OL.sendTurn("por que falla mi agente");
+ok("the question appears while it is working",
+   getEl("rescueLive")._html.includes("por que falla mi agente"),
+   getEl("rescueLive")._html.slice(0, 160));
+await settle(60);
+ok("when the answer arrives, the question is still on screen",
+   getEl("rescueMsgs")._html.includes("por que falla mi agente"),
+   "msgs=" + getEl("rescueMsgs")._html.slice(0, 200));
+ok("and so is the answer",
+   getEl("rescueMsgs")._html.includes("Esta es la respuesta"),
+   "msgs=" + getEl("rescueMsgs")._html.slice(0, 200));
+ok("the live block handed its content over rather than both showing it",
+   getEl("rescueLive")._html === "", getEl("rescueLive")._html.slice(0, 120));
+ok("the conversation is remembered, so the next question continues it",
+   OL.SOS.conv && OL.SOS.conv.id === "aabbccddeeff0011", JSON.stringify(OL.SOS.conv));
+
+// The failure that loses work: the reload call does not come back with the turn.
+SOS_CONV_OK = false;
+OL.SOS.conv = null; OL.SOS.turns = [];
+getEl("rescueMsgs")._html = ""; getEl("rescueLive")._html = "";
+OL.sendTurn("segunda pregunta");
+await settle(80);
+const kept = getEl("rescueMsgs")._html + getEl("rescueLive")._html;
+ok("if the transcript cannot be re-read, the answer is kept anyway",
+   kept.includes("segunda pregunta") && kept.includes("Esta es la respuesta"),
+   "both boxes ended up empty: " + JSON.stringify(kept.slice(0, 200)));
+
+// The exact race that caused the report: the server answers OK but with a transcript that
+// does not contain the turn yet, because `done` used to be published before the write. The
+// UI must not treat a shorter transcript as the truth and drop what it is holding.
+SOS_CONV_OK = true;
+SOS_TURNS = [];
+OL.SOS.conv = null; OL.SOS.turns = [];
+getEl("rescueMsgs")._html = ""; getEl("rescueLive")._html = "";
+const realPoll = global.fetch;
+global.fetch = (url, opt) => {
+  if (String(url).includes("rescue/poll")) {
+    return Promise.resolve({ json: () => Promise.resolve({
+      ok: true, events: [{ kind: "text", text: "Esta es la respuesta." }], cursor: 1,
+      done: true, reply: "Esta es la respuesta.",
+      conversation_id: "aabbccddeeff0011" }) });   // note: SOS_TURNS stays empty
+  }
+  return realPoll(url, opt);
+};
+OL.sendTurn("tercera pregunta");
+await settle(80);
+const raced = getEl("rescueMsgs")._html + getEl("rescueLive")._html;
+ok("a transcript that lags behind does not erase the answer",
+   raced.includes("tercera pregunta") && raced.includes("Esta es la respuesta"),
+   "lost it: " + JSON.stringify(raced.slice(0, 200)));
+global.fetch = realFetch;
 
 // ── the first run must still be the stepper ────────────────────────────────────
 console.log("\n=== a machine with no agents still gets the guided install ===");
