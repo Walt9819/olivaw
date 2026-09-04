@@ -41,6 +41,14 @@ else:
     from . import workspace as wsdir        # aliased: see above
     from .procutil import http_json, which
 
+# AFTER the bootstrap above, never before it: this file runs as a script from the Olivaw
+# shortcut, and `src` is only importable once that sys.path.insert has run. An import up
+# with the stdlib ones died with ModuleNotFoundError - and because the shortcut launches it
+# with pythonw.exe, which has no console, the failure was completely silent: clicking the
+# icon simply did nothing.
+from winspawn import CREATE_NEW_PROCESS_GROUP, quiet     # noqa: E402
+import intercom                                          # noqa: E402
+
 HERE = os.path.dirname(os.path.abspath(__file__))          # .../src/wizard
 SRC_DIR = os.path.dirname(HERE)                            # .../src
 CODE_ROOT = os.path.dirname(SRC_DIR)                       # the copy of Olivaw running now
@@ -279,8 +287,8 @@ def ensure_test_bridge(provider_env, workspace):
         os.makedirs(workspace, exist_ok=True)
     _test_bridge = subprocess.Popen(
         [sys.executable, BRIDGE_PY, "--port", str(TEST_PORT)],
-        env=env, cwd=SRC_DIR,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        **quiet(env=env, cwd=SRC_DIR,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
     for _ in range(40):  # up to ~20s for the CLI-backed bridge to bind
         if http_json(TEST_URL + "/health", timeout=2)[0]:
             return TEST_URL
@@ -322,13 +330,15 @@ def start_supervisor():
         if os.name == "nt":
             pyw = sys.executable.replace("python.exe", "pythonw.exe")
             exe = pyw if os.path.exists(pyw) else sys.executable
-            DETACHED = 0x00000008 | 0x00000200  # DETACHED_PROCESS | NEW_PROCESS_GROUP
-            subprocess.Popen([exe, LAUNCHER_PY], cwd=INSTALL_DIR,
-                             creationflags=DETACHED, close_fds=True)
+            # NOT detached: DETACHED_PROCESS makes Windows ignore CREATE_NO_WINDOW, and
+            # a console child of a detached process opens its own visible console.
+            subprocess.Popen([exe, LAUNCHER_PY], **quiet(
+                cwd=INSTALL_DIR, creationflags=CREATE_NEW_PROCESS_GROUP,
+                close_fds=True))
         else:
-            subprocess.Popen([sys.executable, LAUNCHER_PY], cwd=INSTALL_DIR,
-                             start_new_session=True,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen([sys.executable, LAUNCHER_PY], **quiet(
+                cwd=INSTALL_DIR, start_new_session=True,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         return {"ok": True, "detail": "Supervisor iniciado."}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "detail": str(e)}
@@ -610,6 +620,17 @@ class Handler(BaseHTTPRequestHandler):
         if route == "browser/disable":
             return browser_setup.disable(body.get("profile") or None)
 
+        # Agents talking to each other. The owner gets the switch because this is a
+        # contact point she did not open herself: something OTHER than her can now make
+        # her agent answer.
+        if route == "intercom/status":
+            return intercom.status(install_dir=INSTALL_DIR)
+        if route == "intercom/save":
+            return self._intercom_save(body)
+        if route == "intercom/thread":
+            text = intercom.transcript(body.get("thread") or "")
+            return {"ok": bool(text), "text": text or "No encontré esa conversación."}
+
         if route == "apply":
             return self._apply(body)
 
@@ -623,6 +644,24 @@ class Handler(BaseHTTPRequestHandler):
             return {"ok": True}
 
         return {"ok": False, "detail": "ruta desconocida"}
+
+    def _intercom_save(self, body):
+        """Write the owner's limits, then report the state she should actually see."""
+        updates = {}
+        if "enabled" in body:
+            updates["enabled"] = bool(body.get("enabled"))
+        for key in ("max_turns", "hourly_limit", "timeout"):
+            if body.get(key) not in (None, ""):
+                try:
+                    updates[key] = int(body[key])
+                except (TypeError, ValueError):
+                    pass
+        wrote = intercom.save_config(updates)
+        st = intercom.status(install_dir=INSTALL_DIR)
+        st["ok"] = wrote.get("ok", False)          # keep the WRITE's verdict, not the read
+        if not wrote.get("ok"):
+            st["detail"] = wrote.get("detail", "No pude guardar.")
+        return st
 
     def _apply(self, body):
         agent = body.get("agent") or {}

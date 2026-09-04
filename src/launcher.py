@@ -31,6 +31,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 
+
 SELF = os.path.abspath(__file__)
 SRC_DIR = os.path.dirname(SELF)                 # .../install/src
 INSTALL_DIR = os.path.dirname(SRC_DIR)          # .../install
@@ -45,6 +46,7 @@ _SSL = ssl.create_default_context()
 # their own port. Guarded import so the single-agent path never breaks if the wizard
 # package is somehow absent.
 sys.path.insert(0, SRC_DIR)
+from winspawn import CREATE_NEW_PROCESS_GROUP, quiet    # noqa: E402 (needs the path)
 try:
     from wizard import agents_registry as _registry
     from wizard import hermes_ctl as _hctl
@@ -67,6 +69,10 @@ try:
     from wizard import image_setup as _images
 except Exception:  # noqa: BLE001
     _images = None
+try:
+    import intercom as _intercom
+except Exception:  # noqa: BLE001
+    _intercom = None
 
 
 # The update source is PINNED into the distributed code. A mutable `repo` in updater.config.json
@@ -378,7 +384,11 @@ def _start_gateway(agent, ent):
             log(f"agent '{slug}': its gateway is already running outside our supervision; "
                 f"leaving it alone")
             ent["gw_external"] = True
-        rs["retry_at"] = now + 60          # re-check occasionally, cheaply
+        # Not cheap, whatever the old comment here said: one `gateway status` is cmd.exe ->
+        # hermes.exe -> python -> python -> wmic x2, ~2.5s. A healthy gateway owned by
+        # somebody else does not need watching every minute; five is plenty, and the
+        # keep-alive for a gateway that IS ours stays on the fast path below.
+        rs["retry_at"] = now + 300
         return None
     ent["gw_external"] = False
 
@@ -388,7 +398,7 @@ def _start_gateway(agent, ent):
     cmd = base + ["gateway", "run", "--external-supervisor", "-q"]
     try:
         log(f"starting gateway for agent '{slug}'")
-        child = subprocess.Popen(cmd, cwd=INSTALL_DIR)
+        child = subprocess.Popen(cmd, **quiet(cwd=INSTALL_DIR))
     except Exception as e:  # noqa: BLE001
         log(f"gateway start failed for '{slug}': {e}")
         rs["retry_at"] = now + 60
@@ -500,7 +510,7 @@ def start_bridge(cfg):
         log(f"cannot start the bridge: {script} does not exist")
         return None
     log(f"starting bridge: {cmd}")
-    return subprocess.Popen(cmd, cwd=cfg.get("bridge_cwd", INSTALL_DIR), env=env)
+    return subprocess.Popen(cmd, **quiet(cwd=cfg.get("bridge_cwd", INSTALL_DIR), env=env))
 
 
 def _free_bridge_port(cfg):
@@ -514,8 +524,8 @@ def _free_bridge_port(cfg):
         return
     port = m.group(1)
     try:
-        out = subprocess.run(["netstat", "-ano"], capture_output=True, text=True,
-                             timeout=30).stdout
+        out = subprocess.run(["netstat", "-ano"],
+                             **quiet(capture_output=True, text=True, timeout=30)).stdout
     except Exception:  # noqa: BLE001
         return
     pids = set()
@@ -527,7 +537,8 @@ def _free_bridge_port(cfg):
     for pid in pids:
         log(f"freeing port {port}: stopping leftover process {pid}")
         try:
-            subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True, timeout=30)
+            subprocess.run(["taskkill", "/F", "/PID", pid],
+                           **quiet(capture_output=True, timeout=30))
         except Exception:  # noqa: BLE001
             pass
 
@@ -760,13 +771,14 @@ def respawn_self():
     launcher.py killed the supervisor AND the bridge, so the agent went dark until the next
     login, with nothing in the log after "re-exec'ing".
 
-    subprocess.Popen quotes properly, and DETACHED_PROCESS means the new supervisor is not tied
-    to this one's console or lifetime."""
+    subprocess.Popen quotes properly. Its own process group keeps the new supervisor free of
+    this one's Ctrl-C/lifetime, and quiet() keeps it (and anything it starts) off the owner's
+    screen - see src/winspawn.py for why DETACHED_PROCESS is the wrong flag for that."""
     if os.name == "nt":
-        DETACHED_PROCESS, CREATE_NO_WINDOW = 0x00000008, 0x08000000
         try:
-            subprocess.Popen([sys.executable, SELF], cwd=INSTALL_DIR, close_fds=True,
-                             creationflags=DETACHED_PROCESS | CREATE_NO_WINDOW)
+            subprocess.Popen([sys.executable, SELF], **quiet(
+                cwd=INSTALL_DIR, close_fds=True,
+                creationflags=CREATE_NEW_PROCESS_GROUP))
         except Exception as e:  # noqa: BLE001
             log(f"could not restart the supervisor ({e}); staying up with the old launcher")
             return False
@@ -807,36 +819,99 @@ def _write_launcher_vbs(path, pyw, wiz, sos=False):
         fh.write("\n".join(body) + "\n")
 
 
+def _desktop_dir():
+    """Where the Desktop REALLY is.
+
+    `~/Desktop` is a guess, and it is wrong on any machine where OneDrive backs up the
+    desktop - the folder becomes `~/OneDrive/Desktop` and `~/Desktop` does not exist at
+    all (verified here). The old guess meant the self-repair below silently did nothing
+    on exactly the machines whose desktop is most likely to lose a file to a sync.
+    Windows keeps the answer in the shell-folder registry; ask it.
+    """
+    if os.name == "nt":
+        for key in ("Shell Folders", "User Shell Folders"):
+            try:
+                import winreg
+                path = r"Software\Microsoft\Windows\CurrentVersion\Explorer\%s" % key
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path) as k:
+                    val = os.path.expandvars(winreg.QueryValueEx(k, "Desktop")[0])
+                if val and os.path.isdir(val):
+                    return val
+            except Exception:  # noqa: BLE001 - fall through to the guess
+                pass
+    return os.path.join(os.path.expanduser("~"), "Desktop")
+
+
 def _start_menu_dir():
     return os.path.join(os.environ.get("APPDATA", ""), "Microsoft", "Windows",
                         "Start Menu", "Programs")
 
 
-def _make_lnk(lnk, target, description):
+def app_icon():
+    """The Olivaw icon, or "" when this copy of the code predates it.
+
+    It lives inside src/, so an update replaces it along with everything else and the
+    path never changes.
+    """
+    ico = os.path.join(SRC_DIR, "assets", "olivaw.ico")
+    return ico if os.path.isfile(ico) else ""
+
+
+def _run_vbs(script, name):
+    """Write a throwaway .vbs, run it windowless, delete it. Returns True if it ran."""
+    mk = os.path.join(INSTALL_DIR, name)
+    try:
+        with open(mk, "w", encoding="ascii", errors="replace") as fh:
+            fh.write("\n".join(script) + "\n")
+        subprocess.run(["wscript.exe", "//B", mk], **quiet(timeout=30))
+        return True
+    except Exception as e:  # noqa: BLE001
+        log("could not run %s: %s" % (name, e))
+        return False
+    finally:
+        try:
+            os.remove(mk)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _make_lnk(lnk, target, description, icon=""):
     """Create a .lnk if it is missing (WScript can write shortcuts; no pywin32 needed)."""
     if not lnk or os.path.exists(lnk) or not os.path.isdir(os.path.dirname(lnk)):
         return
-    mk = os.path.join(INSTALL_DIR, "_mklnk.vbs")
     script = [
         'Set s = CreateObject("WScript.Shell")',
         'Set l = s.CreateShortcut("%s")' % lnk,
         'l.TargetPath = "%s"' % target,
         'l.WorkingDirectory = "%s"' % INSTALL_DIR,
         'l.Description = "%s"' % description,
-        "l.Save",
     ]
-    try:
-        with open(mk, "w", encoding="ascii", errors="replace") as fh:
-            fh.write("\n".join(script) + "\n")
-        subprocess.run(["wscript.exe", "//B", mk], timeout=30)
+    if icon:
+        script.append('l.IconLocation = "%s,0"' % icon)
+    script.append("l.Save")
+    if _run_vbs(script, "_mklnk.vbs"):
         log("created the shortcut %s" % os.path.basename(lnk))
-    except Exception as e:  # noqa: BLE001
-        log("could not create %s: %s" % (os.path.basename(lnk), e))
-    finally:
-        try:
-            os.remove(mk)
-        except Exception:  # noqa: BLE001
-            pass
+
+
+def _ensure_lnk_icon(lnk, icon):
+    """Give an EXISTING shortcut our icon, once.
+
+    Shortcuts made before there was an icon point at a .vbs, so Windows shows the generic
+    Windows Script Host page - which is also the icon of a file type Microsoft is
+    retiring. _make_lnk() cannot fix those: it only ever creates a missing shortcut.
+    The VBS only saves when our .ico is not already the one referenced, so this is a
+    no-op on every boot after the first.
+    """
+    if not (lnk and icon and os.path.isfile(lnk) and os.path.isfile(icon)):
+        return
+    _run_vbs([
+        'Set s = CreateObject("WScript.Shell")',
+        'Set l = s.CreateShortcut("%s")' % lnk,
+        'If InStr(LCase(l.IconLocation), LCase("%s")) = 0 Then' % icon,
+        '  l.IconLocation = "%s,0"' % icon,
+        '  l.Save',
+        'End If',
+    ], "_mkico.vbs")
 
 
 def _ensure_app_shortcut():
@@ -873,35 +948,24 @@ def _ensure_app_shortcut():
             _write_launcher_vbs(vbs, pyw, wiz)
             log("repaired the app-shortcut launcher (interpreter path had changed)")
 
+        ico = app_icon()
+
         # A dedicated SOS launcher: straight to the help console, no setup flow in the way.
         sos_vbs = os.path.join(INSTALL_DIR, "Olivaw-SOS.vbs")
         if _vbs_needs_write(sos_vbs):
             _write_launcher_vbs(sos_vbs, pyw, wiz, sos=True)
-        _make_lnk(os.path.join(_start_menu_dir(), "Olivaw SOS.lnk"), sos_vbs,
-                  "Hablar con Claude sobre Olivaw (ayuda directa)")
+        start_menu = _start_menu_dir()
+        sos_lnk = os.path.join(start_menu, "Olivaw SOS.lnk")
+        _make_lnk(sos_lnk, sos_vbs, "Hablar con Claude sobre Olivaw (ayuda directa)", ico)
 
         # Recreate the desktop shortcut if the user lost it (WScript can make .lnk files).
-        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+        desktop = _desktop_dir()
         lnk = os.path.join(desktop, "Olivaw.lnk")
-        if os.path.isdir(desktop) and not os.path.exists(lnk):
-            mk = os.path.join(INSTALL_DIR, "_mklnk.vbs")
-            script = [
-                'Set s = CreateObject("WScript.Shell")',
-                'Set l = s.CreateShortcut("%s")' % lnk,
-                'l.TargetPath = "%s"' % vbs,
-                'l.WorkingDirectory = "%s"' % INSTALL_DIR,
-                'l.Description = "Abrir la configuracion / ayuda de Olivaw"',
-                "l.Save",
-            ]
-            with open(mk, "w", encoding="ascii", errors="replace") as fh:
-                fh.write("\n".join(script) + "\n")
-            subprocess.run(["wscript.exe", "//B", mk], timeout=30)
-            try:
-                os.remove(mk)
-            except Exception:
-                pass
-            if os.path.exists(lnk):
-                log("recreated the Olivaw desktop shortcut")
+        _make_lnk(lnk, vbs, "Abrir la configuracion / ayuda de Olivaw", ico)
+
+        # Shortcuts that already exist were made before there was an icon: give them one.
+        for existing in (lnk, sos_lnk, os.path.join(start_menu, "Olivaw.lnk")):
+            _ensure_lnk_icon(existing, ico)
     except Exception as e:
         log(f"shortcut check skipped: {e}")
 
@@ -1035,6 +1099,29 @@ def _ensure_image_skill():
             log(f"images: could not teach {r['profile']}: {r.get('detail', '')}")
 
 
+def _ensure_intercom_skill():
+    """Tell every agent who its colleagues are, and how to ask them something.
+
+    Rewritten whenever the roster changes: the skill NAMES the other agents, so an agent
+    added today has to appear in the skill the others already have. Nothing here enables
+    anything the owner has not enabled - it only teaches.
+    """
+    if not _intercom:
+        return
+    try:
+        results = _intercom.ensure_all(log=log, install_dir=INSTALL_DIR)
+    except Exception as e:  # noqa: BLE001
+        log(f"intercom: skill check failed: {e}")
+        return
+    for r in results:
+        if r.get("changed"):
+            log(f"intercom: taught {r['profile']} who else is on this machine "
+                f"({r.get('path')})")
+            _skill_needs_reload(r["profile"], "intercom")
+        elif not r.get("ok"):
+            log(f"intercom: could not teach {r['profile']}: {r.get('detail', '')}")
+
+
 def _activate_pending_policy(cfg, state):
     """Restart a gateway whose conversation policy changed, once that agent is idle.
 
@@ -1096,6 +1183,7 @@ def main():
     _ensure_context_policy()
     _ensure_browser_skill()
     _ensure_image_skill()
+    _ensure_intercom_skill()
     last_check = 0.0
     while True:
         try:
