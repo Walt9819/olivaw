@@ -544,6 +544,8 @@ if (-not $UseWizard) {
     env = @{ OLIVAW_ENGINE = $Engine; CLAUDE_BRIDGE_CLAUDE = $claude; OLIVAW_CODEX = $codex; CLAUDE_BRIDGE_WORKSPACE = $Workspace }
     telegram_bot_token = $BotToken; telegram_chat_id = $ChatId; maintainer_chat_id = $MaintainerId
     poll_minutes = 45; idle_seconds = 300; nightly_hour = 4; lang = $Lang
+    # Rest hours for the update fallback (see launcher.py rest_window).
+    update_from_hour = 3; update_until_hour = 7
   }
   ($cfg | ConvertTo-Json -Depth 6) | Out-File -Encoding utf8 (Join-Path $InstallDir "updater.config.json")
   Ok "Escrito updater.config.json"

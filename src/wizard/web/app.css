@@ -68,6 +68,25 @@ body{
 .step.clickable:hover{background:var(--panel-2)}
 .sidebar-foot{margin-top:auto; font-size:12px; color:var(--muted); display:flex; align-items:center; gap:8px}
 .dot-ok{width:9px;height:9px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 4px var(--ok-bg)}
+/* The version line sits UNDER the connection line, so it must not fight it for the
+   free space that margin-top:auto claims - two auto margins would split it and push
+   them apart. */
+#verFoot{margin-top:6px; justify-content:space-between}
+/* The sidebar is a fixed-height column with a pinned foot, so when the two lists inside
+   it grow past the window - a machine with several agents, or just a shorter laptop
+   screen - the LIST has to be what scrolls. Letting the page scroll instead drags the
+   panel and the version line out of view together, which is how the version ended up
+   permanently below the fold at 911px the first time this was built. */
+/* height, not just overflow: .app is min-height:100vh, so the grid ROW grows to fit its
+   tallest child and an unconstrained sidebar simply gets taller than the window - clipping
+   nothing and pushing the foot off-screen. Pinning it to the viewport is what gives the
+   list something to scroll inside. */
+.sidebar{height:100vh; position:sticky; top:0; overflow:hidden}
+.stepper,.tree{min-height:0; overflow-y:auto; overscroll-behavior:contain}
+.verbadge{border:0; cursor:pointer; font:inherit; font-size:11px; font-weight:700;
+  padding:2px 8px; border-radius:999px; background:var(--accent); color:#fff;
+  letter-spacing:.02em}
+.verbadge:hover{filter:brightness(1.08)}
 
 /* ── stage / panel ───────────────────────────────────────── */
 .stage{display:flex; flex-direction:column; min-height:100vh}
@@ -257,6 +276,9 @@ body.console .nav{display:none}
   body.console .sidebar{display:block; border-right:none; border-bottom:1px solid var(--line);
     padding:14px 16px; max-height:42vh; overflow:auto}
   body.console .brand,body.console .sidebar-foot{display:none}
+  /* except the version: it is the only way to tell a current install from a
+     stuck one, and a phone-width window needs that as much as a desktop. */
+  body.console #verFoot{display:flex}
 }
 
 /* ── rescue console: live event stream (reasoning + actions) ───────────────── */

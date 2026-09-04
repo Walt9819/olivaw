@@ -28,6 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 # allow running as a script (python src/wizard/wizard_server.py) or as a module
 if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from wizard import updates as updates_mod
     from wizard import (agents_registry, browser_setup, channels, checks, config_writer,
                         context_policy, hermes_ctl, image_setup, obsidian, proposals,
                         providers, rescue, selfcare, telegram_health, telegram_setup, usecases)
@@ -35,6 +36,7 @@ if __package__ in (None, ""):
                                             # variable name elsewhere in this file
     from wizard.procutil import http_json, which
 else:
+    from . import updates as updates_mod
     from . import (agents_registry, browser_setup, channels, checks, config_writer,
                    context_policy, hermes_ctl, image_setup, obsidian, proposals, providers,
                    rescue, selfcare, telegram_health, telegram_setup, usecases)
@@ -211,6 +213,10 @@ def initial_state():
     return {
         "agents": agents_snapshot(),
         "lang": "es",
+        # Shown in the sidebar. An owner who cannot see a version number cannot tell an
+        # install that updated itself from one that has been stuck for a month, which is
+        # exactly the doubt that made us go looking for a broken updater.
+        "version": updates_mod.current_version(INSTALL_DIR),
         "defaults": {
             "install_dir": INSTALL_DIR,
             "workspace": workspace,
@@ -321,7 +327,15 @@ def start_supervisor():
     will pick up what the wizard just wrote within seconds. This avoids a double
     launcher on macOS, where launchd may have started one at install time.
     """
-    if http_json("http://127.0.0.1:8790/health", timeout=3)[0]:
+    # The heartbeat is the accurate signal: a bridge answering on 8790 can be an ORPHAN
+    # left by a dead supervisor, still serving turns while nothing supervises or updates
+    # it — and refusing to start on that evidence is how a machine ends up never updating.
+    # The /health check stays as the fallback for installs older than the heartbeat.
+    sup = updates_mod.supervisor(INSTALL_DIR)
+    if sup["running"]:
+        return {"ok": True, "detail": "El supervisor ya está corriendo; aplicará la "
+                                      "nueva configuración en unos segundos."}
+    if not sup["known"] and http_json("http://127.0.0.1:8790/health", timeout=3)[0]:
         return {"ok": True, "detail": "El supervisor ya está corriendo; aplicará la "
                                       "nueva configuración en unos segundos."}
     if not os.path.exists(LAUNCHER_PY):
@@ -608,6 +622,32 @@ class Handler(BaseHTTPRequestHandler):
         # owner's screen, so it is a button she presses, never something we decide.
         if route == "images/status":
             return image_setup.status(body.get("profile") or None, install_dir=INSTALL_DIR)
+
+        # Updating. The supervisor is the only process that may swap src/ (it holds the
+        # bridge handles), so the UI reads its state file and drops a request; see
+        # wizard/updates.py. "check" forces a fresh look at GitHub for the button that
+        # says so, instead of the cached one every panel load uses.
+        if route == "update/status":
+            return updates_mod.status(INSTALL_DIR)
+        if route == "update/check":
+            return updates_mod.status(INSTALL_DIR, force=True)
+        if route == "update/apply":
+            # A request nobody reads is a button that lies. If the supervisor is not
+            # running, start it first - and that is also the repair for the machine this
+            # whole feature exists for: one whose supervisor never came up at login.
+            sup = updates_mod.supervisor(INSTALL_DIR)
+            started = None
+            if not sup["running"]:
+                started = start_supervisor()
+            res = updates_mod.request(INSTALL_DIR)
+            if started is not None:
+                res["supervisor_started"] = bool(started.get("ok"))
+                res["detail"] = ("Encendí el supervisor y se lo pedí; tarda unos segundos."
+                                 if started.get("ok") else
+                                 "No pude encender el supervisor: %s" % started.get("detail", ""))
+                if not started.get("ok"):
+                    res["ok"] = False
+            return res
 
         if route == "browser/status":
             return browser_setup.status(body.get("profile") or None)

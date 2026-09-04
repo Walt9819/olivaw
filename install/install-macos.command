@@ -186,7 +186,9 @@ cfg={"repo":repo,"auto_update":True,"bridge_cmd":[py,"src/claude_bridge.py","--p
  "env":{"OLIVAW_ENGINE":engine,"CLAUDE_BRIDGE_CLAUDE":claude,"OLIVAW_CODEX":codex,
         "CLAUDE_BRIDGE_WORKSPACE":ws},
  "telegram_bot_token":bot,"telegram_chat_id":chat,"maintainer_chat_id":maint,
- "poll_minutes":45,"idle_seconds":300,"nightly_hour":4,"lang":lang}
+ "poll_minutes":45,"idle_seconds":300,"nightly_hour":4,
+ # rest hours for the update fallback (launcher.py rest_window)
+ "update_from_hour":3,"update_until_hour":7,"lang":lang}
 open(inst+"/updater.config.json","w").write(json.dumps(cfg,indent=2,ensure_ascii=False))
 PYEOF
 ok "Escrito updater.config.json"

@@ -204,6 +204,16 @@ const narrow = CSS.slice(CSS.indexOf("@media(max-width:860px)"));
 ok("a narrow window keeps the console's sidebar reachable",
    /body\.console \.sidebar\{display:block/.test(narrow) && /max-height:42vh/.test(narrow),
    narrow.slice(0, 400));
+ok("and still shows the version there, which is the one line that has to be legible",
+   /body\.console #verFoot\{display:flex\}/.test(narrow), narrow.slice(0, 600));
+// .app is min-height:100vh, so the grid ROW grows to its tallest child: without an
+// explicit height the sidebar simply gets taller than the window and its foot goes
+// off-screen. Measured at 855px of viewport, the version line landed at y=911 - invisible,
+// with no way to scroll to it that did not also drag the panel away.
+ok("the sidebar is pinned to the viewport, so its foot cannot fall off the bottom",
+   /\.sidebar\{height:100vh; position:sticky; top:0; overflow:hidden\}/.test(CSS), "rule missing");
+ok("and the agent list is what scrolls when it does not fit",
+   /\.stepper,\.tree\{min-height:0; overflow-y:auto/.test(CSS), "rule missing");
 
 console.log("\n=== the agent's page says how it is and what else you can change ===");
 const home = getEl("panel")._html;
@@ -353,6 +363,76 @@ ok("for the agent selected in the sidebar, and no other",
    enable.length === 1 && enable[0].body.profile === "daneel", JSON.stringify(enable));
 ok("and tells it whose window it is, so the tab can say so",
    enable.length === 1 && enable[0].body.name === "Daneel", JSON.stringify(enable));
+
+// ── version + updates ──────────────────────────────────────────────────────────
+// The owner's complaint was "it does not update itself", and the machinery was fine —
+// what was missing was any way to SEE it. So the states pinned here are the ones that
+// answer that question on screen: what version am I on, is there a newer one, and is the
+// thing that installs it even running.
+console.log("\n=== the panel can answer 'am I up to date?' ===");
+async function paintUpdate(reply) {
+  CANNED["update/status"] = reply;
+  CANNED["update/check"] = reply;
+  CALLS.length = 0;
+  OL.goSec("version", "default");
+  await new Promise((r) => setTimeout(r, 0));
+  return { box: getEl("updBox")._html, log: getEl("updLog")._html };
+}
+let upd = await paintUpdate({
+  ok: true, current: "1.0.42", latest: "1.0.42", available: false,
+  auto_update: true, supervisor_running: true, supervisor_known: true,
+  rest_from: 18, rest_until: 24, rest_text: "entre las 18:00 y las 00:00" });
+ok("it names the installed version", upd.box.includes("1.0.42"), upd.box);
+ok("up to date reads as up to date", /Es la última/.test(upd.box), upd.box);
+ok("and says when it would install one on its own",
+   upd.box.includes("18:00") && /cuando nadie lo usa/.test(upd.box), upd.box);
+ok("the sidebar shows the version too", getEl("verNum").textContent === "Olivaw v1.0.42",
+   getEl("verNum").textContent);
+ok("and no badge when there is nothing to install", getEl("verBadge").hidden === true);
+
+upd = await paintUpdate({
+  ok: true, current: "1.0.30", latest: "1.0.42", available: true,
+  changelog: "Cada agente abre su propia ventana.", auto_update: true,
+  supervisor_running: true, supervisor_known: true, rest_from: 18, rest_until: 24,
+  rest_text: "entre las 18:00 y las 00:00" });
+ok("a newer version is offered", /Hay una más nueva/.test(upd.box), upd.box);
+ok("with what it actually contains", upd.box.includes("propia ventana"), upd.box);
+ok("the sidebar badge appears", getEl("verBadge").hidden === false);
+ok("and says which version it would install",
+   getEl("verBadge").textContent === "Actualizar a 1.0.42", getEl("verBadge").textContent);
+
+// The state that made the whole feature necessary: nothing is running, so nothing checks
+// and nothing installs, however many times the owner presses.
+upd = await paintUpdate({
+  ok: true, current: "1.0.30", latest: "1.0.42", available: true, auto_update: true,
+  supervisor_running: false, supervisor_known: true, rest_from: 4, rest_until: 7 });
+ok("a stopped background service is named as the reason",
+   /no se actualiza solo/.test(upd.box), upd.box);
+ok("and it is not dressed up as healthy", !/✅ <b>Servicio/.test(upd.box), upd.box);
+
+upd = await paintUpdate({
+  ok: true, current: "1.0.30", latest: "", available: false, auto_update: true,
+  error: "getaddrinfo failed", supervisor_running: true, supervisor_known: true });
+ok("an offline machine says so instead of claiming to be current",
+   /No pude preguntarle a GitHub/.test(upd.box), upd.box);
+ok("and still shows the version it is on", upd.box.includes("1.0.30"), upd.box);
+
+CANNED["update/status"] = { ok: true, current: "1.0.30", latest: "1.0.42", available: true,
+                            auto_update: true, supervisor_running: true, supervisor_known: true };
+OL.goSec("version", "default");
+await new Promise((r) => setTimeout(r, 0));
+CALLS.length = 0;
+const updBtn = getEl("updNow");
+let updErr = null;
+try { updBtn.onclick.call(updBtn); } catch (e) { updErr = e; }
+await new Promise((r) => setTimeout(r, 0));
+ok("pressing 'update now' asks the server, once",
+   !updErr && CALLS.filter((c) => c.route === "update/apply").length === 1,
+   updErr ? updErr.stack : JSON.stringify(CALLS.map((c) => c.route)));
+ok("and it is a machine-wide action, not one agent's",
+   !CALLS.filter((c) => c.route === "update/apply")
+      .some((c) => Object.prototype.hasOwnProperty.call(c.body, "profile")),
+   JSON.stringify(CALLS));
 
 // ── the first run must still be the stepper ────────────────────────────────────
 console.log("\n=== a machine with no agents still gets the guided install ===");

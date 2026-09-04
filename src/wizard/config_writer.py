@@ -249,6 +249,12 @@ def write_all(cfg):
             "maintainer_chat_id": str(cfg.get("maintainer_id") or cfg.get("chat_id", "")),
             "poll_minutes": 45,
             "idle_seconds": 300,
+            # Rest hours: when the machine is never quiet for long, updates still land
+            # inside this window. Written explicitly so the owner can widen or move it by
+            # editing one file - and because a window nothing reads is worse than none
+            # (launcher.py grew these keys after they had been written here for weeks).
+            "update_from_hour": 3,
+            "update_until_hour": 7,
             "nightly_hour": 4,
             "lang": cfg.get("lang", "es"),
         }

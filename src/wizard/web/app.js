@@ -251,7 +251,12 @@
       title: "El cerebro y el motor",
       lead: "Quién razona por tus agentes y qué ejecuta sus acciones. Es <b>compartido</b>: " +
             "lo que cambies aquí les afecta a todos.",
-      render: secBrain, wire: eBrain }
+      render: secBrain, wire: eBrain },
+    { id: "version", scope: "team", icon: "🔄", label: "Versión y actualizaciones",
+      title: "Versión y actualizaciones",
+      lead: "Olivaw se actualiza solo cuando nadie lo está usando. Aquí ves en qué " +
+            "versión estás y puedes forzarlo si no quieres esperar.",
+      render: secUpdate, wire: eUpdate }
   ];
 
   function goSec(id, slug) {
@@ -451,6 +456,110 @@
     if (el("brainRecheck")) el("brainRecheck").onclick = load;
     if (el("brainRedo")) el("brainRedo").onclick = function () { enterSetup(1); };
     load();
+  }
+
+  // ── version + updates ─────────────────────────────────────────────────────
+  // Updating is the supervisor's job (it owns the bridges), so this panel only reads its
+  // state and asks. The one state worth designing for is the bad one: a supervisor that
+  // is not running means nothing ever checks, and no amount of pressing helps until it is.
+  function secUpdate() {
+    return '' +
+      '<div id="updBox" class="card pad"><span class="muted small">Comprobando…</span></div>' +
+      '<div class="row" style="margin-top:12px">' +
+      '<button class="btn btn-primary btn-sm" id="updNow">Actualizar ahora</button>' +
+      '<button class="btn btn-soft btn-sm" id="updCheck">Buscar actualizaciones</button></div>' +
+      chLine("updPill") +
+      '<div id="updLog" class="small muted" style="margin-top:10px"></div>';
+  }
+
+  function eUpdate() {
+    var pill = el("updPill");
+    function paint(st) {
+      var box = el("updBox");
+      if (!box) return;
+      if (!st || !st.ok) { box.innerHTML = "No pude comprobarlo."; return; }
+      var rows = [];
+      rows.push(sumline("📦", "Versión instalada", st.current || "?"));
+      if (st.latest)
+        rows.push(sumline(st.available ? "🔄" : "✅",
+                          st.available ? "Hay una más nueva" : "Es la última",
+                          st.latest));
+      else if (st.error)
+        rows.push(sumline("⚠️", "No pude preguntarle a GitHub", esc(st.error)));
+      // The honest headline: without a supervisor nothing checks and nothing installs.
+      rows.push(st.supervisor_running
+        ? sumline("✅", "Servicio en segundo plano", "encendido")
+        : sumline("⚠️", "Servicio en segundo plano",
+                  st.supervisor_known
+                    ? "apagado — sin él no se actualiza solo"
+                    : "no lo sé (versión anterior a este aviso)"));
+      rows.push(st.auto_update
+        ? sumline("🌙", "Se actualiza solo",
+                  "cuando nadie lo usa" + (st.rest_text ? ", o " + esc(st.rest_text) : ""))
+        : sumline("⏸️", "Se actualiza solo", "desactivado"));
+      box.innerHTML = '<ul class="filelist">' + rows.join("") + '</ul>' +
+        (st.available && st.changelog
+          ? '<div class="hr"></div><b class="small">Qué trae la ' + esc(st.latest) +
+            '</b><div class="small muted" style="margin-top:6px;white-space:pre-wrap">' +
+            esc(st.changelog) + '</div>'
+          : "");
+      var lg = el("updLog");
+      if (lg) {
+        var r = st.result;
+        lg.innerHTML = st.pending
+          ? "⏳ Pedido enviado; el servicio lo aplica en unos segundos."
+          : (r ? (r.ok ? "✓ " : "✕ ") + esc(r.detail || "") : "");
+      }
+      var b = el("updNow");
+      if (b) b.textContent = st.available ? "Actualizar ahora" : "Reinstalar esta versión";
+      if (b) b.disabled = !st.available && !st.error;
+    }
+    function load(force) {
+      return api(force ? "update/check" : "update/status", {}).then(function (st) {
+        paint(st); paintVersion(st); return st;
+      });
+    }
+    if (el("updCheck")) el("updCheck").onclick = function () {
+      pill.style.display = "inline-flex";
+      runTest(this, pill, function () {
+        return load(true).then(function (st) {
+          return { ok: true, detail: st && st.available
+            ? "Hay una nueva: " + st.latest : "Ya estás al día (" + (st && st.current) + ")" };
+        });
+      }, "Preguntando a GitHub…");
+    };
+    if (el("updNow")) el("updNow").onclick = function () {
+      pill.style.display = "inline-flex";
+      runTest(this, pill, function () { return api("update/apply", {}); }, "Pidiéndolo…")
+        .then(function () {
+          // The supervisor works on its own clock (~15s a loop), so watch for the result
+          // rather than reporting success the moment the request file is written.
+          var tries = 0;
+          (function poll() {
+            load().then(function (st) {
+              tries++;
+              if (st && (st.pending || (!st.result && tries < 12))) setTimeout(poll, 5000);
+            });
+          })();
+        });
+    };
+    if (el("updBox")) load(false);
+  }
+
+  // The sidebar's version line. Painted from META at boot and refreshed by any update
+  // check, so it is right in the wizard too — where there is no console section at all.
+  function paintVersion(st) {
+    var num = el("verNum"), badge = el("verBadge");
+    var cur = (st && st.current) || META.version || "";
+    if (num) num.textContent = cur ? "Olivaw v" + cur : "";
+    if (!badge) return;
+    var avail = !!(st && st.available);
+    badge.hidden = !avail;
+    if (avail) {
+      badge.textContent = "Actualizar a " + st.latest;
+      badge.title = "Hay una versión nueva (" + st.latest + ")";
+      badge.onclick = function () { goSec("version"); };
+    }
   }
 
   function renderConsole() {
@@ -3096,6 +3205,15 @@
         if (!S.workspace) S.workspace = d.workspace || "";
         if (!S.hermes_config) S.hermes_config = d.hermes_config || "";
         if (!S.repo || S.repo === "Walt9819/olivaw") S.repo = d.repo || S.repo;
+        META.version = st.version || "";
+      }
+      // The version line, straight away and from META - no network. The badge needs a
+      // real check, which runs in the background so a slow or offline GitHub delays
+      // nothing on screen. On a first install there is nothing to badge: it just
+      // downloaded the latest release minutes ago.
+      paintVersion(null);
+      if (hasAnyAgent()) {
+        api("update/status", {}).then(paintVersion).catch(function () {});
       }
       // Open on the brain this machine was installed with, unless the owner has since picked
       // one here: answering "Codex" in the installer and then finding Claude selected is being

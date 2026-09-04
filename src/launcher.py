@@ -137,8 +137,13 @@ def load_config():
         # load_config() runs every supervisor loop (15s), so logging this unconditionally
         # grew launcher.log by megabytes. Say it once per state change.
         if "missing" not in _warned:
-            log(f"no {CONFIG_PATH}; running in supervise-only mode (no auto-update). "
-                f"Finish the wizard (Aplicar y activar) to enable updates.")
+            # This used to say "no auto-update", which is not what the code does: the
+            # defaults below turn auto_update ON, and with no bridge answering the idle
+            # gate is open, so a config-less install updates itself perfectly well. What
+            # it CANNOT do is tell the owner about it - that needs the Telegram token the
+            # wizard writes. Saying otherwise sent us looking for a broken updater.
+            log(f"no {CONFIG_PATH}: updates still apply (defaults), but there is no "
+                f"Telegram token yet to announce them. Finish the wizard to get notices.")
             _warned.add("missing")
     except Exception as e:
         key = "bad:%s" % e
@@ -261,8 +266,44 @@ def engine_mismatch(cfg):
     return None if live == want else (live, want)
 
 
+def rest_window(cfg):
+    """(from_hour, to_hour) of the hours the owner considers rest time.
+
+    ``update_from_hour`` / ``update_until_hour`` were already being written into
+    updater.config.json on at least one machine and read by NOTHING, so the window the
+    owner picked was silently ignored and the fallback stayed one hour wide.
+
+    Absent those keys, the window is derived from ``nightly_hour`` and is three hours long
+    rather than one. That is deliberately a superset of the old behaviour: an install that
+    used to get its update at 04:00 still does, and one whose machine happens to be busy
+    or asleep for that single hour now has two more chances before the night is over.
+    """
+    a, b = cfg.get("update_from_hour"), cfg.get("update_until_hour")
+    if a is None or b is None:
+        n = int(cfg.get("nightly_hour", 4)) % 24
+        return n, (n + 3) % 24
+    try:
+        a, b = int(a) % 24, int(b)
+    except (TypeError, ValueError):
+        n = int(cfg.get("nightly_hour", 4)) % 24
+        return n, (n + 3) % 24
+    # "until 24" is how a person writes "to the end of the day"; 24 % 24 == 0 says the
+    # same thing to the comparison below, since a > b then wraps past midnight.
+    return a, b % 24
+
+
+def in_rest_window(cfg, now=None):
+    """Is it rest time right now? Handles a window that wraps midnight (22 -> 6)."""
+    h = (now or datetime.datetime.now()).hour
+    a, b = rest_window(cfg)
+    if a == b:
+        return True                    # from == until: the owner said "whenever"
+    return (a <= h < b) if a < b else (h >= a or h < b)
+
+
+# Kept for anything still calling the old name; the semantics are now the window's.
 def in_nightly_window(cfg):
-    return datetime.datetime.now().hour == int(cfg.get("nightly_hour", 4))
+    return in_rest_window(cfg)
 
 
 # ── additional agents (multi-agent) ──────────────────────────────────────────
@@ -727,8 +768,86 @@ def _friendly_note(cfg, ver, changelog):
     return f"🔄 Tu asistente se actualizó a la versión {ver}.{cl}"
 
 
-def maybe_update(cfg, state):
-    if not cfg.get("auto_update"):
+# ── what the UI is allowed to know, and to ask for ───────────────────────────
+# The supervisor owns updating: it holds the bridge handles, so it is the only process that
+# can stop them, swap the shared src/ and bring them back. The wizard runs separately and
+# must not do any of that behind its back. So the two talk through two small files in the
+# install root (which an update never touches, since only src/ and templates/ are swapped):
+#
+#   update.state.json   written here after every check - what the UI shows
+#   update.request      written by the UI - "the owner pressed the button, go now"
+#
+# The request controls only WHEN. What gets installed is still the pinned repo's latest
+# release, still verified against its published SHA-256, so a stray request cannot point
+# the machine at other code. And anything able to write this file can already write src/
+# directly, so it grants no authority that wasn't there.
+STATE_PATH = os.path.join(INSTALL_DIR, "update.state.json")
+REQUEST_PATH = os.path.join(INSTALL_DIR, "update.request")
+RESULT_PATH = os.path.join(INSTALL_DIR, "update.result.json")
+# Rewritten every loop (~15s). Without it nothing outside this process can tell a
+# supervisor that is running from one that died at login, and the difference decides
+# whether an "update now" button does anything at all: the request file is only ever read
+# from here. A bridge answering on 8790 is NOT the same evidence - it can be an orphan
+# from a previous supervisor, still serving while nothing supervises or updates it.
+HEARTBEAT_PATH = os.path.join(INSTALL_DIR, "supervisor.alive")
+
+
+def _write_json(path, data):
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, ensure_ascii=False)
+        os.replace(tmp, path)
+    except Exception as e:  # noqa: BLE001 - telling the UI is never worth a crash
+        log(f"could not write {os.path.basename(path)}: {e}")
+
+
+def publish_state(cfg, rel=None, error="", deferred=""):
+    """Leave the UI a snapshot of where updating stands."""
+    a, b = rest_window(cfg)
+    cur = read_version()
+    latest = (rel or {}).get("version") or ""
+    _write_json(STATE_PATH, {
+        "checked_at": time.time(),
+        "current": cur,
+        "latest": latest,
+        "available": bool(latest) and vtuple(latest) > vtuple(cur),
+        "changelog": (rel or {}).get("changelog") or "",
+        "auto_update": bool(cfg.get("auto_update")),
+        "rest_from": a, "rest_until": b,
+        "in_rest_window": in_rest_window(cfg),
+        "poll_minutes": int(cfg.get("poll_minutes", 45)),
+        "error": error,
+        "deferred": deferred,
+    })
+
+
+def beat(cfg):
+    """Say "still here", cheaply. One line, overwritten in place."""
+    try:
+        with open(HEARTBEAT_PATH, "w", encoding="utf-8") as fh:
+            json.dump({"pid": os.getpid(), "ts": time.time(),
+                       "version": read_version(),
+                       "auto_update": bool(cfg.get("auto_update"))}, fh)
+    except Exception:  # noqa: BLE001 - a heartbeat that fails must not stop the loop
+        pass
+
+
+def take_request():
+    """True if the owner asked for an update through the UI. Consumes the request."""
+    try:
+        if not os.path.isfile(REQUEST_PATH):
+            return False
+        os.remove(REQUEST_PATH)
+        return True
+    except OSError:
+        return False
+
+
+def maybe_update(cfg, state, forced=False):
+    """Check, and update if allowed. `forced` = the owner pressed the button in the UI."""
+    if not cfg.get("auto_update") and not forced:
+        publish_state(cfg, deferred="auto_update off")
         return
     # Ignore any `repo` from the (mutable) config; always update from the pinned repo.
     cfg_repo = (cfg.get("repo") or "").strip()
@@ -737,19 +856,48 @@ def maybe_update(cfg, state):
     try:
         rel = latest_release(PINNED_REPO)
     except Exception as e:
-        log(f"release check failed: {e}"); return
+        log(f"release check failed: {e}")
+        publish_state(cfg, error=str(e)[:200])
+        if forced:
+            _write_json(RESULT_PATH, {"ok": False, "ts": time.time(),
+                                      "detail": "No pude consultar GitHub: %s" % str(e)[:150]})
+        return
     if not rel.get("version") or not rel.get("zip_url"):
+        publish_state(cfg, error="la release no trae un .zip")
         return
     cur = read_version()
     if vtuple(rel["version"]) <= vtuple(cur):
+        publish_state(cfg, rel)
+        if forced:
+            _write_json(RESULT_PATH, {"ok": True, "ts": time.time(), "from": cur, "to": cur,
+                                      "detail": "Ya estás en la última versión (%s)." % cur})
         return
     log(f"update available: v{cur} -> v{rel['version']}")
-    # Gate on idle across ALL agents (shared code), unless in the nightly fallback window;
-    # never mid-turn on any agent.
-    if _any_mid_turn(cfg, state) or (not _all_idle(cfg, state) and not in_nightly_window(cfg)):
-        log("deferring update: an agent is busy / not idle yet")
+    # Gate on idle across ALL agents (shared code), unless in the rest-hours fallback
+    # window; never mid-turn on any agent, not even when the owner asked for it - the turn
+    # in flight is somebody's message, and it would be lost.
+    if _any_mid_turn(cfg, state):
+        log("deferring update: an agent is mid-turn")
+        publish_state(cfg, rel, deferred="mid-turn")
+        if forced:
+            _write_json(RESULT_PATH, {"ok": False, "ts": time.time(), "busy": True,
+                                      "detail": "Un agente está contestando ahora mismo. "
+                                                "Vuelve a intentarlo en un minuto."})
         return
-    if apply_update(cfg, state, rel) and state.get("launcher_changed"):
+    if not forced and not _all_idle(cfg, state) and not in_rest_window(cfg):
+        log("deferring update: an agent is busy / not idle yet")
+        publish_state(cfg, rel, deferred="not idle")
+        return
+    ok = apply_update(cfg, state, rel)
+    publish_state(cfg, None if ok else rel)
+    if forced:
+        _write_json(RESULT_PATH, {
+            "ok": bool(ok), "ts": time.time(), "from": cur,
+            "to": rel["version"] if ok else cur,
+            "detail": ("Actualizado a la versión %s." % rel["version"]) if ok else
+                      ("No se pudo instalar la %s; sigues en la %s (mira launcher.log)."
+                       % (rel["version"], cur))})
+    if ok and state.get("launcher_changed"):
         log("launcher.py changed; restarting supervisor")
         stop_bridge(state.get("child"))
         _stop_extras(state)
@@ -1190,6 +1338,7 @@ def main():
             # re-read config each loop so a config written AFTER we started (e.g. by the
             # onboarding wizard) is picked up without needing a restart.
             cfg = load_config()
+            beat(cfg)
             poll = max(300, int(cfg.get("poll_minutes", 45)) * 60)
             # keep-alive: the question is "is the bridge serving?", not "is our handle
             # alive?" - an adopted bridge has no handle, and a dead handle whose port still
@@ -1225,10 +1374,15 @@ def main():
             # an agent that changed its own conversation policy is waiting for us to make
             # it real; do it while it is not answering anyone
             _activate_pending_policy(cfg, state)
-            # periodic update check
-            if time.time() - last_check >= poll:
+            # The owner pressed "update now" in the UI. Checked every loop, not on the
+            # poll interval, so the button feels like a button (~15s) instead of like a
+            # setting that might take three quarters of an hour to do anything.
+            asked = take_request()
+            if asked:
+                log("update requested from the UI; checking now")
+            if asked or time.time() - last_check >= poll:
                 last_check = time.time()
-                maybe_update(cfg, state)
+                maybe_update(cfg, state, forced=asked)
                 # after any update - ours or Hermes' - make sure WhatsApp can still
                 # prove a delivery.
                 _ensure_whatsapp()

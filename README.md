@@ -64,13 +64,27 @@ Todo lo demás (Python, Node, Claude Code y el propio Hermes) **se descarga e in
 
 A tiny **supervisor** (`src/launcher.py`) is what auto-starts at login — not the bridge directly.
 It keeps the bridge running and, every ~45 min, checks GitHub Releases for a newer version. When
-one exists it applies it **only while the bridge is idle** (no conversation in flight, quiet for a
-few minutes) or in a **nightly window** — so it never interrupts a chat. Each update is
-**SHA‑256 verified**, swapped atomically, health‑checked, and **rolled back automatically** if the
-new version fails to come up. The user just gets a Telegram note: *“🔄 updated to vX — what’s new: …”*.
+one exists it applies it **only while every agent is idle** (no turn in flight, quiet for a few
+minutes) or inside the **rest-hours window** (`update_from_hour`/`update_until_hour`, default
+03:00-07:00) - so it never interrupts a chat. Each update is **SHA-256 verified**, swapped
+atomically, health-checked, and **rolled back automatically** if the new version fails to come up.
+The user just gets a Telegram note: *"updated to vX - what's new: ..."*.
 
-Only **code** (`src/` + `VERSION`) is updated. The user’s Hermes config, secrets (`.env`),
+Only **code** (`src/` + `VERSION`) is updated. The user's Hermes config, secrets (`.env`),
 customized `CLAUDE.md`, and database are never touched.
+
+**It is also visible, and pushable.** The supervisor rewrites `supervisor.alive` every loop and
+`update.state.json` after every check; the wizard reads both, shows the version in the sidebar, and
+badges it when a release is newer. "Actualizar ahora" drops an `update.request` file the supervisor
+picks up within ~15s - and if the supervisor is not running, that route starts it first, because a
+request nobody reads is a button that lies. The request controls only *when*: what gets installed is
+still the pinned repo's latest release, still checksum-verified.
+
+**A machine that has fallen behind** catches up on its own as soon as its supervisor runs - measured
+end to end, a v1.0.30 install went to v1.0.42 in eleven seconds with no help. If its supervisor
+never starts (autostart lost), the repair is to log out and back in, or to re-run the install
+one-liner: it downloads the latest release, verifies the checksum, keeps the existing config, and
+re-registers the login entry.
 
 ## Layout
 
@@ -78,7 +92,8 @@ customized `CLAUDE.md`, and database are never touched.
 src/            code that gets auto-updated
   claude_bridge.py   the bridge (function-calling shim; /status idle probe)
   codex_engine.py    the Codex brain: `codex exec` behind the same (text, usage, session) contract
-  launcher.py        supervisor + auto-updater
+  launcher.py        supervisor + auto-updater (writes supervisor.alive / update.state.json)
+  wizard/updates.py  what the UI may know about updating, and how it asks for one
   hqctl.py           terse HQ ops CLI
   stt/ tts/          local voice in/out
 templates/      config examples the installer seeds from (never overwrites live config)
