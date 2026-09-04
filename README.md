@@ -34,7 +34,19 @@ console, nightly consolidation and weekly self-review run on either brain.
 
 Todo lo demás (Python, Node, Claude Code y el propio Hermes) **se descarga e instala solo** — tú no instalas nada técnico a mano. La primera vez puede tardar varios minutos.
 
-**Paso 1 — Enciéndelo.** Copia la línea de tu sistema, pégala y pulsa Enter. Con eso se instala **todo solo** y se abre un asistente en tu navegador. (La primera vez tarda unos minutos: descarga varias cosas.)
+**Paso 1 — Enciéndelo.** Descarga el archivo de tu sistema y haz doble clic. Con eso se instala **todo solo** y se abre un asistente en tu navegador. (La primera vez tarda unos minutos: descarga varias cosas.)
+
+**Lo más fácil: descargar y hacer doble clic.** En la [última versión](https://github.com/Walt9819/olivaw/releases/latest):
+
+| tu computadora | descarga | qué hacer |
+|---|---|---|
+| **Windows** | `Olivaw-Instalar.cmd` | doble clic. Windows avisa una vez que el «editor es desconocido» (no está firmado): *Más información* → *Ejecutar de todas formas*. |
+| **Mac** | `Olivaw-Instalar-Mac.zip` | doble clic para descomprimir, y en el archivo que sale **clic derecho → Abrir** (la primera vez macOS pregunta; con doble clic normal no deja). |
+
+Si algo falla por permisos, en Windows haz **clic derecho → Ejecutar como administrador**
+(la propia ventana de instalación también te lo ofrece cuando hace falta).
+
+<details><summary>O pegando un comando, si lo prefieres</summary>
 
 - **Windows** — abre *PowerShell* (búscalo en el menú de inicio) y pega:
   ```powershell
@@ -44,6 +56,7 @@ Todo lo demás (Python, Node, Claude Code y el propio Hermes) **se descarga e in
   ```bash
   curl -fsSL https://raw.githubusercontent.com/Walt9819/olivaw/main/install/install-macos.command | bash
   ```
+</details>
 
 **Paso 2 — Sigue el asistente.** Te lleva de la mano y prueba cada paso; no tienes que escribir comandos:
 1. **Conecta tu cuenta de Claude** — un botón abre la ventana para iniciar sesión, y otro para probar que tu agente ya piensa.

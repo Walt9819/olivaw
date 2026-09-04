@@ -23,7 +23,11 @@
   Advanced / headless (configure from params, no wizard):
     install-windows.ps1 -NoWizard -BotToken "123:ABC" -ChatId "8114329186"
 #>
-[CmdletBinding()]
+# PositionalBinding=$false so a stray argument can never bind silently. Before this, one
+# leftover fragment of a split path landed in -BotToken and, because a non-empty BotToken
+# means "headless", the installer skipped the wizard and reconfigured Hermes from garbage.
+# Named-only turns that into an immediate, visible error instead.
+[CmdletBinding(PositionalBinding=$false)]
 param(
   [string]$Repo = "Walt9819/olivaw",
   [string]$BotToken = "",
@@ -41,12 +45,51 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"   # faster Invoke-WebRequest
+
+# Any terminating error, said out loud on STDOUT before the script dies.
+#
+# Without this the installer was undiagnosable. The window runs this file again as a child
+# with -RedirectStandardOutput <log> -RedirectStandardError <log>.err, and it only ever
+# tailed the first of those - so a `throw` (which goes to stderr, like every terminating
+# error) produced a window showing the banner, then "La instalacion fallo (codigo 1)" and
+# nothing else. "Copiar detalles" copied that same nothing. A real failure on a real
+# machine reached us as a photograph with no cause in it.
+#
+# `break` re-throws afterwards, so the exit code and stderr stay exactly as they were; this
+# only adds a copy of the reason to the stream a human is actually looking at.
+trap {
+  try {
+    Write-Host "`n=== ERROR ===" -ForegroundColor Red
+    Write-Host ("  " + $_.Exception.Message) -ForegroundColor Red
+    if ($_.InvocationInfo -and $_.InvocationInfo.PositionMessage) {
+      Write-Host ("  " + ($_.InvocationInfo.PositionMessage -replace "`r?`n", "`r`n  "))
+    }
+    if ($_.Exception.InnerException) {
+      Write-Host ("  causa: " + $_.Exception.InnerException.Message)
+    }
+    Write-Host "  (paso: $script:CurrentStep)"
+  } catch { }
+  break
+}
+$script:CurrentStep = "arranque" 
 $UseWizard = (-not $NoWizard) -and [string]::IsNullOrWhiteSpace($BotToken)
 
 function Info($m){ Write-Host "  $m" -ForegroundColor Cyan }
 function Ok($m){ Write-Host "  [ok] $m" -ForegroundColor Green }
 function Warn($m){ Write-Host "  [!] $m" -ForegroundColor Yellow }
-function Step($m){ Write-Host "`n> $m" -ForegroundColor White }
+function Step($m){ $script:CurrentStep = $m; Write-Host "`n> $m" -ForegroundColor White }
+
+function Is-Admin {
+  # Whether this process is elevated. Most of the install is per-user and needs nothing,
+  # but the third-party installers it calls (Hermes brings Python, Node, ripgrep, ffmpeg,
+  # Git Bash) can need it - and "run it as administrator" turned out to be the fix for a
+  # real failure that reported itself only as "codigo 1".
+  try {
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    return (New-Object Security.Principal.WindowsPrincipal($id)).IsInRole(
+      [Security.Principal.WindowsBuiltInRole]::Administrator)
+  } catch { return $false }
+}
 # Where the tools this installer depends on actually land. A fresh install writes some of these
 # to the USER PATH only after the shell that will need them has already started, so re-reading the
 # registry is not enough on its own.
@@ -228,6 +271,19 @@ function Show-InstallUi {
   $box.Size = New-Object System.Drawing.Size(600, 200)
   $f.Controls.Add($box)
 
+  # Offered only when the run failed AND this process is not elevated - which is the single
+  # most common fix, and the one that turned out to be the answer for a real reported
+  # failure. Not offered up front: most of the install needs nothing, and asking a
+  # non-technical owner for administrator rights they may not have is a worse first step
+  # than simply trying.
+  $again = New-Object System.Windows.Forms.Button
+  $again.Text = "Reintentar como administrador"
+  $again.Location = New-Object System.Drawing.Point(24, 492)
+  $again.Size = New-Object System.Drawing.Size(230, 28)
+  $again.FlatStyle = "Flat"
+  $again.Visible = $false
+  $f.Controls.Add($again)
+
   $copy = New-Object System.Windows.Forms.Button
   $copy.Text = "Copiar detalles"
   $copy.Location = New-Object System.Drawing.Point(474, 492)
@@ -236,8 +292,18 @@ function Show-InstallUi {
   $copy.Visible = $false
   $f.Controls.Add($copy)
 
-  $state = [hashtable]::Synchronized(@{ proc = $null; pos = 0; log = ""; done = $false; result = "console" })
+  $state = [hashtable]::Synchronized(@{ proc = $null; pos = 0; errpos = 0; log = ""; done = $false; result = "console" })
   $logFile = Join-Path $env:TEMP ("olivaw-install-{0}.log" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
+
+  # Start-Process joins -ArgumentList with spaces and does NOT quote the elements, so a path
+  # containing a space is split into two arguments. Measured: passing "...\Juan Perez\Olivaw"
+  # installed into "...\Juan", and the leftover "Perez\Olivaw" bound POSITIONALLY to
+  # -BotToken - which flipped the installer into its headless branch and sent it off to
+  # reconfigure Hermes from a garbage token. Every user whose Windows name has a space in it
+  # hit that. Trailing backslashes go because "C:\path\" escapes the closing quote in Windows
+  # argv parsing and swallows the next argument with it.
+  # One helper, used by BOTH launches below - the child run and the elevated retry.
+  $qarg = { param($v) '"' + ("$v".TrimEnd('\') ) + '"' }
 
   $append = {
     param($text)
@@ -272,6 +338,23 @@ function Show-InstallUi {
         }
       } catch { }
     }
+    # stderr lives in its own file because Start-Process refuses to point both streams
+    # at one path. Tailing only stdout is what made the last failure unreadable.
+    $errFile = $logFile + ".err"
+    if (Test-Path $errFile) {
+      try {
+        $efs = [System.IO.File]::Open($errFile, 'Open', 'Read', 'ReadWrite')
+        $efs.Seek($state.errpos, 'Begin') | Out-Null
+        $esr = New-Object System.IO.StreamReader($efs)
+        $echunk = $esr.ReadToEnd()
+        $state.errpos = $efs.Position
+        $esr.Close(); $efs.Close()
+        if ($echunk -and $echunk.Trim()) {
+          $state.log += $echunk
+          & $append $echunk
+        }
+      } catch { }
+    }
     if ($state.proc -and $state.proc.HasExited -and -not $state.done) {
       $state.done = $true
       $timer.Stop()
@@ -289,7 +372,13 @@ function Show-InstallUi {
         $status.Text = "No se pudo terminar"
         $shown = "desconocido"
         if ($null -ne $code) { $shown = "$code" }
-        & $append "`r`n=== La instalacion fallo (codigo $shown) ===`r`nPulsa 'Copiar detalles' y envialos a quien te compartio Olivaw.`r`n"
+        & $append "`r`n=== La instalacion fallo (codigo $shown) ===`r`n"
+        if (-not (Is-Admin)) {
+          & $append ("Esto suele pasar cuando Windows no da permiso. Pulsa " +
+                     "'Reintentar como administrador' (Windows te va a pedir confirmacion).`r`n")
+          $again.Visible = $true
+        }
+        & $append "Si sigue fallando, pulsa 'Copiar detalles' y envialos a quien te compartio Olivaw.`r`n"
         $state.result = "failed"
         $btn.Text = "Cerrar"
         $btn.Enabled = $true
@@ -309,9 +398,10 @@ function Show-InstallUi {
     $status.Text = "Preparando..."
     $bar.Value = 4
     & $append ("Cerebro elegido: " + $(if ($chosen -eq "codex") { "Codex" } else { "Claude Code" }) + "`r`n")
-    $argList = @("-NoProfile","-ExecutionPolicy","Bypass","-File", $SelfPath,
-                 "-Engine", $chosen, "-NoUi", "-Repo", $Repo,
-                 "-InstallDir", $InstallDir, "-Workspace", $Workspace, "-Lang", $Lang)
+    $argList = @("-NoProfile","-ExecutionPolicy","Bypass","-File", (& $qarg $SelfPath),
+                 "-Engine", $chosen, "-NoUi", "-Repo", (& $qarg $Repo),
+                 "-InstallDir", (& $qarg $InstallDir), "-Workspace", (& $qarg $Workspace),
+                 "-Lang", (& $qarg $Lang))
     if ($NoAutoInstall) { $argList += "-NoAutoInstall" }
     try {
       $state.proc = Start-Process -FilePath "powershell.exe" -ArgumentList $argList `
@@ -329,8 +419,38 @@ function Show-InstallUi {
     }
   })
 
+  $again.Add_Click({
+    # Relaunch the WHOLE installer elevated (UAC prompts), then step aside. Same quoting as
+    # the child launch: an unquoted path with a space in it is how one of these arguments
+    # ended up in -BotToken.
+    $a = @("-NoProfile","-ExecutionPolicy","Bypass","-File", (& $qarg $SelfPath),
+           "-Repo", (& $qarg $Repo), "-InstallDir", (& $qarg $InstallDir),
+           "-Workspace", (& $qarg $Workspace), "-Lang", (& $qarg $Lang))
+    try {
+      Start-Process -FilePath "powershell.exe" -ArgumentList $a -Verb RunAs | Out-Null
+      $state.result = "elevated"
+      $f.Close()
+    } catch {
+      # The commonest reason is the owner clicking "No" on the UAC prompt. Say that rather
+      # than leaving a dead button.
+      & $append ("No se pudo abrir como administrador: " + $_.Exception.Message + "`r`n")
+    }
+  })
+
   $copy.Add_Click({
-    try { Set-Clipboard -Value ($state.log + "`r`n(registro: $logFile)") } catch { }
+    $facts = @(
+      "",
+      "--- datos del equipo ---",
+      ("windows   : " + [System.Environment]::OSVersion.VersionString),
+      ("powershell: " + $PSVersionTable.PSVersion.ToString()),
+      ("64-bit    : " + [System.Environment]::Is64BitOperatingSystem),
+      ("repo      : " + $Repo),
+      ("instalar en: " + $InstallDir),
+      ("workspace : " + $Workspace),
+      ("registro  : " + $logFile),
+      ("errores   : " + $logFile + ".err")
+    ) -join "`r`n"
+    try { Set-Clipboard -Value ($state.log + $facts + "`r`n") } catch { }
     $copy.Text = "Copiado"
   })
 
@@ -350,6 +470,10 @@ function Show-InstallUi {
 
 Write-Host "`n=== olivaw installer (Windows) ===" -ForegroundColor White
 Write-Host "  Instalando todo automaticamente. Puede tardar varios minutos la primera vez.`n" -ForegroundColor DarkGray
+# Stated up front, not guessed at afterwards: this line is in every transcript the owner
+# sends us, so "was it elevated?" is never a question we have to ask them.
+if (Is-Admin) { Ok "Permisos: administrador." }
+else { Info "Permisos: usuario normal (suele bastar; si algo falla, se puede reintentar como administrador)." }
 
 # ── which brain? asked FIRST, so nobody waits ten minutes to be asked a question ──
 function Can-Prompt {

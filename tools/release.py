@@ -101,6 +101,44 @@ def build_zip(version, changelog, migrations):
     return zip_path, digest
 
 
+def build_launchers():
+    """The two files a non-technical person downloads and double-clicks.
+
+    Both are thin wrappers around the same installers the one-liner fetches, so they never
+    go stale: the logic stays in install/, downloaded from main at run time.
+
+    The Mac one has to be a ZIP, not a bare .command. A script downloaded straight from a
+    browser arrives WITHOUT the execute bit, so double-clicking it opens a text editor
+    instead of running it - which is worse than the command it was meant to replace. A zip
+    entry carries its mode, so the extracted file is runnable. (Gatekeeper still asks once,
+    because none of this is signed: right-click -> Open.)
+
+    Returns the asset paths.
+    """
+    out = []
+    cmd_src = os.path.join(ROOT, "install", "Olivaw-Instalar.cmd")
+    if os.path.isfile(cmd_src):
+        cmd_dst = os.path.join(DIST, "Olivaw-Instalar.cmd")
+        shutil.copy2(cmd_src, cmd_dst)
+        out.append(cmd_dst)
+
+    mac_src = os.path.join(ROOT, "install", "install-macos.command")
+    if os.path.isfile(mac_src):
+        mac_zip = os.path.join(DIST, "Olivaw-Instalar-Mac.zip")
+        info = zipfile.ZipInfo("Olivaw-Instalar.command")
+        info.date_time = datetime.datetime.now().timetuple()[:6]
+        info.compress_type = zipfile.ZIP_DEFLATED
+        # 0o755 in the high half is what makes the extracted file executable. Without it a
+        # downloaded installer cannot be double-clicked at all.
+        info.external_attr = (0o755 << 16) | 0o600
+        info.create_system = 3                      # Unix, so the mode is honoured
+        with zipfile.ZipFile(mac_zip, "w") as z:
+            with open(mac_src, "rb") as fh:
+                z.writestr(info, fh.read())
+        out.append(mac_zip)
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("spec", help="patch | minor | major | X.Y.Z")
@@ -122,14 +160,18 @@ def main():
     with open(VERSION_FILE, "w", encoding="utf-8") as fh:
         fh.write(new + "\n")
     zip_path, digest = build_zip(new, a.message, migrations)
+    launchers = build_launchers()
     print(f"built {os.path.basename(zip_path)}  (v{cur} -> v{new})")
     print(f"  sha256: {digest}")
     print(f"  assets: {zip_path}  and  {zip_path}.sha256")
+    for p in launchers:
+        print(f"  double-click: {p}")
 
     if a.publish:
         if not shutil.which("gh"):
             sys.exit("`gh` CLI not found. Install it, or create the release manually (below).")
         subprocess.run(["gh", "release", "create", f"v{new}", zip_path, zip_path + ".sha256",
+                        *launchers,
                         "-t", f"v{new}", "-n", a.message or f"Release v{new}"], check=True)
         print(f"published GitHub release v{new}")
     else:

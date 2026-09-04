@@ -3,7 +3,13 @@
 # Windows-only scripts keep CRLF.
 *.ps1 text eol=crlf
 *.bat text eol=crlf
+# .cmd was missing: cmd.exe misparses LF-only endings, and the double-click installer
+# is a .cmd (test_installer.py asserts the endings survive a checkout).
+*.cmd text eol=crlf
 *.vbs text eol=crlf
+# The macOS installer is the opposite: a CR on the shebang line fails with a
+# "bad interpreter" error naming a character nobody can see.
+*.command text eol=lf
 # Treat model/binary assets as binary (none tracked yet, but future-proof).
 *.png binary
 *.zip binary
