@@ -207,6 +207,57 @@ def main():
         check("and outside them, on the same busy machine, it does not",
               "applied" not in seen, seen)
 
+        section("an update must not skip an agent whose bridge was adopted")
+        # Found by watching v1.0.43 install itself on a real machine: the extra agent's
+        # bridge kept its pid from the previous day and still reported the NEW version,
+        # because /status reads the version out of the VERSION file the update had just
+        # rewritten. It was executing the old code and nothing could tell - the two bridges
+        # only disagreed on `code_sha`. Cause: a supervisor restart had ADOPTED that bridge,
+        # so it had no handle here, and stopping handles left it running.
+        stopped, freed = [], []
+        real_stop, real_free = L.stop_bridge, L._free_bridge_port
+        L.stop_bridge = lambda child, timeout=15: stopped.append(child)
+        L._free_bridge_port = lambda cfg: freed.append(cfg.get("bridge_url"))
+        L.bridge_status = lambda c: {"inflight": 0, "idle_seconds": 9999,
+                                     "version": "1.0.43"}
+        try:
+            # `child: None` is exactly what adoption leaves behind.
+            state = {"extra": {"daneel": {"child": None, "gw": None,
+                                          "cfg": {"bridge_url": "http://127.0.0.1:8792"}}}}
+            L._stop_extras(state)
+            check("without free_ports an adopted bridge is left alone (the old behaviour)",
+                  freed == [], freed)
+            freed[:] = []
+            L._stop_extras(state, free_ports=True)
+            check("with free_ports its port is taken back, so new code really runs",
+                  freed == ["http://127.0.0.1:8792"], freed)
+            # And an agent we DO own must not be killed by port-hunting; stopping its
+            # handle already worked, and bridge_status is then the only thing consulted.
+            owned = {"extra": {"a": {"child": "handle", "gw": None,
+                                     "cfg": {"bridge_url": "http://127.0.0.1:8794"}}}}
+            stopped[:] = []
+            L._stop_extras(owned, free_ports=True)
+            check("an owned bridge is stopped by its handle first",
+                  "handle" in stopped, stopped)
+            check("and the entry is cleared, so nothing later thinks it is still running",
+                  owned["extra"]["a"]["child"] is None, owned)
+        finally:
+            L.stop_bridge, L._free_bridge_port = real_stop, real_free
+
+        src_l = io.open(os.path.join(ROOT, "src", "launcher.py"), encoding="utf-8").read()
+        check("the update path asks for the ports back",
+              "_stop_extras(state, free_ports=True)" in src_l)
+        check("and so does the rollback path, for the same reason",
+              src_l.count("_stop_extras(state, free_ports=True)") == 2, src_l.count(
+                  "_stop_extras(state, free_ports=True)"))
+        # The reason the bug was invisible, written down so nobody trusts /status version
+        # as proof that new code is running.
+        cb = io.open(os.path.join(ROOT, "src", "claude_bridge.py"), encoding="utf-8").read()
+        check("/status still reports the version from the VERSION file (hence unreliable)",
+              "_installed_version()" in cb)
+        check("but it also reports a code hash, which a stale process cannot fake",
+              "code_sha" in cb)
+
         section("what the panel is told")
         L.bridge_status = lambda c: {"inflight": 0, "idle_seconds": 9999, "version": "1.0.30"}
         L.publish_state(dict(cfg, update_from_hour=18, update_until_hour=24),

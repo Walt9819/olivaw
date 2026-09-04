@@ -502,10 +502,24 @@ def _reconcile_extras(base_cfg, state):
     return extras
 
 
-def _stop_extras(state):
+def _stop_extras(state, free_ports=False):
+    """Stop every extra agent's bridge (and gateway).
+
+    ``free_ports`` is for the one caller that is about to run NEW code: an ADOPTED bridge
+    has no handle here, so stopping handles leaves it running - and because /status reports
+    the version out of the VERSION file, which the update just rewrote, the stale process
+    then answers the health check claiming to be the new version while executing the old
+    code. Observed on this machine: after a supervisor restart adopted the extra agent's
+    bridge, an update left that agent on the previous release for a full day, reporting the
+    new one. Same reasoning as _free_bridge_port for the primary; the extras were simply
+    never given it.
+    """
     for ent in state.get("extra", {}).values():
         stop_bridge(ent.get("child"))
         stop_bridge(ent.get("gw"))
+        ent["child"] = None
+        if free_ports and bridge_status(ent.get("cfg") or {}):
+            _free_bridge_port(ent.get("cfg") or {})
 
 
 def _all_idle(cfg, state):
@@ -681,10 +695,13 @@ def apply_update(cfg, state, rel):
     launcher_changed = _sha256(os.path.join(new_src, "launcher.py")) != _sha256(SELF) \
         if os.path.isfile(os.path.join(new_src, "launcher.py")) else False
 
-    # stop ALL bridges (primary + every extra agent) so the shared src/ swap is safe
+    # stop ALL bridges (primary + every extra agent) so the shared src/ swap is safe.
+    # free_ports because an ADOPTED extra bridge has no handle to stop: left running, it
+    # keeps executing the old code while reporting the new version out of the rewritten
+    # VERSION file - the update silently missing that agent.
     stop_bridge(state.get("child"))
     state["child"] = None
-    _stop_extras(state)
+    _stop_extras(state, free_ports=True)
     # An orphan from an earlier supervisor would keep serving the OLD code on that port and
     # would answer the health check below, hiding a failed update. Take the port back.
     if bridge_status(cfg):
@@ -724,7 +741,7 @@ def apply_update(cfg, state, rel):
     except Exception as e:
         log(f"update failed ({e}); rolling back to v{old_version}")
         stop_bridge(state.get("child")); state["child"] = None
-        _stop_extras(state)
+        _stop_extras(state, free_ports=True)     # same reason, in reverse
         try:
             _replace_dir(os.path.join(BACKUP_DIR, "src"), SRC_DIR)
         except Exception as re_:  # noqa: BLE001
