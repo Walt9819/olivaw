@@ -305,6 +305,55 @@ ok("and the closing tags stay balanced",
    (opened.match(/<details/g) || []).length === (opened.match(/<\/details>/g) || []).length);
 ok("its own explanation is still on the page", opened.includes("empieza una conversación nueva"));
 
+// ── the browser panel, painted from real replies ───────────────────────────────
+// Each agent drives its own Chrome window now. The state worth pinning is the one where
+// two agents are still parked on one endpoint: `connected` is true, so the old panel
+// showed a green tick, while every task they browse at the same time ruins the other's
+// tab. A healthy-looking panel over a broken feature is the failure mode to avoid.
+console.log("\n=== the browser panel says whose window it is ===");
+async function paintBrowser(reply) {
+  CANNED["browser/status"] = reply;
+  CALLS.length = 0;
+  OL.goSec("habilidades", "daneel");
+  await new Promise((r) => setTimeout(r, 0));
+  return getEl("brwBox")._html;
+}
+let brw = await paintBrowser({
+  ok: true, mode: "cdp", connected: true, browser: "Chrome/152", port: 9223,
+  data_dir: "C:/h/profiles/daneel/chrome-debug", browser_found: true, shared_with: [] });
+ok("a private window reads as this agent's own", /suya y de nadie/.test(brw), brw);
+ok("and it names the port, so two windows can be told apart", brw.includes("9223"), brw);
+
+brw = await paintBrowser({
+  ok: true, mode: "cdp", connected: true, browser: "Chrome/152", port: 9222,
+  data_dir: "C:/h/chrome-debug", browser_found: true, shared_with: ["default"] });
+ok("a shared window is called out instead of reported healthy",
+   brw.includes("Comparte ventana") && !/suya y de nadie/.test(brw), brw);
+ok("it names who it is sharing with", brw.includes("default"), brw);
+ok("and does not show the green tick over a broken feature", !brw.includes("\u2705"), brw);
+ok("it says which button fixes it", brw.includes("Usar un navegador real"), brw);
+
+brw = await paintBrowser({ ok: true, mode: "headless", browser_found: true, shared_with: [] });
+ok("headless still reads as headless", brw.includes("invisible"), brw);
+
+// The window is labelled from whatever the panel sends, so if this stops being sent the
+// owner gets two identical blank Chromes and no way to tell which agent owns which.
+CANNED["browser/status"] = { ok: true, mode: "headless", browser_found: true };
+OL.goSec("habilidades", "daneel");
+await new Promise((r) => setTimeout(r, 0));
+CALLS.length = 0;
+const btn = getEl("brwOn");
+let clickErr = null;
+try { btn.onclick.call(btn); } catch (e) { clickErr = e; }
+await new Promise((r) => setTimeout(r, 0));
+const enable = CALLS.filter((c) => c.route === "browser/enable");
+ok("pressing 'use a real browser' asks the server to open one", !clickErr && enable.length === 1,
+   clickErr ? clickErr.stack : JSON.stringify(CALLS.map((c) => c.route)));
+ok("for the agent selected in the sidebar, and no other",
+   enable.length === 1 && enable[0].body.profile === "daneel", JSON.stringify(enable));
+ok("and tells it whose window it is, so the tab can say so",
+   enable.length === 1 && enable[0].body.name === "Daneel", JSON.stringify(enable));
+
 // ── the first run must still be the stepper ────────────────────────────────────
 console.log("\n=== a machine with no agents still gets the guided install ===");
 OL.META.agents = { default: null, extra: [] };

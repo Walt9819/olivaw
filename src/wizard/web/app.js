@@ -1212,6 +1212,14 @@
     if (S.agent && S.agent.mode === "reconfigure") return S.agent.slug;
     return null; // default agent -> bare hermes
   }
+  // What to CALL the agent being configured. Only the browser needs it so far: with one
+  // window per agent, the window has to say whose it is or they are indistinguishable.
+  function targetName() {
+    if (S.view === "console") return agentLabel(curAgent());
+    if (S.applyResult && S.applyResult.agent && S.applyResult.agent.name)
+      return S.applyResult.agent.name;
+    return (S.agent && S.agent.name) || "";
+  }
   function targetWorkspace() {
     if (S.view === "console") {
       var a = curAgent();
@@ -1294,6 +1302,11 @@
       'controlarlo <b>sólo funciona con un perfil aparte</b>, y ese perfil usa otra clave de ' +
       'cifrado a propósito — por eso copiar tu perfil tampoco traería tus sesiones. Entra ' +
       'una vez a lo que necesite y queda guardado ahí para siempre.</p>' +
+      '<p class="small muted"><b>Cada agente abre su propia ventana.</b> Antes compartían ' +
+      'una y se pisaban: si dos navegaban a la vez, el segundo le cambiaba la página al ' +
+      'primero. Ahora cada uno tiene la suya, con sus pestañas y sus sesiones — así que la ' +
+      'sesión que inicies aquí vale para <b>este</b> agente, no para los demás. La primera ' +
+      'pestaña de cada ventana te dice de quién es.</p>' +
       chLine("brwPill") +
 
       '<div class="hr"></div><b class="small">¿Y usar tu Chrome de siempre, ya con sesión?</b>' +
@@ -1988,10 +2001,20 @@
       var box = el("brwBox");
       if (!box) return;
       if (!st || !st.ok) { box.innerHTML = "No pude comprobarlo."; return; }
-      if (st.mode === "cdp" && st.connected) {
+      // Sharing a window is the one state where "connected" is true and the feature is
+      // still broken, so it gets its own branch ahead of the happy one.
+      var shared = (st.shared_with || []);
+      if (st.mode === "cdp" && st.connected && shared.length) {
+        box.innerHTML = '⚠️ <b>Comparte ventana</b> con: <b>' + esc(shared.join(", ")) +
+          '</b>. Mientras estén juntos se pisan las pestañas: si los dos navegan a la vez, ' +
+          'el último le cambia la página al otro. Pulsa <b>«Usar un navegador real»</b> ' +
+          'para abrirle la suya.' +
+          '<br><span class="muted">Ahora: puerto ' + esc(String(st.port || "")) + '</span>';
+      } else if (st.mode === "cdp" && st.connected) {
         box.innerHTML = '✅ <b>Navegador real</b> — ' + esc(st.browser || "Chrome") +
-          '. Tu agente maneja esa ventana; lo que abras ahí lo ve él.' +
-          '<br><span class="muted">Perfil: ' + esc(st.data_dir || "") + '</span>';
+          '. Esa ventana es suya y de nadie más; lo que abras ahí lo ve él.' +
+          '<br><span class="muted">Perfil: ' + esc(st.data_dir || "") +
+          ' · puerto ' + esc(String(st.port || "")) + '</span>';
       } else if (st.mode === "cdp") {
         box.innerHTML = '⚠️ Está configurado en navegador real, pero la ventana ' +
           '<b>ya no está abierta</b>. Pulsa «Usar un navegador real» para reabrirla.';
@@ -2025,7 +2048,7 @@
     if (el("brwOn")) el("brwOn").onclick = function () {
       brwPill.style.display = "inline-flex";
       runTest(this, brwPill, function () {
-        return api("browser/enable", { profile: prof });
+        return api("browser/enable", { profile: prof, name: targetName() });
       }, "Abriendo…").then(loadBrw);
     };
     if (el("brwOff")) el("brwOff").onclick = function () {

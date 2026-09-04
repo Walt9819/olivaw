@@ -103,8 +103,11 @@ def status(profile=None, install_dir=None):
             "cost": "sin clave — sólo inicias sesión una vez",
             "available": browser_found,
             "ready": connected,
-            "note": ("Listo: entra a gemini.google.com en la ventana del agente e inicia "
-                     "sesión una vez."
+            # Each agent drives its OWN browser window now, so the login is per agent:
+            # signing in for one does not sign in for the rest (browser_setup.py).
+            "note": ("Listo: entra a gemini.google.com en la ventana de ESTE agente e "
+                     "inicia sesión una vez. Cada agente tiene la suya, así que este "
+                     "inicio de sesión no vale para los demás."
                      if connected else
                      "Necesita el «navegador real» encendido (arriba, en Navegador). "
                      "Luego inicias sesión en Gemini una sola vez."
@@ -138,7 +141,7 @@ def status(profile=None, install_dir=None):
 # Chrome through Claude Code's MCP tools (tabs_context_mcp / find / computer), which an
 # Olivaw agent does not have and never will. Same technique, Hermes' tool names.
 SKILL_NAME = "imagenes-con-gemini"
-SKILL_VERSION = "1.0.0"
+SKILL_VERSION = "1.1.0"
 
 _SKILL = u"""---
 name: {name}
@@ -168,6 +171,10 @@ sesión de Google. Díselo al dueño en una frase y ofrécele encenderlo:
 
 > Para crear imágenes necesito el navegador real (Olivaw → Navegador). Lo enciendes, entras
 > una vez a gemini.google.com y desde ahí te las hago sin coste.
+
+Y si el navegador real está encendido pero Gemini te pide iniciar sesión: la ventana es
+**tuya**, no la compartes con los demás agentes, así que el hecho de que otro agente ya
+haya entrado no te sirve. Pídele al dueño que entre **en tu ventana**, una sola vez.
 
 ## Los pasos
 

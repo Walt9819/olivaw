@@ -5,6 +5,11 @@ logged-in session? Headless Chromium has no logins and never will; the CDP windo
 whatever the owner signed into once. Getting that wrong wastes a long tool loop failing at
 a login wall.
 
+The CDP window is this agent's alone — its own port, its own profile, its own Chrome
+process. `status` says so, and says who it is still sharing with on an install from before
+that split, because "the page I opened is gone" reads as a broken site rather than as
+another agent driving the same tab.
+
 Usage:
     python browser_mode.py                 # or `status` — what am I driving?
     python browser_mode.py status --json
@@ -43,6 +48,17 @@ def _human(st):
         lines.append("  navegador : %s" % (st["browser"] or "?"))
         lines.append("  endpoint  : %s" % st["cdp_url"])
         lines.append("  perfil    : %s" % st["data_dir"])
+        lines.append("")
+        if st.get("shared_with"):
+            # Two agents on one endpoint drive the same tab. Say it plainly, because the
+            # symptom - "la página que abrí ya no está" - looks like a bug in the site.
+            lines.append("AVISO: esta ventana la compartes con: %s."
+                         % ", ".join(st["shared_with"]))
+            lines.append("Mientras siga así, si los dos navegáis a la vez os pisáis la")
+            lines.append("pestaña. Dile al dueño que te abra la tuya desde Olivaw.")
+        else:
+            lines.append("Esta ventana es tuya y de nadie más: ningún otro agente te va a")
+            lines.append("mover la pestaña. Sus sesiones tampoco son las tuyas.")
         lines.append("")
         lines.append("Las sesiones iniciadas en esa ventana están disponibles. No cierres")
         lines.append("pestañas ajenas ni hagas nada destructivo sin confirmarlo.")
@@ -93,6 +109,8 @@ def main(argv=None):
     else:
         print(res.get("detail", ""))
         if res.get("ok") and args.action == "enable":
+            print("  · Tu ventana (puerto %s), separada de la de los demás agentes."
+                  % res.get("port", "?"))
             print("  · Perfil del navegador: %s" % res.get("data_dir", ""))
             print("  · Si un sitio pide contraseña, que la escriba el dueño en esa ventana.")
     return 0 if res.get("ok") else 1

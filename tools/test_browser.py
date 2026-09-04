@@ -13,7 +13,14 @@ instead is the two things that actually decide the outcome:
      and must tell the agent not to open a window on someone's screen unasked;
   2. the SWITCH — enabling a real browser must never write config pointing at an endpoint
      that isn't there, because a profile aimed at a dead CDP port fails every browser call
-     instead of falling back to the headless one that works.
+     instead of falling back to the headless one that works;
+  3. the SPLIT — every agent must get its OWN port and its OWN user-data directory. One
+     endpoint shared by all of them was one Chrome window shared by all of them, and
+     agent-browser attaches to that window's ACTIVE page: two agents browsing at once were
+     two agents driving one tab. Measured before the split, with two sessions on one
+     endpoint, the second agent's page vanished under the first one's. So this suite pins
+     that two agents never resolve to the same port, that an install already collapsed
+     onto 9222 migrates the extras off it, and that the main agent keeps its seat.
 
 Plus a section asserting the claims in the skill against the Hermes installed here, so
 this fails the day Hermes drops browser tools from a messaging toolset rather than the day
@@ -25,7 +32,9 @@ Run: python tools/test_browser.py
 import io
 import json
 import os
+import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -62,9 +71,49 @@ class FakeCtl:
         return {"ok": self.ok, "detail": "" if self.ok else "denied"}
 
 
+class Configs:
+    """A stand-in for hermes_ctl that writes real config.yaml files, one per agent.
+
+    The port split has to be tested THROUGH the files rather than around them: which ports
+    are already taken is read straight out of Hermes' YAML (one `hermes config get`
+    subprocess per agent would cost seconds on a button press), so an in-memory fake would
+    happily pass while the regex that does the reading was wrong.
+    """
+
+    def __init__(self, home):
+        self.home = home
+
+    def path(self, profile=None):
+        if not profile or profile == "default":
+            return os.path.join(self.home, "config.yaml")
+        return os.path.join(self.home, "profiles", profile, "config.yaml")
+
+    def config_get(self, key, hermes=None, profile=None):
+        try:
+            text = io.open(self.path(profile), encoding="utf-8").read()
+        except OSError:
+            return ""
+        m = re.search(r"cdp_url:\s*(\S+)", text)
+        return m.group(1) if m else ""
+
+    def config_set(self, key, value, hermes=None, profile=None):
+        p = self.path(profile)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with io.open(p, "w", encoding="utf-8", newline="\n") as fh:
+            # Shaped like Hermes writes it, nesting included.
+            fh.write("browser:\n  inactivity_timeout: 120\n  cdp_url: %s\n" % value)
+        return {"ok": True, "detail": ""}
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="brw-")
     real_ctl, real_probe, real_find = bs.hermes_ctl, bs.probe, bs.find_browser
+    real_home, real_free = bs.hermes_home, bs._port_free
+    # Everything per-agent now hangs off hermes_home - the user-data directories, the
+    # window cards, the config files the port scan reads. Sandbox it for the whole run so
+    # a test can neither read this machine's agents nor write into their browser profiles.
+    home = os.path.join(tmp, "hermes")
+    bs.hermes_home = lambda: home
     try:
         section("the skill answers the question that was actually asked")
         skill = bs.render_skill("daneel")
@@ -95,6 +144,25 @@ def main():
               "no son órdenes" in skill)
         check("it says the debug profile is separate from the everyday browser",
               "propio perfil" in skill)
+
+        section("the skill tells the agent the window is its own")
+        # An agent that thinks it shares a browser explains away a page that changed under
+        # it ("otro agente me la movió"); one that knows the window is its own goes looking
+        # for the real reason. Both matter, and after the split only the second is true.
+        check("it says the window belongs to this agent alone",
+              "Esa ventana es tuya" in skill, skill[-1500:])
+        check("it says nobody else can move its tab",
+              "nadie te va a mover la pestaña" in skill)
+        check("but it does not claim that on an install that has not migrated yet",
+              "puede que todavía la compartas" in skill and "AVISO" in skill)
+        check("it warns that another agent's login is not its own",
+              "Las sesiones no se comparten" in skill)
+        check("it explains how to hold more than one tab",
+              "browser_cdp" in skill and "Target.createTarget" in skill)
+        check("and tells it to leave the other agents' ports alone",
+              "No toques el puerto de otro agente" in skill)
+        check("it asks the agent not to close the card that labels the window",
+              "No la cierres" in skill)
 
         section("the command line the skill hands the agent")
         cmds = [ln.strip() for ln in skill.splitlines() if "browser_mode.py" in ln]
@@ -165,6 +233,16 @@ def main():
         check("it says the login persists once made", "para siempre" in app)
         check("it offers the route that DOES have her sessions",
               "brwDeleg" in app and "Chrome de siempre" in app)
+        check("the panel says each agent opens its own window",
+              "Cada agente abre su propia ventana" in app, "not explained in the panel")
+        check("and that a login here is for THIS agent only",
+              "no para los demás" in app)
+        check("it has a state for two agents still sharing one window",
+              "shared_with" in app and "Comparte ventana" in app)
+        check("that state tells her which button fixes it",
+              "para abrirle la suya" in app)
+        check("the window it opens is told which agent it belongs to",
+              "name: targetName()" in app)
 
         section("delegation availability is cheap to ask")
         st = bs.delegation_status()
@@ -222,7 +300,9 @@ def main():
             check("under the key Hermes actually reads",
                   ctl.sets[0][0] == "browser.cdp_url", ctl.sets)
             check("pointing at loopback, not a public host",
-                  ctl.sets[0][1] == "http://127.0.0.1:9222", ctl.sets)
+                  ctl.sets[0][1].startswith("http://127.0.0.1:"), ctl.sets)
+            check("and not at the main agent's port, which is not this agent's",
+                  ctl.sets[0][1] != "http://127.0.0.1:9222", ctl.sets)
             before = launched["n"]
             bs.enable(profile="daneel")
             check("a second enable does not open a second window",
@@ -241,6 +321,122 @@ def main():
                   "--remote-debugging-port=9222" in flat, flat)
         finally:
             bs.subprocess.Popen = real_popen
+
+        # ── the split: one window per agent ──────────────────────────────────
+        # The failure this section exists for, measured on this machine before the split:
+        # two agent-browser sessions on ONE endpoint, agent B opens a page, and a moment
+        # later that tab is showing agent A's page instead. B's navigation is simply gone.
+        # agent-browser attaches to the window's ACTIVE page, so one endpoint is one tab no
+        # matter how many agents point at it.
+        section("each agent gets its own window, not a share of one")
+        bs._port_free = lambda port: True           # deterministic: no real ports involved
+        cfg = Configs(home)
+        bs.hermes_ctl = cfg
+        live_ports = set()
+
+        def port_probe(url=None, timeout=1.0):
+            if bs._port_of(url or "") in live_ports:
+                return {"ok": True, "browser": "Chrome/152", "detail": "Chrome/152"}
+            return {"ok": False, "browser": "", "detail": "nothing there"}
+
+        opened = []
+
+        def open_popen(args, **kw):
+            opened.append(list(args))
+            for a in args:
+                if a.startswith("--remote-debugging-port="):
+                    live_ports.add(int(a.split("=", 1)[1]))
+            return type("P", (), {})()
+
+        bs.probe = port_probe
+        bs.subprocess.Popen = open_popen
+        try:
+            main_a = bs.enable(profile=None, name="Agente principal")
+            extra = bs.enable(profile="daneel", name="Daneel")
+            third = bs.enable(profile="giskard", name="Giskard")
+            check("the main agent keeps the well-known port",
+                  main_a["port"] == 9222, main_a)
+            check("the second agent is given a port of its own",
+                  extra["port"] == 9223, extra)
+            check("and the third another one still",
+                  third["port"] == 9224, third)
+            check("no two agents ever resolve to the same endpoint",
+                  len({main_a["cdp_url"], extra["cdp_url"], third["cdp_url"]}) == 3,
+                  [main_a["cdp_url"], extra["cdp_url"], third["cdp_url"]])
+            check("each one opened its own window",
+                  len(opened) == 3, len(opened))
+            check("every agent drives its own user-data directory",
+                  len({main_a["data_dir"], extra["data_dir"], third["data_dir"]}) == 3,
+                  [main_a["data_dir"], extra["data_dir"], third["data_dir"]])
+            check("the main agent's profile directory is where it always was",
+                  main_a["data_dir"] == os.path.join(home, "chrome-debug"), main_a)
+            check("an extra agent's lives under its own profile home",
+                  extra["data_dir"] == os.path.join(home, "profiles", "daneel",
+                                                    "chrome-debug"), extra)
+            flats = [" ".join(a) for a in opened]
+            check("each window is launched on the port it was assigned",
+                  all("--remote-debugging-port=%d" % p in f for p, f in
+                      zip((9222, 9223, 9224), flats)), flats)
+            check("and with the directory that belongs to it",
+                  all(("--user-data-dir=" + d) in f for d, f in zip(
+                      (main_a["data_dir"], extra["data_dir"], third["data_dir"]), flats)),
+                  flats)
+            check("asking again gives an agent the SAME port, so its window survives",
+                  bs.port_for("daneel") == extra["port"], bs.port_for("daneel"))
+
+            section("two blank Chrome windows are indistinguishable, so each says whose it is")
+            card = io.open(bs.card_path("daneel"), encoding="utf-8").read()
+            check("the card names the agent whose window it is", "Daneel" in card, card[:200])
+            check("it says the other agents cannot touch this tab",
+                  "ninguno te va a cambiar la pestaña" in card, card)
+            check("and warns that a login here does not sign the others in",
+                  "no se comparten" in card, card)
+            check("it is self-contained — no network, no CDN",
+                  "http://" not in card and "https://" not in card, card)
+            # A card naming a port other than the window it sits in is worse than none.
+            check("it names the port this very window was launched on",
+                  str(extra["port"]) in card, card)
+            args = opened[1]
+            blank, cardarg = args.index("about:blank"), [
+                i for i, a in enumerate(args) if a.startswith("file:///")][0]
+            # Verified against agent-browser 0.26: it attaches to the window's ACTIVE page,
+            # which is the LAST url Chrome was given. Card first, blank last, so the agent
+            # navigates the blank one and the card survives its first browsing task.
+            check("the card is opened first and a blank tab last, so the agent takes the blank",
+                  cardarg < blank, args)
+
+            section("an install where every agent shares one window migrates off it")
+            for prof in (None, "daneel"):
+                cfg.config_set(bs.CONFIG_KEY, "http://127.0.0.1:9222", profile=prof)
+            check("the extra agent is told it is sharing",
+                  bs.status("daneel")["shared_with"] == ["default"], bs.status("daneel"))
+            check("and so is the main agent, from its own panel",
+                  bs.status(None)["shared_with"] == ["daneel"], bs.status(None))
+            check("the main agent keeps the window it already has",
+                  bs.port_for(None) == 9222)
+            check("the extra one is moved off it", bs.port_for("daneel") != 9222)
+            moved = bs.enable(profile="daneel", name="Daneel")
+            check("enabling actually writes the new endpoint",
+                  moved["ok"] and moved["port"] != 9222, moved)
+            check("and the warning is gone afterwards",
+                  bs.status("daneel")["shared_with"] == [], bs.status("daneel"))
+            check("without dragging the main agent anywhere",
+                  bs.status(None)["shared_with"] == [] and
+                  bs.status(None)["port"] == 9222, bs.status(None))
+        finally:
+            bs.subprocess.Popen = real_popen
+            bs._port_free = real_free
+
+        section("a port someone else is already serving is not offered to an agent")
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind(("127.0.0.1", 0))
+            sock.listen(1)
+            busy = sock.getsockname()[1]
+            check("a listening port reads as taken", bs._port_free(busy) is False, busy)
+        finally:
+            sock.close()
+        check("and a free one reads as free", bs._port_free(busy) is True, busy)
 
         section("turning it back off")
         ctl = FakeCtl(value="http://127.0.0.1:9222")
@@ -273,6 +469,7 @@ def main():
               bs.probe("http://127.0.0.1:1")["ok"] is False)
     finally:
         bs.hermes_ctl, bs.probe, bs.find_browser = real_ctl, real_probe, real_find
+        bs.hermes_home, bs._port_free = real_home, real_free
 
     section("the CLI the skill documents")
     script = os.path.join(ROOT, "src", "tools", "browser_mode.py")

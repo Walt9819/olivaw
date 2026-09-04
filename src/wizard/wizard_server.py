@@ -612,7 +612,10 @@ class Handler(BaseHTTPRequestHandler):
         if route == "browser/status":
             return browser_setup.status(body.get("profile") or None)
         if route == "browser/enable":
-            return browser_setup.enable(body.get("profile") or None)
+            # The name rides along so the window can say whose it is. With one window per
+            # agent, two blank Chromes on screen are otherwise indistinguishable.
+            return browser_setup.enable(body.get("profile") or None,
+                                        name=(body.get("name") or "").strip())
         if route == "browser/delegation":
             return browser_setup.delegation_status()
         if route == "browser/delegation-test":
