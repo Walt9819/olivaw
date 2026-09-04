@@ -14,13 +14,23 @@
         <div class="brand-mark">O</div>
         <div class="brand-text">
           <div class="brand-title">Olivaw</div>
-          <div class="brand-sub">Asistente de configuración</div>
+          <div class="brand-sub" id="brandSub">Asistente de configuración</div>
         </div>
       </div>
+
+      <!-- Two navigations, one at a time (see render()): the stepper while an agent is
+           being installed, and the agent tree once agents exist. The tree is the normal
+           one - installing is the exception, not the way you live here. -->
+      <button class="btn btn-ghost btn-sm" id="toConsole" hidden
+              style="width:100%;justify-content:center">← Mis agentes</button>
       <ol class="stepper" id="stepper"></ol>
+      <nav class="tree" id="navTree" hidden></nav>
+
       <button class="btn btn-soft btn-sm" id="helpBtn" style="width:100%;justify-content:center">
         🆘 ¿Algo falla? <span data-brain-name>Habla con Claude</span>
       </button>
+      <button class="btn btn-ghost btn-sm" id="closeBtn" hidden
+              style="width:100%;justify-content:center">Cerrar</button>
       <div class="sidebar-foot">
         <span class="dot-ok"></span>
         <span id="conn">Local · privado</span>

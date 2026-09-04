@@ -202,6 +202,63 @@ details[open] summary{color:var(--ink)}
   .nav{padding:14px 20px}
 }
 
+/* -- the console: agents in the sidebar, their settings underneath ---------- */
+/* Needed because .stepper/.tree/.btn all set display, which beats the UA's [hidden]. */
+[hidden]{display:none!important}
+.tree{display:flex; flex-direction:column; gap:2px}
+.tree-h{font-size:11px; font-weight:800; letter-spacing:.08em; text-transform:uppercase;
+  color:var(--muted); margin:16px 0 6px}
+.tree-h:first-child{margin-top:0}
+.tnode{display:flex; flex-direction:column}
+.tnode-top{display:flex; align-items:center; gap:9px; padding:9px 10px; border-radius:11px;
+  cursor:pointer; color:var(--ink); font-weight:700; font-size:14px}
+.tnode-top:hover{background:var(--panel-2)}
+.tnode.on>.tnode-top{background:var(--panel-2)}
+.tnode-top:focus-visible,.tkid:focus-visible,.tnew:focus-visible{
+  outline:2px solid var(--accent); outline-offset:1px}
+.tdot{width:9px; height:9px; border-radius:50%; flex:0 0 9px; background:var(--muted)}
+.tdot.ok{background:var(--ok); box-shadow:0 0 0 3px var(--ok-bg)}
+.tdot.off{background:var(--warn)}
+.tdot.err{background:var(--err); box-shadow:0 0 0 3px var(--err-bg)}
+.tdot.unk{background:var(--line)}
+.tname{flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.tflag{font-size:10px; font-weight:700; color:var(--muted); border:1px solid var(--line);
+  border-radius:6px; padding:1px 5px}
+.tkids{display:flex; flex-direction:column; gap:1px; margin:2px 0 8px 11px;
+  padding-left:11px; border-left:2px solid var(--line)}
+.tkid{display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:9px;
+  cursor:pointer; color:var(--muted); font-size:13.5px; font-weight:600}
+.tkid:hover{background:var(--panel-2); color:var(--ink)}
+.tkid.active{background:var(--grad); color:#fff}
+.tico{width:18px; text-align:center; flex:0 0 18px}
+.tnew{margin-top:6px; padding:9px 10px; border-radius:11px; border:1px dashed var(--line);
+  color:var(--muted); font-size:13.5px; font-weight:700; cursor:pointer; text-align:center}
+.tnew:hover{border-color:var(--accent); color:var(--accent)}
+/* The wizard's footer is Back/Continue through a fixed sequence. The console has no
+   sequence: you are never "between" two agents. */
+body.console .nav{display:none}
+.badge{font-size:11px; font-weight:700; padding:2px 8px; border-radius:999px;
+  background:var(--panel-2); border:1px solid var(--line); color:var(--muted);
+  vertical-align:middle}
+
+/* the agent's front page: everything else you can adjust about it */
+.secgrid{display:grid; grid-template-columns:repeat(auto-fill,minmax(205px,1fr)); gap:10px}
+.seccard{display:flex; flex-direction:column; gap:3px; padding:14px 16px; cursor:pointer;
+  background:var(--panel); border:1px solid var(--line); border-radius:14px;
+  transition:.15s}
+.seccard:hover{border-color:var(--accent); transform:translateY(-1px); box-shadow:var(--shadow)}
+.seccard:focus-visible{outline:2px solid var(--accent); outline-offset:1px}
+.secico{font-size:22px; line-height:1.2}
+
+@media(max-width:860px){
+  /* In the wizard the sidebar is decoration and can go. In the console it IS the
+     navigation, so it becomes a bounded strip on top instead of disappearing. */
+  body.console .app{grid-template-columns:1fr}
+  body.console .sidebar{display:block; border-right:none; border-bottom:1px solid var(--line);
+    padding:14px 16px; max-height:42vh; overflow:auto}
+  body.console .brand,body.console .sidebar-foot{display:none}
+}
+
 /* ── rescue console: live event stream (reasoning + actions) ───────────────── */
 .ev-list{display:flex;flex-direction:column;gap:6px;margin-bottom:10px}
 .ev{font-size:13px;line-height:1.5}

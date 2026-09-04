@@ -7,7 +7,9 @@ exactly the mistake made while adding the escalation panel: an edit dropped `waP
 the WhatsApp pairing status would have stopped updating with no error anywhere.
 
 This cross-checks the ids the code addresses against the ids it renders, and asserts the
-escalation panel is wired end to end.
+escalation panel is wired end to end. It then runs tools/wizard_console.mjs, which loads
+app.js in Node against a stub DOM and drives the agent console for real - the only way to
+catch a renderer that throws, or a panel that quietly configures the wrong agent.
 
 Run: python tools/test_wizard_markup.py
 """
@@ -132,6 +134,25 @@ def main():
           'indexOf("nuevo_") === 0' in src)
     check("the Telegram warning is surfaced, not swallowed",
           "telegram_ready" in src and "escWarn" in src)
+
+    # The static checks above cannot see a renderer that throws, a handler bound to an
+    # element this page never rendered, or a panel that sends the wrong agent's profile.
+    # For that the code has to actually run, which is what the Node harness does.
+    print("\n=== the console runs, and every panel targets the selected agent ===")
+    if node:
+        spec = os.path.join(ROOT, "tools", "wizard_console.mjs")
+        p = subprocess.run([node, spec, ROOT], capture_output=True, text=True,
+                           timeout=180, encoding="utf-8", errors="replace")
+        out = (p.stdout or "") + (p.stderr or "")
+        for line in out.splitlines():
+            t = line.strip()
+            if t.startswith("ok   "):
+                check(t[5:], True)
+            elif t.startswith("FAIL "):
+                check(t[5:], False)
+        check("the console harness passed", p.returncode == 0, out[-1200:])
+    else:
+        print("  skip (node not available)")
 
     print("\n%d passed, %d failed" % (len(PASSED), len(FAILED)))
     for f in FAILED:

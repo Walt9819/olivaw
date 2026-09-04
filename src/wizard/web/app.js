@@ -100,12 +100,34 @@
   function maxReachable() { return Math.min(STEPS.length - 1, (S._max || 0)); }
 
   function render() {
+    var con = S.view === "console";
+    document.body.classList[con ? "add" : "remove"]("console");
+    el("stepper").hidden = con;
+    el("navTree").hidden = !con;
+    if (el("closeBtn")) el("closeBtn").hidden = !con;
+    if (el("toConsole")) el("toConsole").hidden = con || !hasAnyAgent();
+    if (el("brandSub"))
+      el("brandSub").textContent = con ? "Tus agentes" : "Asistente de configuración";
+    document.title = con ? "Olivaw — tus agentes" : "Olivaw — configura tu agente";
+    if (con) {
+      renderTree();
+      el("panel").innerHTML = renderConsole();
+      var sec = curSec();
+      if (sec.wire) sec.wire();
+      // Every panel below is el()-guarded, so this wires whatever this page happens to
+      // show and skips the rest.
+      eChannels();
+      wireSecCards();
+      save();
+      return;
+    }
     renderStepper();
     el("panel").innerHTML = STEPS[S.step].render();
     el("navProgress").textContent = "Paso " + (S.step + 1) + " de " + STEPS.length;
     el("navBack").style.visibility = S.step === 0 ? "hidden" : "visible";
     var next = el("navNext");
-    next.textContent = S.step === STEPS.length - 1 ? "Cerrar asistente" : "Continuar →";
+    next.textContent = S.step === STEPS.length - 1
+      ? (hasAnyAgent() ? "Ir a mis agentes →" : "Cerrar asistente") : "Continuar →";
     STEPS[S.step].enter();
     save();
   }
@@ -119,9 +141,19 @@
 
   el("navBack").onclick = function () { go(S.step - 1); };
   el("navNext").onclick = function () {
-    if (S.step === STEPS.length - 1) { closeWizard(); return; }
+    if (S.step === STEPS.length - 1) {
+      // Setup is over. Hand over to the console rather than to a dead tab: from here on
+      // every question is "which agent, and what about it" - which is what it answers.
+      if (hasAnyAgent()) {
+        goSec("home", (S.applyResult && S.applyResult.agent && S.applyResult.agent.slug) || S.sel);
+        return;
+      }
+      closeWizard(); return;
+    }
     go(S.step + 1);
   };
+  if (el("closeBtn")) el("closeBtn").onclick = closeWizard;
+  if (el("toConsole")) el("toConsole").onclick = function () { goSec(S.sec || "home"); };
 
   function closeWizard() {
     api("shutdown", {});
@@ -129,6 +161,307 @@
       '<div style="display:grid;place-items:center;height:100vh;text-align:center;font-family:sans-serif">' +
       '<div><div style="font-size:52px">👋</div><h2>Puedes cerrar esta pestaña.</h2>' +
       '<p style="color:#888">Tu agente ya está configurándose en segundo plano.</p></div></div>';
+  }
+
+  // -- the console: agents first ---------------------------------------------
+  // The wizard is a straight line - brain, Hermes, identity, channel, activate - and that
+  // is exactly right the first time. It is wrong every time after, because almost
+  // everything on its last page belongs to ONE agent and the sidebar never said which
+  // one. So once agents exist, the sidebar stops listing installation steps and starts
+  // listing agents: you pick one, its own settings appear underneath it, and the few
+  // things that really are shared by the whole machine are grouped apart and labelled.
+  function allAgents() {
+    var ag = META.agents || {};
+    return (ag.default ? [ag.default] : []).concat(ag.extra || []);
+  }
+  function agentBySlug(slug) {
+    var all = allAgents(), i;
+    for (i = 0; i < all.length; i++) if (all[i].slug === slug) return all[i];
+    return null;
+  }
+  // The selected agent. Everything per-agent on screen resolves through here, so a wrong
+  // answer would quietly configure somebody else's agent.
+  function curAgent() { return agentBySlug(S.sel || "default") || allAgents()[0] || null; }
+  function isAgentSec(sec) { return sec.scope === "agent"; }
+  function curSec() {
+    for (var i = 0; i < CONSOLE.length; i++) if (CONSOLE[i].id === S.sec) return CONSOLE[i];
+    return CONSOLE[0];
+  }
+  function agentLabel(a) { return (a && (a.name || a.slug)) || "Tu agente"; }
+
+  // A section is one page in the console, so its accordion is a click for nothing. Only
+  // the outermost <details> goes: the fine-print folds inside it are still worth folding.
+  function unfold(html) {
+    var i = html.indexOf("<details");
+    if (i < 0) return html;
+    var a = html.indexOf("<summary>", i), b = html.indexOf("</summary>", a);
+    if (a < 0 || b < 0) return html;
+    var body = html.slice(b + "</summary>".length);
+    var j = body.lastIndexOf("</details>");
+    if (j >= 0) body = body.slice(0, j) + body.slice(j + "</details>".length);
+    return html.slice(0, i) + body;
+  }
+
+  var CONSOLE = [
+    { id: "home", scope: "agent", icon: "🏠", label: "Resumen",
+      blurb: "Cómo está y qué puedes hacer con él",
+      render: secAgentHome, wire: eAgentHome },
+    { id: "canales", scope: "agent", icon: "💬", label: "Por dónde le hablan",
+      blurb: "WhatsApp, correo, Slack, webhooks",
+      title: "Por dónde puede hablarle la gente",
+      lead: "Telegram ya está listo. Aquí sumas los demás — y cada uno queda guardado en " +
+            "<b>este</b> agente, no en los otros.",
+      render: function () {
+        return secWhatsApp() + secGoogle() + secSlack() + secWebhook() + secSmtp();
+      } },
+    { id: "gasto", scope: "agent", icon: "⏱️", label: "Conversación y gasto",
+      blurb: "Cada cuánto empieza de cero",
+      title: "Cuánto dura cada conversación",
+      render: function () { return unfold(secPolicy()); } },
+    { id: "recuerdos", scope: "agent", icon: "🗂️", label: "Recordar conversaciones",
+      blurb: "Que retome un hilo anterior",
+      title: "Que recuerde y retome lo hablado",
+      render: function () { return unfold(secHistory()); } },
+    { id: "habilidades", scope: "agent", icon: "🧰", label: "Lo que sabe hacer",
+      blurb: "Navegador, imágenes y conectores",
+      title: "Lo que este agente sabe hacer",
+      lead: "Navegar por internet, generar imágenes y conectarse a herramientas externas.",
+      render: function () { return secBrowser() + secImages() + secMcp(); } },
+
+    { id: "entre-agentes", scope: "team", icon: "🤝", label: "Que se hablen entre ellos",
+      title: "Que tus agentes se hablen entre ellos",
+      render: function () { return unfold(secIntercom()); } },
+    { id: "rutinas", scope: "team", icon: "🌙", label: "Rutinas automáticas",
+      title: "Rutinas automáticas",
+      lead: "Igual que una persona: de madrugada repasa el día y guarda lo que importa; " +
+            "los domingos revisa su semana y se corrige. " +
+            "<span class=\"muted\">Se programan para el agente principal.</span>",
+      render: function () { return secRoutines(true); } },
+    { id: "propuestas", scope: "team", icon: "💡", label: "Lo que propone",
+      title: "Lo que Olivaw propone",
+      lead: "Cuando ve algo que podría hacer por ti, lo propone aquí y espera. No construye " +
+            "nada sin tu sí — y lo que descartes no vuelve a proponerlo.",
+      render: function () { return secProposals(true); } },
+    { id: "memoria", scope: "team", icon: "📓", label: "Leer su memoria",
+      title: "Su memoria, en Obsidian",
+      lead: "Lo que tu agente recuerda son notas de texto. En Obsidian puedes leerlas, " +
+            "corregirlas y ver cómo se conectan.",
+      render: function () { return secVault(true); } },
+    { id: "cerebro", scope: "team", icon: "⚙️", label: "El cerebro y Hermes",
+      title: "El cerebro y el motor",
+      lead: "Quién razona por tus agentes y qué ejecuta sus acciones. Es <b>compartido</b>: " +
+            "lo que cambies aquí les afecta a todos.",
+      render: secBrain, wire: eBrain }
+  ];
+
+  function goSec(id, slug) {
+    if (slug) S.sel = slug;
+    S.sec = id; S.view = "console"; save();
+    var w = document.querySelector(".panel-wrap"); if (w) w.scrollTop = 0;
+    render();
+  }
+  // Leaving the console for the wizard: creating an agent, or reconfiguring one.
+  function enterSetup(step) {
+    S.view = "setup"; S.step = step; S._max = Math.max(S._max || 0, step);
+    save(); render();
+  }
+
+  function dotClass(a) {
+    if (a.missing_profile) return "err";
+    if (a.gateway_running === true) return "ok";
+    if (a.gateway_running === false) return "off";
+    return "unk";
+  }
+
+  function renderTree() {
+    var t = el("navTree");
+    if (!t) return;
+    var cur = curAgent(), sec = curSec(), html = "";
+    html += '<div class="tree-h">Tus agentes</div>';
+    allAgents().forEach(function (a) {
+      var on = !!(cur && a.slug === cur.slug);
+      html += '<div class="tnode' + (on ? " on" : "") + '">' +
+        '<div class="tnode-top" data-agent="' + esc(a.slug) + '" tabindex="0">' +
+        '<span class="tdot ' + dotClass(a) + '"></span>' +
+        '<span class="tname">' + esc(agentLabel(a)) + '</span>' +
+        (a.is_default ? '<span class="tflag">principal</span>' : '') + '</div>';
+      if (on) {
+        html += '<div class="tkids">' + CONSOLE.filter(isAgentSec).map(function (x) {
+          return '<div class="tkid' + (x.id === sec.id ? " active" : "") +
+            '" data-sec="' + x.id + '" tabindex="0"><span class="tico">' + x.icon +
+            '</span>' + esc(x.label) + '</div>';
+        }).join("") + '</div>';
+      }
+      html += '</div>';
+    });
+    html += '<div class="tnew" id="treeNew" tabindex="0">➕ Crear un agente nuevo</div>';
+    html += '<div class="tree-h">De todo el equipo</div>';
+    html += CONSOLE.filter(function (x) { return !isAgentSec(x); }).map(function (x) {
+      return '<div class="tkid flat' + (x.id === sec.id ? " active" : "") +
+        '" data-sec="' + x.id + '" tabindex="0"><span class="tico">' + x.icon + '</span>' +
+        esc(x.label) + '</div>';
+    }).join("");
+    t.innerHTML = html;
+
+    function act(node, fn) {
+      node.onclick = fn;
+      node.onkeydown = function (e) {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fn(); }
+      };
+    }
+    Array.prototype.forEach.call(t.querySelectorAll("[data-agent]"), function (n) {
+      act(n, function () {
+        // Keep the section when switching agents: comparing the same panel across two
+        // agents is one click, not four.
+        goSec(isAgentSec(curSec()) ? curSec().id : "home", n.getAttribute("data-agent"));
+      });
+    });
+    Array.prototype.forEach.call(t.querySelectorAll("[data-sec]"), function (n) {
+      act(n, function () { goSec(n.getAttribute("data-sec")); });
+    });
+    var nb = el("treeNew");
+    if (nb) act(nb, function () {
+      resetAgentFields();
+      S.agent = { mode: "new", isolate_claude: false };
+      enterSetup(1);
+    });
+  }
+
+  // -- the agent's own front page ---------------------------------------------
+  function secAgentHome() {
+    var a = curAgent();
+    if (!a) {
+      return '<h1>Todavía no hay ningún agente</h1><p class="lead">Crea el primero desde ' +
+        '«Crear un agente nuevo».</p>';
+    }
+    var owner = (a.owners && a.owners[0]) ? (a.owners[0].name || a.owners[0].user_id) : "";
+    var warn = "";
+    if (a.missing_profile) {
+      warn = '<div class="callout warn"><b>Le falta su perfil.</b> Su configuración de Hermes ' +
+        'ya no está en este equipo, así que no puede arrancar. Pulsa «Restaurar» para volver ' +
+        'a escribirla.</div>';
+    } else if (a.gateway_running === false) {
+      warn = '<div class="callout warn"><b>Está pausado.</b> No le llega ningún mensaje, por ' +
+        'ningún canal, hasta que lo reanudes.</div>';
+    } else if (a.gateway_running === true && a.bridge_up === false) {
+      warn = '<div class="callout warn"><b>Escucha, pero no puede pensar.</b> Está atendiendo ' +
+        'mensajes y su puente con el cerebro no responde en el puerto ' + esc(a.port) + '. ' +
+        'Si no se arregla solo, usa 🆘 abajo a la izquierda.</div>';
+    }
+    var facts = "";
+    facts += sumline(a.gateway_running === true ? "🟢" : (a.gateway_running === false ? "⏸️" : "❔"),
+      "Estado", a.gateway_running === true ? "Encendido, atendiendo mensajes"
+        : a.gateway_running === false ? "Pausado" : "No pude comprobarlo");
+    facts += sumline("🧠", "Su cerebro",
+      a.bridge_up ? "Conectado (puente en el puerto " + a.port + ")"
+                  : "El puente del puerto " + a.port + " no responde");
+    facts += sumline("👤", "Quién puede darle órdenes", owner || "Nadie todavía");
+    if (a.workspace) facts += sumline("📁", "Su carpeta de trabajo", a.workspace);
+    facts += sumline("🧩", "Su perfil de Hermes", a.profile || a.slug);
+
+    var actions = '<button class="btn btn-soft btn-sm" data-act="reconfigure" data-slug="' +
+      esc(a.slug) + '">Reconfigurar</button>';
+    if (!a.is_default) {
+      if (a.missing_profile)
+        actions += ' <button class="btn btn-soft btn-sm" data-act="restore" data-slug="' +
+          esc(a.slug) + '">Restaurar</button>';
+      actions += (a.gateway_running
+        ? ' <button class="btn btn-soft btn-sm" data-act="stop" data-slug="' + esc(a.slug) + '">Pausar</button>'
+        : ' <button class="btn btn-soft btn-sm" data-act="start" data-slug="' + esc(a.slug) + '">Reanudar</button>');
+      actions += ' <button class="btn btn-soft btn-sm" data-act="reset" data-slug="' + esc(a.slug) +
+        '" style="color:var(--err)">Eliminar</button>';
+    }
+    var grid = CONSOLE.filter(function (x) { return isAgentSec(x) && x.id !== "home"; })
+      .map(function (x) {
+        return '<div class="seccard" data-sec="' + x.id + '" tabindex="0">' +
+          '<span class="secico">' + x.icon + '</span>' +
+          '<b>' + esc(x.label) + '</b>' +
+          '<span class="muted small">' + esc(x.blurb || "") + '</span></div>';
+      }).join("");
+
+    return '' +
+      '<div class="eyebrow">Tus agentes</div>' +
+      '<h1>' + esc(agentLabel(a)) +
+      (a.is_default ? ' <span class="badge">principal</span>' : '') + '</h1>' +
+      warn +
+      '<div class="card pad"><ul class="filelist">' + facts + '</ul>' +
+      '<div class="row" style="margin-top:12px">' + actions + '</div>' +
+      '<span class="pill" data-pill="' + esc(a.slug) + '" style="display:none;margin-top:8px"></span></div>' +
+      '<h2>¿Qué quieres ajustar de ' + esc(agentLabel(a)) + '?</h2>' +
+      '<div class="secgrid">' + grid + '</div>';
+  }
+  function eAgentHome() { wireAgentActions(); }
+
+  // Shared by the console's front page and the wizard's agent list, so pausing an agent
+  // does the same thing (and says the same thing) in both.
+  function wireAgentActions() {
+    Array.prototype.forEach.call(document.querySelectorAll("#panel [data-act]"), function (b) {
+      b.onclick = function () {
+        var act = b.getAttribute("data-act"), slug = b.getAttribute("data-slug");
+        if (act === "reconfigure") {
+          var a = agentBySlug(slug) || {};
+          S.agent = { mode: a.is_default ? "default" : "reconfigure", slug: slug,
+                      port: a.port, workspace: a.workspace, name: a.name };
+          if (!a.is_default) { resetAgentFields(); }  // reconfiguring an extra: fresh inputs
+          enterSetup(1); return;
+        }
+        if (act === "reset" && !confirm("¿Eliminar este agente por completo? Se borra su perfil, memoria y datos. No se puede deshacer.")) return;
+        var pill = document.querySelector('[data-pill="' + slug + '"]');
+        if (pill) { pill.style.display = "inline-flex"; }
+        runTest(b, pill, function () { return api("agent/action", { slug: slug, action: act }); })
+          .then(function () { setTimeout(refreshAgents, 400); });
+      };
+    });
+  }
+  function wireSecCards() {
+    Array.prototype.forEach.call(document.querySelectorAll("#panel [data-sec]"), function (n) {
+      var jump = function () { goSec(n.getAttribute("data-sec")); };
+      n.onclick = jump;
+      n.onkeydown = function (e) {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); jump(); }
+      };
+    });
+  }
+
+  // -- the shared brain and engine, read-only unless you ask to redo it -------
+  function secBrain() {
+    return '' +
+      '<div id="brainBox" class="card pad"><span class="muted small">Comprobando…</span></div>' +
+      '<div class="row" style="margin-top:12px">' +
+      '<button class="btn btn-soft btn-sm" id="brainRecheck">Volver a comprobar</button>' +
+      '<button class="btn btn-soft btn-sm" id="brainRedo">Rehacer esta parte</button></div>' +
+      '<p class="muted small" style="margin-top:10px">«Rehacer esta parte» te lleva a los ' +
+      'pasos del asistente para el cerebro y Hermes. No borra ni cambia ningún agente.</p>';
+  }
+  function eBrain() {
+    function paint(html) { var b = el("brainBox"); if (b) b.innerHTML = html; }
+    function load() {
+      paint('<span class="muted small">Comprobando…</span>');
+      Promise.all([api("provider/check", brainBody()), api("check", { what: "hermes" })])
+        .then(function (r) {
+          var br = r[0] || {}, hm = r[1] || {};
+          paint('<ul class="filelist">' +
+            sumline(br.ok ? "✅" : "⚠️", cliLabel(),
+                    br.ok ? (br.path || br.detail || "listo") : (br.detail || "no lo encontré")) +
+            sumline(hm.ok ? "✅" : "⚠️", "Hermes",
+                    hm.ok ? (hm.path || hm.detail || "listo") : (hm.detail || "no lo encontré")) +
+            '</ul>');
+        });
+    }
+    if (el("brainRecheck")) el("brainRecheck").onclick = load;
+    if (el("brainRedo")) el("brainRedo").onclick = function () { enterSetup(1); };
+    load();
+  }
+
+  function renderConsole() {
+    var sec = curSec(), a = curAgent();
+    if (sec.id === "home") return sec.render();
+    var head = isAgentSec(sec)
+      ? '<div class="eyebrow">' + esc(agentLabel(a)) + ' <span class="muted">· ' +
+        esc(sec.label) + '</span></div>'
+      : '<div class="eyebrow">De todo el equipo <span class="muted">· compartido</span></div>';
+    return head + (sec.title ? '<h1>' + sec.title + '</h1>' : '') +
+      (sec.lead ? '<p class="lead">' + sec.lead + '</p>' : '') + sec.render();
   }
 
   // ── shared test-button helper ────────────────────────────────────────────
@@ -149,7 +482,7 @@
   // ── step 0: welcome ───────────────────────────────────────────────────────
   function hasAnyAgent() {
     var a = META.agents || {};
-    return !!(a.default) || (a.extra && a.extra.length);
+    return !!(a.default || (a.extra && a.extra.length));
   }
 
   function rWelcome() {
@@ -247,26 +580,9 @@
     if (newBtn) newBtn.onclick = function () {
       resetAgentFields();
       S.agent = { mode: "new", isolate_claude: !!(el("isoClaude") && el("isoClaude").checked) };
-      save(); go(1);
+      enterSetup(1);
     };
-    Array.prototype.forEach.call(document.querySelectorAll("#panel [data-act]"), function (b) {
-      b.onclick = function () {
-        var act = b.getAttribute("data-act"), slug = b.getAttribute("data-slug");
-        if (act === "reconfigure") {
-          var all = [META.agents.default].concat(META.agents.extra || []);
-          var a = all.filter(function (x) { return x && x.slug === slug; })[0] || {};
-          S.agent = { mode: a.is_default ? "default" : "reconfigure", slug: slug,
-                      port: a.port, workspace: a.workspace, name: a.name };
-          if (!a.is_default) { resetAgentFields(); }  // reconfiguring an extra: fresh inputs
-          save(); go(1); return;
-        }
-        if (act === "reset" && !confirm("¿Eliminar este agente por completo? Se borra su perfil, memoria y datos. No se puede deshacer.")) return;
-        var pill = document.querySelector('[data-pill="' + slug + '"]');
-        if (pill) { pill.style.display = "inline-flex"; }
-        runTest(b, pill, function () { return api("agent/action", { slug: slug, action: act }); })
-          .then(function () { setTimeout(refreshAgents, 400); });
-      };
-    });
+    wireAgentActions();
   }
   function guideItem(ic, t, d) {
     return '<div style="font-size:26px">' + ic + '</div><div class="grow"><b>' + esc(t) +
@@ -872,19 +1188,35 @@
           });
         });
       }, "Aplicando…").then(function (r) {
-        if (r && r.ok) { S.applied = true; S.applyResult = r; S._max = STEPS.length - 1; save(); render(); }
+        if (r && r.ok) {
+          S.applied = true; S.applyResult = r; S._max = STEPS.length - 1;
+          if (r.agent && r.agent.slug) S.sel = r.agent.slug;
+          save(); render();
+          refreshAgents();   // the console's list must include what we just created
+        }
       });
     };
   }
 
   // ── step 6: extra channels (optional) ─────────────────────────────────────
+  // Which agent the panels on screen are about: the one selected in the console, or -
+  // during setup - the one being installed. Null means the default agent, which is bare
+  // hermes with no -p.
   function targetProfile() {
+    if (S.view === "console") {
+      var a = curAgent();
+      return (a && !a.is_default) ? (a.profile || a.slug) : null;
+    }
     if (S.agent && S.agent.mode === "new" && S.applyResult && S.applyResult.agent)
       return S.applyResult.agent.profile;
     if (S.agent && S.agent.mode === "reconfigure") return S.agent.slug;
     return null; // default agent -> bare hermes
   }
   function targetWorkspace() {
+    if (S.view === "console") {
+      var a = curAgent();
+      if (a && a.workspace) return a.workspace;
+    }
     if (S.applyResult && S.applyResult.agent && S.applyResult.agent.workspace)
       return S.applyResult.agent.workspace;
     return S.workspace || "";
@@ -897,19 +1229,26 @@
         '<p class="lead">Vuelve al paso anterior y pulsa «Aplicar y activar». Luego podrás ' +
         'conectar WhatsApp, Slack, webhooks y correo.</p>';
     }
-    var smtpOpts = (META.smtp_providers || []).map(function (p) {
-      return '<option value="' + p.id + '"' + (S.smtp.provider === p.id ? " selected" : "") +
-        '>' + esc(p.label) + '</option>';
-    }).join("");
     return '' +
       '<div class="eyebrow">Paso 6 · Más canales <span class="muted">(opcional)</span></div>' +
       '<h1>¿Por dónde más pueden hablarle?</h1>' +
       '<p class="lead">Tu agente ya vive en Telegram. Aquí puedes darle más capacidades ' +
       '(imágenes, video), conectar herramientas externas, y sumar más canales. Todo es opcional.</p>' +
+      SETUP_ORDER.map(function (fn) { return fn(); }).join("") +
+      '<p class="muted small" style="margin-top:16px">Nada de esto es definitivo, y no hace ' +
+      'falta dejarlo listo ahora: el botón de abajo te lleva a <b>tus agentes</b>, donde ' +
+      'tienes todo esto otra vez, ordenado por agente, cuando lo necesites.</p>';
+  }
 
-      // Conversation lifetime. First, and open by default, because it is the single
-      // biggest driver of what the agent costs to run — and Hermes' own default is the
-      // expensive one: never restart, summarise at half a million tokens.
+  // Every section of the post-setup page, in the order the wizard shows them. The console
+  // picks subsets of this same list, so a section only ever exists in one place.
+  var SETUP_ORDER = [secPolicy, secBrowser, secHistory, secImages, secIntercom, secMcp, secWhatsApp, secGoogle, secSlack, secWebhook, secSmtp, secVault, secRoutines, secProposals];
+
+  // Conversation lifetime. First, and open by default, because it is the single
+  // biggest driver of what the agent costs to run — and Hermes' own default is the
+  // expensive one: never restart, summarise at half a million tokens.
+  function secPolicy() {
+    return '' +
       '<details open><summary>⏱️ Duración de la conversación <span class="chip">gasto</span></summary>' +
       '<p class="small muted">Cada mensaje que le mandas arrastra <b>toda la conversación anterior</b>. ' +
       'Si nunca empieza de cero, cada respuesta cuesta más que la anterior y te quedas sin saldo en ' +
@@ -936,10 +1275,13 @@
       '</details>' +
       '<div class="row" style="margin-top:10px">' +
       '<button class="btn btn-primary btn-sm" id="polSave">Guardar duración</button></div>' +
-      chLine("polPill") + '</details>' +
+      chLine("polPill") + '</details>';
+  }
 
-      // Which browser the agent drives. It ALWAYS has browser tools; this only decides
-      // whether they move an invisible Chromium or a window the owner can watch.
+  // Which browser the agent drives. It ALWAYS has browser tools; this only decides
+  // whether they move an invisible Chromium or a window the owner can watch.
+  function secBrowser() {
+    return '' +
       '<details><summary>🌐 Navegador</summary>' +
       '<p class="small muted">Tu agente ya sabe navegar por internet — abrir páginas, leer, ' +
       'hacer clic, llenar formularios. Aquí eliges <b>en qué navegador</b>.</p>' +
@@ -962,9 +1304,12 @@
       '<div class="row" style="margin-top:8px">' +
       '<button class="btn btn-soft btn-sm" id="brwDelegTest">Probar de verdad ' +
       '<span class="muted">(tarda ~1 min)</span></button></div>' +
-      chLine("brwDelegPill") + '</details>' +
+      chLine("brwDelegPill") + '</details>';
+  }
 
-      // Conversation memory / history (resume past conversations)
+  // Conversation memory / history (resume past conversations)
+  function secHistory() {
+    return '' +
       '<details open><summary>🧠 Memoria de conversaciones (recordar y retomar)</summary>' +
       '<p class="small muted">Deja que tu agente <b>recuerde y retome</b> conversaciones pasadas: ' +
       'busca en su historial, continúa un hilo anterior o empieza uno nuevo cuando aplica. ' +
@@ -973,9 +1318,12 @@
       '<button class="btn btn-primary btn-sm" id="histEnable">Activar memoria</button>' +
       '<button class="btn btn-soft btn-sm" id="histList">Ver conversaciones recientes</button></div>' +
       '<div id="histBox" style="margin-top:8px"></div>' +
-      chLine("histPill") + '</details>' +
+      chLine("histPill") + '</details>';
+  }
 
-      // Capabilities: image / video generation
+  // Capabilities: image / video generation
+  function secImages() {
+    return '' +
       '<details><summary>🎨 Generación de imágenes y video</summary>' +
       '<p class="small muted">Activa la generación en Hermes (se abre una ventana para elegir ' +
       'proveedor y su clave). Opciones gratis o con tu cuenta de Google:</p>' +
@@ -988,9 +1336,38 @@
       }).join("") +
       '<div id="imgRoutes" style="margin-top:10px"></div>' +
       '<div class="row" style="margin-top:8px"><button class="btn btn-soft btn-sm" id="capImg">Configurar imágenes en Hermes</button></div>' +
-      chLine("capPill") + '</details>' +
+      chLine("capPill") + '</details>';
+  }
 
-      // Connectors (MCP)
+  // Agents talking to agents. Off is a real answer, so both buttons are here.
+  function secIntercom() {
+    return '' +
+      '<details><summary>🤝 Que tus agentes se hablen entre ellos</summary>' +
+      '<p class="small muted">Si tienes más de un agente, cada uno sabe cosas ' +
+      'distintas. Con esto <b>uno puede preguntarle al otro</b> y seguir la conversación ' +
+      'hasta resolver, sin que tú hagas de mensajero. Cada pregunta es un turno completo ' +
+      'del otro agente (~30-120 s), y queda escrita.</p>' +
+      '<div id="icBox" class="small muted">Comprobando…</div>' +
+      '<div class="row" style="margin-top:10px">' +
+      '<button class="btn btn-primary btn-sm" id="icOn">Permitir que se hablen</button>' +
+      '<button class="btn btn-soft btn-sm" id="icOff">No permitirlo</button></div>' +
+      '<div class="row" style="margin-top:8px;align-items:center;gap:10px">' +
+      '<label class="small">Turnos por conversación ' +
+      '<input id="icTurns" type="number" min="2" max="40" style="width:70px"></label>' +
+      '<label class="small">Llamadas por hora ' +
+      '<input id="icHour" type="number" min="1" max="500" style="width:80px"></label>' +
+      '<button class="btn btn-soft btn-sm" id="icSave">Guardar límites</button></div>' +
+      '<p class="small muted" style="margin-top:8px">Un agente que le escribe a otro <b>no ' +
+      'manda</b>: el mensaje llega marcado como venido de otro agente, y el que lo recibe ' +
+      'tiene instrucciones de no ejecutar nada delicado por petíción de un compañero. ' +
+      'Para eso estás tú.</p>' +
+      '<div id="icThreads" style="margin-top:6px"></div>' +
+      chLine("icPill") + '</details>';
+  }
+
+  // Connectors (MCP)
+  function secMcp() {
+    return '' +
       '<details><summary>🧩 Conectores (MCP)</summary>' +
       '<p class="small muted">Conecta herramientas externas <b>del lado de Hermes</b> — así sí ' +
       'funcionan con tu agente. (Los conectores de Claude Code no funcionan aquí.)</p>' +
@@ -1003,9 +1380,12 @@
       '<label class="field"><span class="lab">URL del servidor MCP</span>' +
       '<input type="text" id="mcpUrl" placeholder="https://..."></label>' +
       '<div class="row"><button class="btn btn-soft btn-sm" id="mcpAdd">Añadir</button></div>' +
-      chLine("mcpPill") + '</details>' +
+      chLine("mcpPill") + '</details>';
+  }
 
-      // WhatsApp — connect, show the QR HERE, then lock it to the owner's number
+  // WhatsApp — connect, show the QR HERE, then lock it to the owner's number
+  function secWhatsApp() {
+    return '' +
       '<details><summary>💬 WhatsApp</summary>' +
       '<p class="small muted">1) Pulsa «Conectar». 2) Aparecerá aquí un código QR. ' +
       '3) En tu teléfono: WhatsApp → Ajustes → <b>Dispositivos vinculados</b> → Vincular. ' +
@@ -1046,9 +1426,12 @@
       '<option value="media">Media — puede esperar un poco</option></select></label>' +
       '<div class="row"><button class="btn btn-soft btn-sm" id="escAdd">Añadir motivo</button></div>' +
       '<div class="row" style="margin-top:10px"><button class="btn btn-primary btn-sm" id="escSave">Guardar avisos</button></div>' +
-      '</div>' + chLine("escPill") + '</details>' +
+      '</div>' + chLine("escPill") + '</details>';
+  }
 
-      // Google Workspace: Gmail (native email platform) + Google Chat
+  // Google Workspace: Gmail (native email platform) + Google Chat
+  function secGoogle() {
+    return '' +
       '<details><summary>🟦 Google Workspace (Gmail y Google Chat)</summary>' +
       '<p class="small muted">Conecta tu cuenta de Google para que tu agente <b>reciba y responda ' +
       'correos</b>, y opcionalmente hable por Google Chat. Usa una <b>contraseña de aplicación</b>, ' +
@@ -1079,9 +1462,12 @@
       '<label class="field"><span class="lab">Correos permitidos</span>' +
       '<input type="text" id="gcUsers" placeholder="tu@empresa.com"></label>' +
       '<div class="row"><button class="btn btn-soft btn-sm" id="gcSave">Conectar Google Chat</button></div>' +
-      chLine("gwPill") + '</details>' +
+      chLine("gwPill") + '</details>';
+  }
 
-      // Slack
+  // Slack
+  function secSlack() {
+    return '' +
       '<details><summary>🟣 Slack</summary>' +
       '<p class="small muted">Genera el manifest, crea la app en ' +
       '<a href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer">api.slack.com/apps</a> ' +
@@ -1089,9 +1475,12 @@
       '<div class="row"><button class="btn btn-soft btn-sm" id="slackMan">Ver manifest</button>' +
       '<button class="btn btn-soft btn-sm" id="slackSetup">Configurar en terminal</button></div>' +
       '<div id="slackManWrap" style="display:none;margin-top:10px"><pre id="slackManTxt"></pre></div>' +
-      chLine("slackPill") + '</details>' +
+      chLine("slackPill") + '</details>';
+  }
 
-      // Webhook / Google Chat
+  // Webhook / Google Chat
+  function secWebhook() {
+    return '' +
       '<details><summary>🔗 Webhook / Google Chat</summary>' +
       '<p class="small muted">Crea una ruta <code>/webhooks/&lt;nombre&gt;</code> que activa al ' +
       'agente cuando llega un evento (Google Chat, Zapier, GitHub, lo que sea).</p>' +
@@ -1101,9 +1490,16 @@
       '<input type="text" id="whDesc" placeholder="Avisos desde Google Chat" value="' + esc(S.wh_desc || "") + '"></label>' +
       '<div class="row"><button class="btn btn-soft btn-sm" id="whAdd">Crear webhook</button>' +
       '<button class="btn btn-soft btn-sm" id="whTest">Probar</button></div>' +
-      chLine("whPill") + '</details>' +
+      chLine("whPill") + '</details>';
+  }
 
-      // Email (SMTP)
+  // Email (SMTP)
+  function secSmtp() {
+    var smtpOpts = (META.smtp_providers || []).map(function (p) {
+      return '<option value="' + p.id + '"' + (S.smtp.provider === p.id ? " selected" : "") +
+        '>' + esc(p.label) + '</option>';
+    }).join("");
+    return '' +
       '<details><summary>✉️ Correo (SMTP)</summary>' +
       '<p class="small muted">Dale a tu agente la capacidad de enviar correos. Elige tu proveedor ' +
       'y usa una <b>contraseña de aplicación</b> (no tu contraseña normal).</p>' +
@@ -1122,33 +1518,41 @@
       '<input type="text" id="smtpTo" placeholder="tu-otro-correo@ejemplo.com" value="' + esc(S.smtp.to_addr || "") + '"></label>' +
       '<div class="row"><button class="btn btn-soft btn-sm" id="smtpTest">Enviar prueba</button>' +
       '<button class="btn btn-primary btn-sm" id="smtpSave">Guardar en el agente</button></div>' +
-      chLine("smtpPill") + '</details>' +
+      chLine("smtpPill") + '</details>';
+  }
 
-      // The long-term memory, seen from the owner's side: can HE open it?
+  // The long-term memory, seen from the owner's side: can HE open it?
+  function secVault(bare) {
+    return (bare ? '' :
       '<h2 style="margin-top:26px">Memoria en Obsidian</h2>' +
       '<p class="muted small" style="margin-top:-6px">Lo que tu agente recuerda son notas de ' +
       'texto. En Obsidian puedes leerlas, corregirlas y ver cómo se conectan.</p>' +
-      '<div id="obsBox" class="card pad"><span class="muted small">Comprobando…</span></div>' +
+      '') +
+      '<div id="obsBox" class="card pad"><span class="muted small">Comprobando…</span></div>';
+  }
 
-      // Sleep + weekly retrospective: the agent's own upkeep, not a channel — but this is the
-      // post-setup page, and it is where someone finishing the wizard will actually see it.
+  // Sleep + weekly retrospective: the agent's own upkeep, not a channel — but this is the
+  // post-setup page, and it is where someone finishing the wizard will actually see it.
+  function secRoutines(bare) {
+    return (bare ? '' :
       '<h2 style="margin-top:26px">Rutinas automáticas <span class="muted" ' +
       'style="font-weight:400;font-size:15px">(recomendado)</span></h2>' +
       '<p class="muted small" style="margin-top:-6px">Igual que una persona: de madrugada repasa ' +
       'el día y guarda lo que importa; los domingos revisa su semana y se corrige.</p>' +
-      '<div id="selfcareBox" class="card pad"><span class="muted small">Revisando…</span></div>' +
+      '') +
+      '<div id="selfcareBox" class="card pad"><span class="muted small">Revisando…</span></div>';
+  }
 
-      // What came out of those routines and needs a yes or a no.
+  // What came out of those routines and needs a yes or a no.
+  function secProposals(bare) {
+    return (bare ? '' :
       '<h2 style="margin-top:26px">Lo que Olivaw propone</h2>' +
       '<p class="muted small" style="margin-top:-6px">Cuando ve algo que podría hacer por ti, lo ' +
       'propone aquí y espera. No construye nada sin tu sí — y lo que descartes no vuelve a ' +
       'proponerlo.</p>' +
-      '<div id="propBox" class="card pad"><span class="muted small">Cargando…</span></div>' +
-
-      '<p class="muted small" style="margin-top:16px">Cuando termines (o si no necesitas más ' +
-      'canales), pulsa «Cerrar asistente».</p>';
+      '') +
+      '<div id="propBox" class="card pad"><span class="muted small">Cargando…</span></div>';
   }
-
   // ── self-care routines (nightly consolidation + weekly retrospective) ───────
   function selfcareHtml(st) {
     if (!st || !st.ok) {
@@ -1434,10 +1838,13 @@
   }
 
   function eChannels() {
-    paintSelfcare();
-    paintObs();
-    paintProps();
-    if (!S.applied) return;
+    // Guarded on purpose: this same function wires the wizard's one long page AND each
+    // single-section page of the console, so anything that costs a request has to ask
+    // whether its own markup is on screen. Everything below is already el()-guarded.
+    if (el("selfcareBox")) paintSelfcare();
+    if (el("obsBox")) paintObs();
+    if (el("propBox")) paintProps();
+    if (S.view !== "console" && !S.applied) return;
     var prof = targetProfile(), ws = targetWorkspace();
 
     // Conversation memory / history
@@ -1573,7 +1980,7 @@
           }).join("");
       });
     }
-    loadImg();
+    if (el("imgRoutes")) loadImg();
 
     // ── which browser the agent drives ─────────────────────────────────────
     var brwPill = el("brwPill");
@@ -1627,7 +2034,76 @@
         return api("browser/disable", { profile: prof });
       }, "Cambiando…").then(loadBrw);
     };
-    loadBrw();
+    if (el("brwBox")) loadBrw();
+
+    // ── agents talking to agents ───────────────────────────────────
+    // Server-owned, like the conversation policy: the limits live in intercom.json, an
+    // agent can be told to change them, and a value cached in this page would silently
+    // put the old one back the next time the owner pressed Save.
+    var icPill = el("icPill");
+    function paintIc(st) {
+      var box = el("icBox");
+      if (!box) return;
+      if (!st || !st.ok) { box.innerHTML = "No pude comprobarlo."; return; }
+      var others = (st.agents || []).length;
+      if (others < 2) {
+        box.innerHTML = '👤 Por ahora sólo hay <b>un agente</b> en este equipo, ' +
+          'así que no hay con quién hablar. En cuanto crees otro, se verán entre ellos.';
+      } else if (st.enabled) {
+        box.innerHTML = '✅ <b>Activado</b> — ' + others + ' agentes pueden preguntarse ' +
+          'entre ellos: ' + (st.agents || []).map(function (a) {
+            return '<b>' + esc(a.name) + '</b>' + (a.reachable ? '' : ' <span class="muted">(no alcanzable)</span>');
+          }).join(' · ') + '.<br><span class="muted">Van ' + (st.quota ? st.quota.used : 0) +
+          ' de ' + (st.quota ? st.quota.limit : 0) + ' llamadas esta hora.</span>';
+      } else {
+        box.innerHTML = '⛔ <b>Desactivado</b>. Tus agentes no pueden escribirse; si uno lo ' +
+          'intenta, se le dice que no y ahí queda.';
+      }
+      if (el("icTurns")) el("icTurns").value = st.max_turns || 8;
+      if (el("icHour")) el("icHour").value = st.hourly_limit || 30;
+      var th = el("icThreads");
+      if (th) {
+        var rows = (st.threads || []);
+        th.innerHTML = rows.length
+          ? '<b class="small">Conversaciones recientes</b>' + rows.map(function (t) {
+              return '<div class="row small" style="gap:8px;align-items:center">' +
+                '<span class="muted">' + esc(t.from) + ' → ' + esc(t.to) + '</span>' +
+                '<span class="muted">' + t.turns + ' turnos</span>' +
+                '<a href="#" data-th="' + esc(t.id) + '" class="icShow">ver</a></div>';
+            }).join("")
+          : '';
+        Array.prototype.forEach.call(th.querySelectorAll(".icShow"), function (a) {
+          a.onclick = function (e) {
+            e.preventDefault();
+            api("intercom/thread", { thread: a.getAttribute("data-th") }).then(function (r) {
+              var pre = document.createElement("pre");
+              pre.className = "small";
+              pre.style.cssText = "white-space:pre-wrap;max-height:300px;overflow:auto";
+              pre.textContent = (r && r.text) || "";
+              a.parentNode.parentNode.appendChild(pre);
+              a.style.display = "none";
+            });
+          };
+        });
+      }
+    }
+    function loadIc() { api("intercom/status", {}).then(paintIc); }
+    function icSave(patch, label) {
+      icPill.style.display = "inline-flex";
+      runTest(this, icPill, function () { return api("intercom/save", patch); },
+              label || "Guardando\u2026").then(paintIc);
+    }
+    if (el("icOn")) el("icOn").onclick = function () {
+      icSave.call(this, { enabled: true }, "Activando\u2026");
+    };
+    if (el("icOff")) el("icOff").onclick = function () {
+      icSave.call(this, { enabled: false }, "Desactivando\u2026");
+    };
+    if (el("icSave")) el("icSave").onclick = function () {
+      icSave.call(this, { max_turns: el("icTurns") ? el("icTurns").value : null,
+                          hourly_limit: el("icHour") ? el("icHour").value : null });
+    };
+    if (el("icBox")) loadIc();
 
     // ── conversation lifetime ──────────────────────────────────────────────
     // Server-owned like the escalation panel, and for a stronger reason: the agent itself
@@ -1741,7 +2217,7 @@
         return api("policy/save", { profile: prof, preset: POL.preset, policy: POL.policy });
       }, "Guardando y reiniciando…").then(function () { loadPol(); });
     };
-    loadPol();
+    if (el("polPresets")) loadPol();
 
     // Server-owned state, deliberately: the escalation script reads the same file, so the
     // browser must not keep its own idea of what is switched on.
@@ -1842,7 +2318,7 @@
       }, "Guardando…").then(function () { loadEsc(); });
     };
 
-    loadEsc();
+    if (el("escList")) loadEsc();
 
     // Google Workspace (Gmail platform + Google Chat)
     var gwPill = el("gwPill"), gp = el("gwProv");
@@ -2610,14 +3086,28 @@
       }
       S._max = Math.max(S._max || 0, S.step || 0);
       if (S.applied) S._max = STEPS.length - 1;
+      // Which of the two UIs opens. The stepper is for the first install on this machine;
+      // after that the console is home, unless we were left mid-install (adding a second
+      // agent, say), in which case finishing that comes first.
+      if (!hasAnyAgent()) S.view = "setup";
+      else if (S.view !== "setup") S.view = "console";
       // Deep link: #channels / #agent … opens straight to that step, and #rescue (or #sos)
       // opens the help console over whatever step you were on. The desktop shortcut and
       // support links can point right at the help console.
       var want = (location.hash || "").replace(/^#/, "").trim().toLowerCase();
       var wantSos = (want === "rescue" || want === "sos" || want === "ayuda" || want === "help");
       if (want && !wantSos) {
-        var idx = STEPS.map(function (x) { return x.id; }).indexOf(want);
-        if (idx >= 0) { S.step = idx; S._max = Math.max(S._max || 0, idx); }
+        // #canales, #gasto, #entre-agentes… open a console section; the old step names
+        // (#agent, #channels) still work and drop you into the wizard where they used to.
+        if (want === "channels" || want === "agentes" || want === "agents") {
+          want = (want === "channels") ? "canales" : "home";
+        }
+        var isSec = CONSOLE.some(function (x) { return x.id === want; });
+        if (isSec && hasAnyAgent()) { S.view = "console"; S.sec = want; }
+        else {
+          var idx = STEPS.map(function (x) { return x.id; }).indexOf(want);
+          if (idx >= 0) { S.view = "setup"; S.step = idx; S._max = Math.max(S._max || 0, idx); }
+        }
       }
       render();
       if (wantSos) openSos();
