@@ -252,9 +252,145 @@ def _clean(text, limit):
     return t if len(t) <= limit else t[: limit - 1].rstrip() + "…"
 
 
-def _wa_link(contact):
-    digits = re.sub(r"\D", "", str(contact or ""))
-    return "https://wa.me/%s" % digits if len(digits) >= 8 else ""
+# ── who the customer actually is ─────────────────────────────────────────────
+# WhatsApp no longer hands out a phone number for everyone who writes. Many senders arrive
+# as a LID - "267383306489914@lid" - an identity that is deliberately NOT their number.
+# Stripping the non-digits out of one, which is what this used to do, produces a perfectly
+# well-formed https://wa.me/267383306489914 pointing at a stranger, printed in an alert
+# that says it is the customer. An owner clicking that opens a chat with the wrong person
+# and says something about somebody else's business.
+#
+# So: a number goes in the alert only when the paired session PROVES it. Baileys writes the
+# mapping into its own session directory as `lid-mapping-<phone>.json` (holding the LID) and
+# `lid-mapping-<lid>_reverse.json` (holding the phone). Both are read; neither is guessed.
+# When nothing proves a number, the alert says so and omits the link. An owner who has to
+# open the chat herself has lost thirty seconds. An owner who messages the wrong person has
+# lost more than that.
+
+_LID_SUFFIX = "@lid"
+_NOT_A_PERSON = ("@g.us", "@broadcast", "@newsletter")   # group, status, channel
+
+
+def session_dirs(home=None):
+    """Both places Hermes may keep the paired session, newest layout first.
+
+    Hermes picks between them with get_hermes_dir("platforms/whatsapp/session",
+    "whatsapp/session"): the legacy path wins only when it already holds something. Looking
+    in one of them is how a perfectly good install reads as "this LID cannot be resolved",
+    which here means an owner alert quietly loses the customer's phone number.
+    """
+    home = home or _hermes_home()
+    return [os.path.join(home, "platforms", "whatsapp", "session"),
+            os.path.join(home, "whatsapp", "session")]
+
+
+def session_dir(home=None):
+    """The one that exists, preferring a populated legacy directory as Hermes does."""
+    dirs = session_dirs(home)
+    for d in reversed(dirs):          # legacy first, matching Hermes' own preference
+        try:
+            if os.listdir(d):
+                return d
+        except OSError:
+            continue
+    return dirs[0]
+
+
+def _digits(value):
+    return re.sub(r"\D", "", str(value or ""))
+
+
+def _lid_in_dir(lid, d):
+    """Look this LID up in one session directory. '' when it is not there."""
+    try:
+        with io.open(os.path.join(d, "lid-mapping-%s_reverse.json" % lid),
+                     encoding="utf-8") as fh:
+            phone = _digits(json.load(fh))
+        if 8 <= len(phone) <= 15:
+            return phone
+    except (OSError, ValueError):
+        pass
+    # The forward direction, written as lid-mapping-<phone>.json holding the LID.
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return ""
+    for name in names:
+        m = re.match(r"^lid-mapping-(\d{8,15})\.json$", name)
+        if not m:
+            continue
+        try:
+            with io.open(os.path.join(d, name), encoding="utf-8") as fh:
+                if _digits(json.load(fh)) == lid:
+                    return m.group(1)
+        except (OSError, ValueError):
+            continue
+    return ""
+
+
+def resolve_lid(lid, home=None):
+    """A LID's real phone number, from the paired session's own mapping files. '' if unproven.
+
+    Both candidate session directories are searched rather than only the one Hermes would
+    pick: an install caught mid-migration between the two layouts has mappings in either,
+    and the cost of missing one is a customer's phone number silently absent from an alert.
+    """
+    lid = _digits(lid)
+    if not lid:
+        return ""
+    for d in session_dirs(home):
+        phone = _lid_in_dir(lid, d)
+        if phone:
+            return phone
+    return ""
+
+
+def canonical_phone(contact, home=None):
+    """The customer's own number as plain digits, or '' when nothing here proves one.
+
+    Never returns a group, a broadcast, or the digits of an unresolved LID.
+    """
+    raw = str(contact or "").strip()
+    if not raw:
+        return ""
+    low = raw.lower()
+    if any(low.endswith(s) for s in _NOT_A_PERSON):
+        return ""
+    if low.endswith(_LID_SUFFIX):
+        return resolve_lid(low[:-len(_LID_SUFFIX)], home)
+    if "@" in low:
+        # s.whatsapp.net / c.us carry the real number; anything else is an id we do not know.
+        host = low.rsplit("@", 1)[1]
+        if host not in ("s.whatsapp.net", "c.us"):
+            return ""
+        raw = low.rsplit("@", 1)[0].split(":", 1)[0]      # strip a :device suffix
+    digits = _digits(raw)
+    return digits if 8 <= len(digits) <= 15 else ""
+
+
+def _wa_link(contact, home=None):
+    phone = canonical_phone(contact, home)
+    return "https://wa.me/%s" % phone if phone else ""
+
+
+def safe_chat_link(link, phone):
+    """A caller-supplied deep link, kept only if it agrees with the number we proved.
+
+    `chat_link` reaches this tool from the agent, i.e. from a model that has just been
+    reading a customer's messages. A wa.me link it composed from a LID - or from a number
+    a message asked it to use - would otherwise be printed to the owner over the top of
+    the one number this file actually verified. Anything that does not match is dropped;
+    a non-wa.me link is left alone, since it is not claiming to be a phone number.
+    """
+    link = (link or "").strip()
+    if not link:
+        return ""
+    low = link.lower()
+    if "wa.me/" not in low and "api.whatsapp.com" not in low:
+        return link
+    digits = _digits(low.split("wa.me/")[-1].split("?")[0]) if "wa.me/" in low else \
+        _digits((low.split("phone=")[-1].split("&")[0]) if "phone=" in low else "")
+    return link if (phone and digits == phone) else ""
 
 
 def compose(rec):
@@ -270,17 +406,25 @@ def compose(rec):
         "",
     ]
     who = rec.get("contact_name") or ""
-    num = rec.get("contact") or ""
-    both = " · ".join([p for p in (who, num) if p]) or "(sin identificar)"
+    # `phone` is only ever a number the session proved. `contact` may be a LID, which is
+    # not a number and must never be shown as one.
+    num = rec.get("phone") or ""
+    both = " · ".join([p for p in (who, "+" + num if num else "") if p]) or "(sin identificar)"
     lines.append("Cliente:  %s" % both)
     lines.append("Motivo:   %s (prioridad %s)" % (label, priority))
     if rec.get("summary"):
         lines.append("Resumen:  %s" % rec["summary"])
     if rec.get("excerpt"):
         lines += ["", "Dijo:", "«%s»" % rec["excerpt"]]
-    link = rec.get("chat_link") or _wa_link(num)
+    link = rec.get("chat_link") or (("https://wa.me/%s" % num) if num else "")
     if link:
         lines += ["", "Abrir:    %s" % link]
+    elif rec.get("contact"):
+        # No number, and saying nothing would read as "we do not know who this is" when in
+        # fact the conversation is sitting right there in her WhatsApp.
+        lines += ["", "Sin número verificable: WhatsApp identificó a esta persona con un",
+                  "  id interno, no con su teléfono. Ábrela desde la conversación en tu",
+                  "  WhatsApp%s." % ((" (%s)" % who) if who else "")]
     lines.append("Cuándo:   %s" % rec["local_time"])
     lines.append("ID:       %s" % rec["id"])
     text = "\n".join(lines)
@@ -420,7 +564,13 @@ def escalate(reason, summary="", contact="", contact_name="", excerpt="",
         "contact": _clean(contact, 60),
         "contact_name": _clean(contact_name, 80),
         "excerpt": _clean(excerpt, EXCERPT_LIMIT),
-        "chat_link": _clean(chat_link, 300),
+        # Dropped unless it agrees with the number below - see safe_chat_link.
+        "chat_link": safe_chat_link(_clean(chat_link, 300), canonical_phone(contact)),
+        # Resolved ONCE, here, and stored on the ledger row: a LID that the session can map
+        # today may be unmappable later, and an old row must still render the number it was
+        # actually sent with. Empty means "no number was ever proven", which the alert says
+        # out loud rather than papering over with digits that are not a phone.
+        "phone": canonical_phone(contact),
     }
     fingerprint = hashlib.sha256(
         "|".join([payload["reason"], payload["contact"], payload["summary"]])

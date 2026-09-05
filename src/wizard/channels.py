@@ -207,7 +207,46 @@ def whatsapp_save(profile=None, allowed_users="", home_channel=""):
                "WHATSAPP_ALLOW_ALL_USERS": "0"}
     if home_channel:
         updates["WHATSAPP_HOME_CHANNEL"] = home_channel.strip()
-    return hermes_ctl.set_env_vars(updates, profile=profile)
+    res = hermes_ctl.set_env_vars(updates, profile=profile)
+    # This agent now serves clients, so it needs the two things that make that safe: a
+    # channel that shows only the answer, and the skill that tells it to verify a delivery
+    # before claiming one and how to reach a human. Done here rather than at the next
+    # supervisor start - between those two points a customer would be watching it work.
+    # ...but only once a phone is really paired. Enabling the channel and scanning the QR
+    # are separate steps, and an agent told how to handle WhatsApp clients while having no
+    # WhatsApp offers to message people through a channel that does not exist. If the QR has
+    # not been scanned yet the supervisor picks it up on its next pass, once it has been.
+    try:
+        from . import wa_setup
+        if wa_setup.whatsapp_linked(profile):
+            wa_setup.install_skill(wa_setup.profile_home(profile))
+    except Exception:  # noqa: BLE001
+        pass
+    return _quiet_customer_channels(res, profile)
+
+
+def _quiet_customer_channels(res, profile):
+    """Silence a customer channel the instant it is switched on.
+
+    Never fails the caller: the channel IS configured, and a display setting that could
+    not be written is worth a warning, not an error that makes the owner think pairing
+    failed.
+    """
+    try:
+        from . import display_policy
+        r = display_policy.ensure(profile)
+        if r.get("changed"):
+            # A running gateway read its display settings at boot; queue the restart that
+            # makes the change real, for the moment the agent is idle.
+            from . import context_policy
+            context_policy.mark_pending(profile or None)
+    except Exception as e:  # noqa: BLE001
+        r = {"ok": False, "detail": str(e)}
+    if isinstance(res, dict) and not r.get("ok") and r.get("reason") != "no-hermes":
+        res = dict(res)
+        res["warning"] = ("El canal quedó configurado, pero no pude silenciar lo que el "
+                          "cliente ve mientras el agente trabaja. Revísalo en la consola.")
+    return res
 
 
 # ── WhatsApp: when should the owner be pulled in? ────────────────────────────
@@ -372,7 +411,7 @@ def email_platform_save(profile=None, address="", password="", smtp_host="", smt
         "EMAIL_IMAP_HOST": imap_host.strip(), "EMAIL_ALLOWED_USERS": allowed,
         "EMAIL_HOME_ADDRESS": (home_address or address).strip(),
     }
-    return hermes_ctl.set_env_vars(updates, profile=profile)
+    return _quiet_customer_channels(hermes_ctl.set_env_vars(updates, profile=profile), profile)
 
 
 def google_chat_save(profile=None, service_account="", allowed_users="", home_space=""):
@@ -390,7 +429,7 @@ def google_chat_save(profile=None, service_account="", allowed_users="", home_sp
                "GOOGLE_CHAT_ALLOWED_USERS": allowed}
     if home_space:
         updates["GOOGLE_CHAT_HOME_CHANNEL"] = home_space.strip()
-    return hermes_ctl.set_env_vars(updates, profile=profile)
+    return _quiet_customer_channels(hermes_ctl.set_env_vars(updates, profile=profile), profile)
 
 
 # ── generic outbound test (reuses configured platform creds) ────────────────────

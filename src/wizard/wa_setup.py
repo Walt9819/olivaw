@@ -19,6 +19,7 @@ a person was alerted when nobody was.
 """
 
 import io
+import json
 import os
 import re
 
@@ -275,6 +276,78 @@ def install_skill(hermes_home=None, force=False, log=None):
             "previous": have, "detail": "Habilidad instalada."}
 
 
+def profile_home(profile=None):
+    if not profile or profile == "default":
+        return _hermes_home()
+    return os.path.join(_hermes_home(), "profiles", profile)
+
+
+def _env_of(profile=None):
+    out = {}
+    try:
+        with io.open(os.path.join(profile_home(profile), ".env"),
+                     encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    out[k.strip()] = v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return out
+
+
+def whatsapp_on(profile=None):
+    """Is the WhatsApp FLAG set for this profile? Not the same as having a phone linked."""
+    val = (_env_of(profile).get("WHATSAPP_ENABLED") or "").lower()
+    return bool(val) and val not in ("0", "false", "no", "off")
+
+
+def session_dirs(profile=None):
+    """Both places Hermes may keep the paired session, newest layout first.
+
+    Hermes resolves this with get_hermes_dir("platforms/whatsapp/session",
+    "whatsapp/session") - the legacy path wins only when it already has content. Checking
+    one of them is how a real install gets read as "never paired".
+    """
+    home = profile_home(profile)
+    return [os.path.join(home, "platforms", "whatsapp", "session"),
+            os.path.join(home, "whatsapp", "session")]
+
+
+def whatsapp_linked(profile=None):
+    """Is a phone ACTUALLY paired to this agent - or a Cloud number configured?
+
+    The flag in .env says somebody ticked the box. It says nothing about whether the QR was
+    ever scanned, and an agent that has been told how to handle WhatsApp clients while
+    having no WhatsApp is worse than one that has not: it will offer to message people, talk
+    about verifying deliveries, and reference a channel that does not exist. So the skill
+    follows the SESSION, not the flag.
+
+    Baileys writes creds.json as soon as the bridge starts, before anyone scans anything -
+    so the file existing proves nothing. `registered` / `me.id` are what pairing sets.
+    """
+    env = _env_of(profile)
+    # WhatsApp Cloud has no QR and no session directory: its credentials ARE the link.
+    if (env.get("WHATSAPP_CLOUD_ACCESS_TOKEN") or "").strip() and \
+            (env.get("WHATSAPP_CLOUD_PHONE_NUMBER_ID") or "").strip():
+        return True
+    for d in session_dirs(profile):
+        try:
+            with io.open(os.path.join(d, "creds.json"), encoding="utf-8") as fh:
+                creds = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(creds, dict):
+            continue
+        if creds.get("registered") is True:
+            return True
+        me = creds.get("me")
+        if isinstance(me, dict) and (me.get("id") or "").strip():
+            return True
+    return False
+
+
 def ensure(hermes_exe=None, hermes_home=None, log=None):
     """Idempotent, cheap, safe to call on every start. Returns a combined report."""
     patch = wa_patch.ensure(hermes_exe=hermes_exe, log=log)
@@ -284,6 +357,79 @@ def ensure(hermes_exe=None, hermes_home=None, log=None):
         "patch": patch,
         "skill": skill,
     }
+
+
+def remove_skill(hermes_home=None, log=None):
+    """Take the skill away from an agent that has no WhatsApp.
+
+    Only ever removes a file this module generated - identified by its own frontmatter - so
+    a hand-written skill that happens to share the name is left alone. The directory goes
+    too when nothing else is in it.
+    """
+    d = skill_dir(hermes_home)
+    path = os.path.join(d, "SKILL.md")
+    try:
+        with io.open(path, encoding="utf-8", errors="replace") as fh:
+            head = fh.read(400)
+    except OSError:
+        return {"ok": True, "changed": False, "reason": "not-installed"}
+    if "author: Olivaw" not in head or ("name: %s" % SKILL_NAME) not in head:
+        return {"ok": True, "changed": False, "reason": "not-ours", "path": path}
+    try:
+        os.remove(path)
+        if not os.listdir(d):
+            os.rmdir(d)
+    except OSError as e:
+        return {"ok": False, "changed": False, "path": path, "detail": str(e)}
+    if log:
+        log("wa_setup: removed %s from %s (no WhatsApp linked)" % (SKILL_NAME, d))
+    return {"ok": True, "changed": True, "removed": True, "path": path}
+
+
+def ensure_all(agents=None, hermes_exe=None, log=None):
+    """The receipt patch once, the client-handling skill in every agent that HAS WhatsApp.
+
+    The patch is global by nature - it instruments Hermes' own Node bridge, of which there
+    is one. The skill is not, and treating it as global was a real hole: `ensure()` only
+    ever wrote into the DEFAULT profile's skills directory, so an extra agent - which is
+    exactly the shape a customer-facing bot takes, its own profile, its own number, its own
+    workspace - ran with no idea that it must verify a delivery before claiming one, and no
+    idea how to reach a human. Checked on a live machine: the default profile had the
+    skill, the extra agent's skills directory did not.
+
+    The condition is a PAIRED SESSION, not the WHATSAPP_ENABLED flag. The flag only records
+    that somebody ticked a box; the session records that a phone was actually linked. An
+    agent carrying this skill with no WhatsApp behind it is actively harmful - it will offer
+    to message people, talk about confirming deliveries, and reference a channel that does
+    not exist, which reads to the owner as the agent malfunctioning. So a profile that loses
+    its pairing loses the skill again, and a Telegram-only agent never had it.
+    """
+    out = []
+    patch = wa_patch.ensure(hermes_exe=hermes_exe, log=log)
+    profiles = [None] + [a.get("profile") or a.get("slug")
+                         for a in (agents or []) if (a.get("profile") or a.get("slug"))]
+    seen = set()
+    for prof in profiles:
+        key = prof or "default"
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if whatsapp_linked(prof):
+                r = install_skill(profile_home(prof), log=log)
+            else:
+                r = remove_skill(profile_home(prof), log=log)
+                # WHY it has no skill is always the same answer; WHAT was found on disk
+                # (nothing / ours, deleted / somebody else's, left alone) is the detail.
+                r["removal"] = r.get("reason")
+                r["reason"] = "no-whatsapp-linked"
+        except Exception as e:  # noqa: BLE001
+            r = {"ok": False, "changed": False, "detail": str(e)}
+        r["profile"] = key
+        r["linked"] = whatsapp_linked(prof)
+        out.append(r)
+    return {"patch": patch, "skills": out,
+            "ok": bool(patch.get("ok")) and all(s.get("ok") for s in out)}
 
 
 def status(hermes_exe=None, hermes_home=None):

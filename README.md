@@ -358,7 +358,12 @@ the bridge (Claude Code MCP connectors do **not** work here — the bridge disab
 …and it connects an agent to more channels — each guided and testable:
 
 - **WhatsApp** — one click starts pairing and the **QR appears inside the wizard** (no terminal);
-  then you lock the channel to your own number (`WHATSAPP_ALLOWED_USERS`).
+  then you lock the channel to your own number (`WHATSAPP_ALLOWED_USERS`). Turning it on also
+  **silences the channel** (see below), and once a phone is genuinely **paired** the
+  client-handling skill goes into *that agent's* profile — the rules for verifying a delivery
+  before claiming one, and for reaching a human. It follows the pairing, not the `WHATSAPP_ENABLED`
+  flag, and is removed again if the pairing goes: an agent that talks about a WhatsApp it does not
+  have looks broken to its owner.
 - **Google Workspace** — **Gmail/Workspace mail** via Hermes' native `email` platform, so the agent
   **receives and replies** to email (IMAP in + SMTP out, app password, presets for Gmail/Outlook),
   plus **Google Chat** via a service account. Both require an allow-list, so a stranger who emails
@@ -370,6 +375,30 @@ the bridge (Claude Code MCP connectors do **not** work here — the bridge disab
 - **Email (SMTP)** — not native to Hermes, so the kit ships `src/tools/smtp_send.py` and the wizard
   writes `SMTP_*` into the agent's profile `.env` (presets + app-password guides for Gmail, Outlook,
   Yahoo, iCloud), sends a live test email, and adds an email-capability note to the agent's `CLAUDE.md`.
+
+#### A customer sees the answer, never the work
+
+Hermes files WhatsApp under its `TIER_MEDIUM` display defaults — tool progress on, mid-turn
+commentary on, "still working" heartbeats on. Sensible for a personal inbox; a leak on the channel
+where *clients* write, and it is how one customer was shown terminal output and an internal note
+about conversation compression.
+
+So `src/wizard/display_policy.py` writes `display.platforms.<channel>.*` for every channel a
+stranger can reach — `tool_progress: off`, no streaming, no interim messages, no heartbeats, no
+reasoning. Telegram is deliberately excluded: it is owner-locked, and the operator is entitled to
+watch her own agent work.
+
+Three properties worth knowing:
+
+- **Only channels that are on.** A Telegram-only agent gets zero writes.
+- **A key you set yourself is never overwritten.** Written per key, so choosing `tool_progress: all`
+  on WhatsApp sticks and Olivaw stops arguing.
+- **It applies to agents created long ago**, on the supervisor's startup pass — those are the ones
+  exposed right now.
+
+The gateway reads display settings at boot, so a change queues a restart for when the agent is idle.
+Check it with `display_policy.status(<profile>)`; `quiet: false` means a client can still see the
+agent working.
 
 Re-run anytime to reconfigure:
 ```bash

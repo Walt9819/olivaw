@@ -66,6 +66,10 @@ try:
 except Exception:  # noqa: BLE001
     _browser = None
 try:
+    from wizard import display_policy as _display
+except Exception:  # noqa: BLE001
+    _display = None
+try:
     from wizard import image_setup as _images
 except Exception:  # noqa: BLE001
     _images = None
@@ -685,6 +689,11 @@ def apply_update(cfg, state, rel):
         notify(cfg, f"⚠️ Update v{ver} aborted: checksum mismatch.", maintainer=True)
         return False
 
+    # PHASE LINES. Between "checksum ok" and "update ok" this used to log nothing at all,
+    # so an update that stalled - or was killed mid-swap - left a log that appeared to stop
+    # dead after verification, with no way to tell whether anything had been touched. Each
+    # line below is a step that can take real time or fail, named before it runs.
+    log(f"update {ver}: extracting")
     with zipfile.ZipFile(zip_path) as z:
         z.extractall(STAGING_DIR)
     new_src = os.path.join(STAGING_DIR, "src")
@@ -699,6 +708,7 @@ def apply_update(cfg, state, rel):
     # free_ports because an ADOPTED extra bridge has no handle to stop: left running, it
     # keeps executing the old code while reporting the new version out of the rewritten
     # VERSION file - the update silently missing that agent.
+    log(f"update {ver}: stopping bridges before the swap")
     stop_bridge(state.get("child"))
     state["child"] = None
     _stop_extras(state, free_ports=True)
@@ -709,6 +719,7 @@ def apply_update(cfg, state, rel):
         time.sleep(1.5)
 
     # back up current code for rollback
+    log(f"update {ver}: backing up the current code for rollback")
     if os.path.isdir(BACKUP_DIR):
         shutil.rmtree(BACKUP_DIR, ignore_errors=True)
     os.makedirs(BACKUP_DIR, exist_ok=True)
@@ -717,6 +728,8 @@ def apply_update(cfg, state, rel):
     old_version = read_version()
 
     try:
+        log(f"update {ver}: swapping src/ (this is the point of no return - a failure past "
+            f"here rolls back)")
         # Live state inside src/ (session map, logs) survives by construction: the new tree is
         # copied over the old one, so files the release does not ship are left untouched.
         _replace_dir(new_src, SRC_DIR)
@@ -730,6 +743,7 @@ def apply_update(cfg, state, rel):
             raise RuntimeError("swap left the install incomplete: %s" % ", ".join(missing))
         _run_migrations(cfg, os.path.join(STAGING_DIR, "manifest.json"))
 
+        log(f"update {ver}: starting the new bridge and waiting for it to be healthy")
         state["child"] = start_bridge(cfg)
         # The bridge WE started has to be the one that answers. Before this, an orphan bridge
         # from an earlier supervisor could vouch for an install that had just been destroyed.
@@ -1147,18 +1161,23 @@ def _ensure_whatsapp():
     if not _wa:
         return
     try:
-        r = _wa.ensure()
+        r = _wa.ensure_all(agents=_load_extra_agents(), log=log)
     except Exception as e:  # noqa: BLE001
         log(f"whatsapp: receipt patch check failed: {e}")
         return
-    patch, skill = r.get("patch", {}), r.get("skill", {})
+    patch = r.get("patch", {})
     if patch.get("changed"):
         log(f"whatsapp: re-applied the delivery-receipt patch to {patch.get('path')}")
     elif patch.get("state") == "anchors_moved":
         log("whatsapp: Hermes' bridge changed shape; the receipt patch needs review "
             "- deliveries cannot be confirmed until then")
-    if skill.get("changed"):
-        log(f"whatsapp: installed the client-handling skill at {skill.get('path')}")
+    for skill in r.get("skills") or []:
+        if skill.get("changed"):
+            log(f"whatsapp: {skill['profile']} serves clients - installed the "
+                f"client-handling skill at {skill.get('path')}")
+            _skill_needs_reload(skill["profile"], "whatsapp")
+        elif not skill.get("ok"):
+            log(f"whatsapp: could not teach {skill['profile']}: {skill.get('detail', '')}")
 
 
 def _ensure_context_policy():
@@ -1213,6 +1232,38 @@ def _skill_needs_reload(profile, what):
         log(f"{what}: {profile} needs a gateway restart to see it; queued for when idle")
     except Exception as e:  # noqa: BLE001
         log(f"{what}: could not queue a reload for {profile}: {e}")
+
+
+def _ensure_display_policy():
+    """Keep the customer's side of the screen free of the agent's working notes.
+
+    Hermes files WhatsApp under its TIER_MEDIUM display defaults - tool progress on,
+    mid-turn commentary on, "still working" heartbeats on. Reasonable for a personal
+    inbox; a leak on the channel where clients write, and it is what showed one customer
+    terminal output and an internal compression diagnostic. Olivaw never wrote a single
+    display key, so every agent it created inherited that.
+
+    Runs on every agent, including ones set up months ago - they are the ones exposed
+    right now - and writes nothing to a profile with no customer channel at all, which is
+    the ordinary Telegram-only install. A key the owner set herself is never touched.
+    """
+    if not _display:
+        return
+    try:
+        results = _display.ensure_all(agents=_load_extra_agents(), log=log)
+    except Exception as e:  # noqa: BLE001
+        log(f"display policy: check failed: {e}")
+        return
+    for r in results:
+        if r.get("changed"):
+            log(f"display policy: {r['profile']} - clientes en "
+                f"{', '.join(r.get('platforms') or [])} ya no ven el trabajo interno")
+            # The gateway read its display settings at boot, so the customer keeps seeing
+            # progress until it restarts. Same handoff the skills use: queue it for idle.
+            _skill_needs_reload(r["profile"], "display policy")
+        elif not r.get("ok") and r.get("reason") not in ("no-hermes",):
+            log(f"display policy: could not quiet {r['profile']}: "
+                f"{r.get('detail') or ', '.join(r.get('failed') or [])}")
 
 
 def _ensure_browser_skill():
@@ -1346,6 +1397,7 @@ def main():
     state = {"child": start_bridge(cfg), "launcher_changed": False, "extra": {}}
     _reconcile_extras(cfg, state)
     _ensure_whatsapp()
+    _ensure_display_policy()
     _ensure_context_policy()
     _ensure_browser_skill()
     _ensure_image_skill()

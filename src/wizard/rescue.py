@@ -471,8 +471,13 @@ TELEGRAM, in the order it breaks:
      state = connected_incomplete.
   Note `telegram.state` is measured against Telegram itself, not guessed from the log.
 
-WHATSAPP is where CLIENTS write, not the owner. Two things must hold, and both are Olivaw's
-doing, not Hermes':
+WHATSAPP is where CLIENTS write, not the owner. The client-handling skill follows the PAIRED
+SESSION, never the WHATSAPP_ENABLED flag: an agent carrying it with no WhatsApp behind it offers
+to message people through a channel that does not exist, which reads to the owner as a
+malfunction. So it is installed when a phone is really linked (creds.json with registered/me, in
+<HERMES_HOME>/platforms/whatsapp/session or the legacy whatsapp/session — or Cloud credentials),
+and REMOVED again if the pairing goes away. A profile with no skill and no pairing is correct, not
+broken. Three things must hold, and all three are Olivaw's doing, not Hermes':
   1. Hermes' bridge.js is PATCHED to record delivery receipts. Stock Baileys reports ack progress
      through messages.update / message-receipt.update and the stock bridge drops both, so /send
      answers success the instant the socket takes the bytes and nothing can prove delivery.
@@ -485,10 +490,24 @@ doing, not Hermes':
      delivered = the phone acked; sent = Meta's servers took it (counts as done - a phone that is
      off never acks); pending/unknown/failed = it did NOT go out. `unknown` means the bridge never
      saw that id.
+  3. A CLIENT SEES ONLY THE FINAL ANSWER. Hermes' own default for WhatsApp is TIER_MEDIUM -
+     tool progress on, mid-turn commentary on, heartbeats on - which is how one customer was
+     shown terminal output and an internal note about conversation compression. Olivaw now
+     writes display.platforms.<canal>.* for every channel a stranger can write to (never for
+     telegram, the owner's own window). State: python -c "import sys;sys.path.insert(0,'src');
+     from wizard import display_policy as d;print(d.status(<perfil>))". `quiet: false` means
+     the client can still see the agent working. A key the owner set HERSELF is never
+     overwritten, so `pending` listing a key she chose is expected, not a bug. The setting is
+     read by the gateway at boot: writing it queues a restart for when the agent is idle.
   Owner escalation is a FIXED script, not a model decision:
   python src/tools/escalate_owner.py --reason <angry|human_requested|legal|...> ...
   exit 0 = the owner has it (proved by Telegram's message_id), 3 = queued in the outbox and
   retried on the next call, 2 = bad usage. Ledger and outbox live in <HERMES_HOME>/escalations/.
+  The alert shows a phone number ONLY when the paired session proves one. WhatsApp identifies
+  many senders by a LID ("2673…@lid"), which is not a number - the digits in one belong to
+  nobody. When it cannot be mapped (via <HERMES_HOME>/whatsapp/session/lid-mapping-*.json) the
+  alert says "Sin número verificable" and omits the wa.me link. That is correct behaviour, not
+  a missing field: the alternative is a link to a stranger.
 
 TWO HERMES-ON-WINDOWS LOG LINES THAT LOOK FATAL AND ARE NOT. Never present these as the cause:
   - "AttributeError: module 'asyncio' has no attribute 'start_unix_server'" - a Unix-only watchdog
