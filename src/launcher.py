@@ -1172,12 +1172,19 @@ def _ensure_whatsapp():
         log("whatsapp: Hermes' bridge changed shape; the receipt patch needs review "
             "- deliveries cannot be confirmed until then")
     for skill in r.get("skills") or []:
-        if skill.get("changed"):
-            log(f"whatsapp: {skill['profile']} serves clients - installed the "
+        if not skill.get("changed"):
+            if not skill.get("ok"):
+                log(f"whatsapp: could not teach {skill['profile']}: {skill.get('detail', '')}")
+            continue
+        # A removal also reports changed=True, and calling that "installed the client-handling
+        # skill" is how a correct action reads as a broken one two lines later in the log.
+        if skill.get("removed"):
+            log(f"whatsapp: {skill['profile']} has no WhatsApp linked - took the "
+                f"client-handling skill back off it")
+        else:
+            log(f"whatsapp: {skill['profile']} has a WhatsApp linked - installed the "
                 f"client-handling skill at {skill.get('path')}")
-            _skill_needs_reload(skill["profile"], "whatsapp")
-        elif not skill.get("ok"):
-            log(f"whatsapp: could not teach {skill['profile']}: {skill.get('detail', '')}")
+        _skill_needs_reload(skill["profile"], "whatsapp")
 
 
 def _ensure_context_policy():

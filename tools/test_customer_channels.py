@@ -288,6 +288,14 @@ def test_skill_reaches_the_agent_that_needs_it():
               "r = _wa.ensure()" not in src)
         check("a newly taught agent gets the gateway restart that makes it visible",
               '_skill_needs_reload(skill["profile"], "whatsapp")' in src)
+        # Caught in a live log: a removal reports changed=True too, and was announced as
+        # "serves clients - installed the client-handling skill" one line after the truthful
+        # "removed ... (no WhatsApp linked)". The action was right; the log read as a bug.
+        check("a removal is not announced as an installation",
+              'if skill.get("removed"):' in src and
+              "took the" in src.split('if skill.get("removed"):', 1)[1][:300], src[:0])
+        check("and the old misleading wording is gone",
+              "serves clients - installed the " not in src)
 
         section("re-running changes nothing")
         again = wa_setup.ensure_all(agents=agents, hermes_exe="")
