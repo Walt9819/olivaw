@@ -191,13 +191,33 @@ RUNTIME_SYSTEM_PROMPT = (
 # this clause the brain sits on a capability nobody told it counts, and answers that it
 # cannot make images while holding the only free way to make them.
 if ENGINE == "codex":
+    # Field report, 2026-09-04: the FIRST image worked and "generate another version" came
+    # back as prose - the model described what it would draw instead of drawing it. Nothing
+    # was broken; it simply chose an answer over a tool call, because the clause it had said
+    # the capability EXISTS without ever saying when it must be used. "Use it when asked for
+    # an image" also reads as covering the first request and not a follow-up on the same
+    # image. So the rule is now stated as an obligation, in the same turn, and revisions are
+    # named explicitly as new calls - those are the two things the model got wrong.
     RUNTIME_SYSTEM_PROMPT += (
         "\nYou can generate images yourself with your own built-in image tool - it needs no "
         "API key. It is the ONLY action you may take directly; everything else goes through "
-        "the runtime's listed tools. Use it when asked for an image and the tool catalog has "
-        "no image tool of its own. It writes a file: put that absolute path in your final "
-        "answer as a line 'MEDIA:<path>' and the runtime sends the image to the user. Report "
-        "the real path it wrote - never invent one, and if generation failed, say so."
+        "the runtime's listed tools.\n"
+        "When the user asks you to create, draw, generate, illustrate, redo, revise, change, "
+        "or make another version of an image, you must actually call that tool in the same "
+        "turn, before you answer. Describing the image you would make, offering to make it, "
+        "or saying that you can make images is not an answer to that request - it is a "
+        "refusal dressed as one.\n"
+        "Every separate image request is its own call, including a follow-up about an image "
+        "you just produced: 'another version', 'the same but blue', 'make it wider' each mean "
+        "generate again. Nothing carries over on its own, so restate the whole scene in the "
+        "new prompt rather than only the change. If your tool can start from the previous "
+        "image, do that; if it cannot, generate a fresh one and say it is a new "
+        "interpretation.\n"
+        "The tool writes a file. Put the absolute path it actually returned in your final "
+        "answer as a line 'MEDIA:<path>' and the runtime sends the image to the user. Never "
+        "write a MEDIA: line for a path you did not receive from the tool - an invented path "
+        "sends the user nothing and tells them it was sent. If generation fails, say plainly "
+        "that it failed and why; do not describe the picture as though it exists."
     )
 
 MODEL_NAME = "claude-code"

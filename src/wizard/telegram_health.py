@@ -20,11 +20,55 @@ The token is used only to ask Telegram about itself. It is never returned, logge
 
 import os
 import re
+import socket
+import ssl
 
 from . import hermes_ctl
 from .procutil import http_json
 
 API = "https://api.telegram.org/bot{token}/{method}"
+API_HOST = "api.telegram.org"
+
+# Proxy settings, by their documented names. Their PRESENCE is the diagnosis; their value can
+# carry a username and password, so it is never printed.
+_PROXY_VARS = ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+               "https_proxy", "http_proxy", "all_proxy")
+
+
+def proxies_configured():
+    return sorted({v.upper() for v in _PROXY_VARS if (os.environ.get(v) or "").strip()})
+
+
+def tls_probe(host=API_HOST, port=443, timeout=8):
+    """Did the request fail because the CERTIFICATE was rejected, or because of the network?
+
+    They look identical from urllib - both surface as "could not connect" - and they need
+    opposite advice. A corporate proxy that inspects TLS presents its own root certificate;
+    Python does not trust it, refuses the handshake, and the request never reaches Telegram.
+    Telling that owner "check your internet, then re-check the token" sends them round a loop
+    they cannot get out of, because their internet is fine and their token was never seen.
+
+    Runs only after something has already failed, so the ordinary path pays nothing for it.
+
+    Deliberately does NOT fall back to an unverified context, not even to read the
+    intercepting certificate for a nicer message: this codebase has no way to turn off
+    certificate verification, and that is a property worth being able to test for.
+    """
+    ctx = ssl.create_default_context()
+    try:
+        with socket.create_connection((host, port), timeout) as raw:
+            with ctx.wrap_socket(raw, server_hostname=host):
+                return {"state": "ok"}
+    except ssl.SSLCertVerificationError as e:
+        return {"state": "tls", "reason": getattr(e, "verify_message", "") or str(e)[:200]}
+    except ssl.SSLError as e:
+        return {"state": "tls", "reason": str(e)[:200]}
+    except socket.gaierror:
+        return {"state": "dns"}
+    except (socket.timeout, TimeoutError):
+        return {"state": "timeout"}
+    except OSError as e:
+        return {"state": "network", "reason": str(e)[:200]}
 
 # What Hermes writes when each of these things happens. Matching its own words is what lets the
 # verdict name a cause instead of "the gateway crashed".
@@ -113,7 +157,8 @@ def scan_logs(profile=None, chars=20000):
 
 
 # States where waiting longer cannot help: the answer will not change on its own.
-TERMINAL = ("token_rejected", "webhook_set", "no_token", "unreachable")
+TERMINAL = ("token_rejected", "webhook_set", "no_token", "unreachable",
+            "unreachable_tls", "unreachable_network")
 
 
 def wait_for_connection(profile=None, hermes=None, seconds=30):
@@ -164,10 +209,32 @@ def check(profile=None, hermes=None, token=None):
 
     ok, data, status = _api(token, "getMe")
     if not ok and not status:
+        # Nothing came back with an HTTP status, so Telegram never answered - and the reason
+        # decides the advice. Ask the connection itself instead of guessing.
+        probe = tls_probe()
+        proxies = proxies_configured()
+        res["proxies"] = proxies
+        via = (" Este equipo tiene un proxy configurado (%s)." % ", ".join(proxies)) if proxies else ""
+        if probe["state"] == "tls":
+            res.update(state="unreachable_tls",
+                       detail="La conexión con Telegram se cortó al validar el certificado: "
+                              "algo entre este equipo y Telegram está inspeccionando el "
+                              "tráfico y presenta un certificado que este equipo no "
+                              "reconoce.%s\n\nTelegram NO ha visto el token, así que no hay "
+                              "nada malo con él. Lo resuelve tu departamento de sistemas, de "
+                              "una de dos formas: instalando el certificado raíz de la "
+                              "empresa en «Entidades de certificación raíz de confianza» de "
+                              "Windows, o excluyendo api.telegram.org de la inspección." % via)
+            return res
+        if probe["state"] == "dns":
+            res.update(state="unreachable_network",
+                       detail="Este equipo no pudo siquiera resolver api.telegram.org. Es la "
+                              "red o el DNS, no el token.%s" % via)
+            return res
         res.update(state="unreachable",
                    detail="No pude hablar con Telegram desde este equipo (sin conexión, o un "
-                          "cortafuegos/proxy lo bloquea). No sé si el token es bueno; vuelve a "
-                          "comprobarlo cuando haya red.")
+                          "cortafuegos lo bloquea).%s No sé si el token es bueno; vuelve a "
+                          "comprobarlo cuando haya red." % via)
         return res
     if not ok:
         why = (data.get("description") or "") if isinstance(data, dict) else ""

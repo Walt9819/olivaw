@@ -20,6 +20,7 @@ cannot be flaky.
 Run: python tools/test_telegram_token.py
 """
 
+import io
 import os
 import sys
 
@@ -130,10 +131,77 @@ def main():
         check("%r yields a URL-safe token" % pasted[:18],
               got == "" or (got.isascii() and not any(c.isspace() for c in got)))
 
+    test_tls_is_not_the_token()
+
     print("\n%d passed, %d failed" % (len(PASSED), len(FAILED)))
     for f in FAILED:
         print("  - " + f)
     return 1 if FAILED else 0
+
+
+def test_tls_is_not_the_token():
+    r"""A rejected certificate must never be reported as a rejected token.
+
+    Field report: `CERTIFICATE_VERIFY_FAILED: self-signed certificate in certificate chain`
+    on a corporate machine. A proxy was inspecting TLS and presenting its own root, Python
+    refused the handshake, and the request never reached Telegram - so Telegram had neither
+    accepted nor rejected anything. Both failures arrive at urllib as "could not connect",
+    and they need opposite advice: one is fixed by generating a new token, the other only by
+    the company installing its root certificate. Guessing sends the owner round a loop.
+    """
+    from wizard import telegram_health as T
+
+    section("the probe tells a bad certificate from a bad network")
+    live = T.tls_probe("api.telegram.org")
+    if live["state"] == "ok":
+        check("a good chain probes clean", True)
+        # Real hosts, because this is exactly the class of failure being classified and a
+        # mock would only prove the mock. Skipped when the machine has no network.
+        check("a self-signed chain is reported as a certificate problem",
+              T.tls_probe("self-signed.badssl.com")["state"] == "tls",
+              T.tls_probe("self-signed.badssl.com"))
+        check("an expired certificate too",
+              T.tls_probe("expired.badssl.com")["state"] == "tls")
+        check("a name that does not resolve is a DNS problem, not a certificate one",
+              T.tls_probe("nope.invalid.telegram.example")["state"] == "dns")
+    else:
+        print("  ..   (no network; the live probe cases are skipped)")
+
+    section("and the verdict says so, in words the owner can act on")
+    src = io.open(os.path.join(ROOT, "src", "wizard", "telegram_health.py"),
+                  encoding="utf-8").read()
+    check("there is a distinct state for it", 'state="unreachable_tls"' in src)
+    check("it is terminal - waiting cannot fix a certificate",
+          '"unreachable_tls"' in src.split("TERMINAL = ", 1)[1].split(")", 1)[0])
+    check("it says Telegram never saw the token",
+          "Telegram NO ha visto el token" in src)
+    check("it names the actual remedy: the company's root certificate",
+          "Entidades de certificación raíz de confianza" in src)
+    check("and the alternative: exempt api.telegram.org from inspection",
+          "excluyendo api.telegram.org" in src)
+    check("a configured proxy is reported when present",
+          "def proxies_configured(" in src and "Este equipo tiene un proxy configurado" in src)
+    check("but its value - which can hold a password - is never printed",
+          "os.environ.get(v)" in src and "os.environ[v]" not in src)
+
+    section("no bypass, anywhere, ever")
+    # The remedy for an inspected connection is never to stop verifying it. Checked across
+    # the whole tree, not just this file, so the property is the codebase's and not one
+    # module's.
+    import re
+    offenders = []
+    for base, _dirs, files in os.walk(os.path.join(ROOT, "src")):
+        if "__pycache__" in base:
+            continue
+        for f in files:
+            if not f.endswith(".py"):
+                continue
+            p = os.path.join(base, f)
+            body = io.open(p, encoding="utf-8", errors="replace").read()
+            if re.search(r"_create_unverified_context|CERT_NONE|check_hostname\s*=\s*False",
+                         body):
+                offenders.append(os.path.relpath(p, ROOT))
+    check("nothing in src/ can turn certificate verification off", not offenders, offenders)
 
 
 if __name__ == "__main__":

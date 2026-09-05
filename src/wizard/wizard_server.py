@@ -81,6 +81,21 @@ import re as _re
 _SLUG_RE = _re.compile(r"^[a-z0-9]{1,24}$")
 
 
+def _target_profile(body, allow_new=False):
+    """WHICH agent this request is for — decided here, not by whatever the page sent.
+
+    Every channel mutation used to read body["profile"] verbatim and hand it to
+    `hermes --profile` and to a path join. A name for an agent that does not exist would
+    then be created on the spot: the QR pairs, the session lands on disk, the call returns
+    success, and the gateway that is actually running never sees any of it. That is the
+    profile mismatch that made a configured WhatsApp bot answer nobody.
+
+    Raises ValueError, which do_POST turns into a plain 400 with the reason.
+    """
+    return agents_registry.resolve_profile(body.get("profile"), INSTALL_DIR,
+                                           allow_new=allow_new)
+
+
 def _safe_slug(slug):
     """Accept only a strict lowercase-alnum slug (<=24). Rejects path traversal / injection
     for the reconfigure + agent-action paths, which take a slug straight from the request."""
@@ -427,6 +442,12 @@ class Handler(BaseHTTPRequestHandler):
             body = {}
         try:
             self._json(self.dispatch(self.path, body))
+        except (ValueError, agents_registry.Conflict) as e:
+            # A rejected target or a colliding registry row: the request named something
+            # this machine does not have, or would have made two agents share one
+            # resource. Say which, plainly - a 500 "error interno" here reads as a bug in
+            # Olivaw and sends the owner looking in the wrong place.
+            self._json({"ok": False, "detail": str(e)}, 400)
         except Exception as e:  # noqa: BLE001
             self._json({"ok": False, "detail": "error interno: %s" % e}, 500)
 
@@ -489,10 +510,13 @@ class Handler(BaseHTTPRequestHandler):
                                   % (p.cli_label or p.label)}
             paths["workspace"] = ws
             base = ensure_test_bridge(p.bridge_env(paths), ws)
-            return checks.test_brain(base, brain=(p.cli_label or p.label))
+            # `engine` lets the check prove the bridge on that port is the brain just
+            # chosen, and ask the RIGHT CLI about its session before blaming a login.
+            return checks.test_brain(base, brain=(p.cli_label or p.label),
+                                     engine=p.engine)
 
         if route == "telegram/health":
-            return telegram_health.check(body.get("profile") or None, which("hermes"))
+            return telegram_health.check(_target_profile(body), which("hermes"))
 
         if route == "telegram/validate":
             return telegram_setup.validate(body.get("token", ""))
@@ -614,14 +638,14 @@ class Handler(BaseHTTPRequestHandler):
         # biggest driver of what an agent costs to run, and Hermes' own default is the
         # expensive one, so it is a visible setting rather than a buried preference.
         if route == "policy/get":
-            return self._policy_get(body.get("profile") or None)
+            return self._policy_get(_target_profile(body))
         if route == "policy/save":
             return self._policy_save(body)
 
         # Which browser the agent drives. Turning this on opens a real window on the
         # owner's screen, so it is a button she presses, never something we decide.
         if route == "images/status":
-            return image_setup.status(body.get("profile") or None, install_dir=INSTALL_DIR)
+            return image_setup.status(_target_profile(body), install_dir=INSTALL_DIR)
 
         # Updating. The supervisor is the only process that may swap src/ (it holds the
         # bridge handles), so the UI reads its state file and drops a request; see
@@ -650,18 +674,18 @@ class Handler(BaseHTTPRequestHandler):
             return res
 
         if route == "browser/status":
-            return browser_setup.status(body.get("profile") or None)
+            return browser_setup.status(_target_profile(body))
         if route == "browser/enable":
             # The name rides along so the window can say whose it is. With one window per
             # agent, two blank Chromes on screen are otherwise indistinguishable.
-            return browser_setup.enable(body.get("profile") or None,
+            return browser_setup.enable(_target_profile(body),
                                         name=(body.get("name") or "").strip())
         if route == "browser/delegation":
             return browser_setup.delegation_status()
         if route == "browser/delegation-test":
             return browser_setup.delegation_check()
         if route == "browser/disable":
-            return browser_setup.disable(body.get("profile") or None)
+            return browser_setup.disable(_target_profile(body))
 
         # Agents talking to each other. The owner gets the switch because this is a
         # contact point she did not open herself: something OTHER than her can now make
@@ -821,7 +845,7 @@ class Handler(BaseHTTPRequestHandler):
         return res
 
     def _channel(self, sub, body):
-        profile = body.get("profile") or None    # None -> default agent (bare hermes)
+        profile = _target_profile(body)          # None -> default agent (bare hermes)
         if sub == "whatsapp":
             return channels.whatsapp_pair(profile, cloud=bool(body.get("cloud")))
         if sub == "slack-manifest":
@@ -902,7 +926,7 @@ class Handler(BaseHTTPRequestHandler):
                 "defaults": context_policy.DEFAULTS, **st}
 
     def _policy_save(self, body):
-        profile = body.get("profile") or None
+        profile = _target_profile(body)
         preset = body.get("preset") or ""
         if preset and preset != "personalizado":
             wanted = context_policy.preset_policy(preset)

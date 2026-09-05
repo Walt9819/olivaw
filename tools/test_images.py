@@ -197,7 +197,16 @@ def main():
           codex_prompt[-400:])
     check("it is told to hand back the real path via MEDIA:",
           "MEDIA:<path>" in codex_prompt)
-    check("and forbidden from inventing one", "never invent one" in codex_prompt)
+    # Reworded in 1.0.46 to name the consequence, which is the part that makes it stick:
+    # an invented path does not fail loudly, it sends the user nothing while telling them
+    # the image was sent.
+    check("and forbidden from inventing one",
+          "Never write a MEDIA: line for a path you did not receive" in codex_prompt,
+          codex_prompt[-500:])
+    check("with the consequence spelled out, not just the rule",
+          "sends the user nothing and tells them it was sent" in codex_prompt)
+    check("a failed generation must be reported as failed",
+          "do not describe the picture as though it exists" in codex_prompt)
     check("everything else still goes through the runtime",
           "everything else goes through the runtime" in codex_prompt)
     check("a CLAUDE brain is told none of this - it has no such tool",

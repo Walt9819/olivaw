@@ -155,7 +155,94 @@ def reconcile(install_dir=None, log=None):
     return adopted
 
 
+# ── one agent, one set of resources ──────────────────────────────────────────
+# An agent is not a name: it is a name PLUS a Hermes profile, a bridge port and a workspace,
+# and the whole thing only works while those four agree with each other. Two entries sharing
+# a port means two bridges fighting for one socket - one wins, and every message routed to
+# the loser is answered by the wrong brain, or by nothing. Two entries sharing a profile
+# means configuring one agent silently reconfigures the other: the UI writes a token, pairs a
+# channel, sets a workspace, and it lands on somebody else's agent. That is not a
+# hypothetical - it is how a WhatsApp session ends up paired under a profile whose gateway is
+# not the one running.
+#
+# The registry is the only place that can see all of it at once, so it is the only place the
+# check belongs. Rejecting at save time is deliberate: a bad row that reaches disk is read
+# back by the supervisor on the next boot and by then nobody remembers writing it.
+
+PROFILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+
+class Conflict(ValueError):
+    """Two agents would end up sharing a resource that only one can own."""
+
+
+def valid_profile(name):
+    """A profile name that is safe to put in a path and to hand to `hermes --profile`.
+
+    Deliberately narrower than "any string": every caller eventually joins this onto
+    <hermes home>/profiles/, so a name is a path segment before it is anything else.
+    """
+    return bool(name) and PROFILE_RE.match(str(name)) is not None
+
+
+def conflicts(agent, install_dir=None):
+    """Every reason this row cannot be saved as-is: [(field, value, other_slug)].
+
+    Only what the write INTRODUCES is judged. A row whose slug, profile and port are
+    already exactly what is on disk passes untouched even if it is bad, because the
+    alternative is worse: a legacy row with a colliding port would become impossible to
+    pause, rename or repair, and pausing it is precisely the fix somebody would reach for.
+    Validation exists to stop a new mistake reaching disk, not to trap the owner behind an
+    old one.
+    """
+    slug = agent.get("slug")
+    stored = get(slug, install_dir) if slug else None
+    if stored and all(str(stored.get(k)) == str(agent.get(k))
+                      for k in ("slug", "profile", "port")):
+        return []
+    out = []
+    if not valid_profile(slug):
+        out.append(("slug", slug, None))
+    prof = agent.get("profile") or slug
+    if not valid_profile(prof):
+        out.append(("profile", prof, None))
+    try:
+        port = int(agent.get("port"))
+    except (TypeError, ValueError):
+        port = None
+        out.append(("port", agent.get("port"), None))
+    if port == BASE_PORT:
+        # BASE_PORT belongs to the default agent, which is not in this registry and so
+        # cannot show up in the loop below.
+        out.append(("port", port, "default"))
+    for other in list_agents(install_dir):
+        if other.get("slug") == slug:
+            continue                                  # updating in place is not a conflict
+        if port is not None and str(other.get("port")) == str(port):
+            out.append(("port", port, other.get("slug")))
+        if (other.get("profile") or other.get("slug")) == prof:
+            out.append(("profile", prof, other.get("slug")))
+    return out
+
+
+_FIELD_ES = {"slug": "identificador", "profile": "perfil", "port": "puerto"}
+
+
+def describe_conflicts(problems):
+    parts = []
+    for field, value, other in problems:
+        name = _FIELD_ES.get(field, field)
+        if other:
+            parts.append("el %s %s ya es de «%s»" % (name, value, other))
+        else:
+            parts.append("el %s «%s» no es válido" % (name, value))
+    return "; ".join(parts)
+
+
 def upsert(agent, install_dir=None):
+    problems = conflicts(agent, install_dir)
+    if problems:
+        raise Conflict(describe_conflicts(problems))
     data = load(install_dir)
     agents = data["agents"]
     for i, a in enumerate(agents):
@@ -216,3 +303,69 @@ def unique_slug(name, hermes_profiles=None, install_dir=None):
 
 def agent_dir(slug, install_dir=None):
     return os.path.join(install_dir or INSTALL_ROOT, "agents", slug)
+
+
+# ── which agent a request is talking about ───────────────────────────────────
+
+def _hermes_home():
+    env = os.environ.get("HERMES_HOME")
+    if env:
+        return env
+    local = os.environ.get("LOCALAPPDATA")
+    if local and os.path.isdir(os.path.join(local, "hermes")):
+        return os.path.join(local, "hermes")
+    return os.path.join(os.path.expanduser("~"), ".hermes")
+
+
+def existing_profiles(hermes_home=None):
+    """Profile names that really exist on disk under <hermes home>/profiles."""
+    base = os.path.join(hermes_home or _hermes_home(), "profiles")
+    try:
+        return {n for n in os.listdir(base)
+                if valid_profile(n) and os.path.isdir(os.path.join(base, n))}
+    except OSError:
+        return set()
+
+
+def known_profiles(install_dir=None, hermes_home=None):
+    """Every profile this machine legitimately has: registered agents plus what is on disk."""
+    known = set()
+    for a in list_agents(install_dir):
+        for key in ("profile", "slug"):
+            if valid_profile(a.get(key)):
+                known.add(a[key])
+    return known | existing_profiles(hermes_home)
+
+
+def resolve_profile(value, install_dir=None, hermes_home=None, allow_new=False):
+    """Turn whatever the browser sent into a profile this machine actually has.
+
+    The wizard used to take `body["profile"]` at its word and hand it straight to
+    `hermes --profile` and to os.path.join(<hermes home>, "profiles", <it>). Two things
+    follow from that, and both have bitten:
+
+      * a name that does not exist quietly creates a SECOND configuration - the QR pairs,
+        a session lands on disk, the write reports success, and the gateway that is
+        actually running has no idea any of it happened;
+      * a name is a path segment, and nothing was checking it looked like one.
+
+    Returns None for the default agent, the canonical name for an extra one, and raises
+    ValueError for anything else. `allow_new=True` is for the one caller that is
+    legitimately creating a profile that does not exist yet.
+    """
+    name = (value or "").strip()
+    if not name or name == "default":
+        return None
+    if not valid_profile(name):
+        raise ValueError("Identificador de agente inválido.")
+    if allow_new:
+        return name
+    known = known_profiles(install_dir, hermes_home)
+    if name not in known:
+        raise ValueError("Este equipo no tiene ningún agente llamado «%s»." % name)
+    # An agent registered under a slug whose Hermes profile is named differently is
+    # addressed by its profile from here on - that is the name every path is built from.
+    for a in list_agents(install_dir):
+        if a.get("slug") == name and valid_profile(a.get("profile")):
+            return a["profile"]
+    return name
