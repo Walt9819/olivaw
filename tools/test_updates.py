@@ -55,6 +55,14 @@ def at(hour):
     return datetime.datetime(2026, 9, 4, hour, 30)
 
 
+def _dead_port():
+    """A port with nothing on it: bound, read, released."""
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="upd-")
     real = {k: getattr(L, k) for k in
@@ -120,8 +128,14 @@ def main():
         cfgless = L.load_config()
         L.CONFIG_PATH = save_cfg
         check("auto_update defaults ON with no config file", cfgless["auto_update"] is True)
+        # A port nothing can be listening on. `cfgless` defaults bridge_url to 127.0.0.1:8790,
+        # which on a developer's own machine is the REAL bridge - so this asserted "nothing is
+        # answering" against something that answers, and went red whenever the suite ran within
+        # idle_seconds of a deploy. The claim under test is about the no-bridge case; point it
+        # at a port that genuinely has no bridge.
+        nobody = dict(cfgless, bridge_url="http://127.0.0.1:%d" % _dead_port())
         check("and with nothing answering, the idle gate is open",
-              L.is_idle(cfgless) is True)
+              L.bridge_status(nobody) is None and L.is_idle(nobody) is True)
 
         section("the heartbeat, which decides whether a button can work at all")
         check("with no heartbeat the answer is 'I don't know', not 'it is dead'",
