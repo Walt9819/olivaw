@@ -159,9 +159,41 @@ def _whatsapp_logs(profile=None):
                   reverse=True)[:3]
 
 
-def whatsapp_qr(profile=None):
-    """Return the most recent pairing QR (ASCII) + connection state from the bridge log."""
-    logs = _whatsapp_logs(profile)
+def _number_log(profile, slug):
+    """The bridge log of ONE of this agent's extra numbers.
+
+    Hermes' adapter writes its log to ``<session>/../bridge.log``, so a number's log is
+    exactly derivable from its session path. Targeting it matters: with several numbers,
+    "the most recently modified whatsapp log" is whichever bridge last said anything, and
+    showing the owner number two's QR while they are trying to pair number three pairs the
+    wrong phone to the wrong line.
+    """
+    try:
+        from . import numbers
+        row = numbers.get(slug, profile)
+    except Exception:  # noqa: BLE001
+        row = None
+    if not row:
+        return []
+    session = row.get("session") or ""
+    cand = os.path.join(os.path.dirname(session.rstrip("/" + os.sep)), "bridge.log")
+    return [cand] if os.path.isfile(cand) else []
+
+
+def whatsapp_qr(profile=None, number=""):
+    """Return the pairing QR (ASCII) + connection state from the bridge log.
+
+    `number` names one of the agent's extra WhatsApp lines by slug; without it this is the
+    first number, exactly as before.
+    """
+    if number and number != "principal":
+        logs = _number_log(profile, number)
+        if not logs:
+            return {"ok": False, "waiting": True,
+                    "detail": "Todavía no hay puente para esa línea. Guarda el número y "
+                              "espera a que el agente se reinicie (menos de un minuto)."}
+    else:
+        logs = _whatsapp_logs(profile)
     if not logs:
         return {"ok": False, "waiting": True,
                 "detail": "Aún no veo el proceso de WhatsApp. Pulsa «Conectar WhatsApp» primero."}

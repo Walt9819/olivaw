@@ -30,16 +30,17 @@ if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from wizard import updates as updates_mod
     from wizard import (agents_registry, browser_setup, channels, checks, config_writer,
-                        context_policy, hermes_ctl, image_setup, obsidian, proposals,
-                        providers, rescue, selfcare, telegram_health, telegram_setup, usecases)
+                        context_policy, hermes_ctl, image_setup, numbers, obsidian,
+                        proposals, providers, rescue, selfcare, telegram_health,
+                        telegram_setup, usecases)
     from wizard import workspace as wsdir   # aliased: `workspace` is a local
                                             # variable name elsewhere in this file
     from wizard.procutil import http_json, which
 else:
     from . import updates as updates_mod
     from . import (agents_registry, browser_setup, channels, checks, config_writer,
-                   context_policy, hermes_ctl, image_setup, obsidian, proposals, providers,
-                   rescue, selfcare, telegram_health, telegram_setup, usecases)
+                   context_policy, hermes_ctl, image_setup, numbers, obsidian, proposals,
+                   providers, rescue, selfcare, telegram_health, telegram_setup, usecases)
     from . import workspace as wsdir        # aliased: see above
     from .procutil import http_json, which
 
@@ -94,6 +95,21 @@ def _target_profile(body, allow_new=False):
     """
     return agents_registry.resolve_profile(body.get("profile"), INSTALL_DIR,
                                            allow_new=allow_new)
+
+
+def _queue_gateway_reload(profile):
+    """A number only exists once the gateway has restarted and read the new platform list.
+
+    Queued rather than done here: restarting mid-conversation would drop whatever the agent
+    is in the middle of, and the supervisor already knows how to wait for idle.
+    """
+    try:
+        context_policy.mark_pending(profile or None)
+        return {"ok": True, "queued": True,
+                "detail": "El número quedará activo en cuanto el agente esté libre "
+                          "(normalmente menos de un minuto)."}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "detail": str(e)}
 
 
 def _safe_slug(slug):
@@ -647,6 +663,44 @@ class Handler(BaseHTTPRequestHandler):
         if route == "images/status":
             return image_setup.status(_target_profile(body), install_dir=INSTALL_DIR)
 
+        # Several WhatsApp numbers on ONE agent - same persona, same instructions, several
+        # business lines. See wizard/numbers.py for why this is a plugin-registered
+        # platform per number rather than a second agent.
+        if route == "numbers/status":
+            return numbers.status(_target_profile(body), which("hermes"))
+        if route == "numbers/add":
+            prof = _target_profile(body)
+            res = numbers.add(body.get("label", ""), prof,
+                              allowed_users=body.get("allowed_users", ""),
+                              main=bool(body.get("main")))
+            if res.get("ok"):
+                # Configure it NOW, not at the next supervisor pass: the owner is about to
+                # be shown a QR for it, and a number Hermes has not been told about has no
+                # bridge to produce one.
+                res["applied"] = numbers.apply(prof, which("hermes"))
+                res["restart"] = _queue_gateway_reload(prof)
+            return res
+        if route == "numbers/update":
+            prof = _target_profile(body)
+            res = numbers.update(body.get("slug", ""), prof,
+                                 label=body.get("label"),
+                                 allowed_users=body.get("allowed_users"),
+                                 main=body.get("main"))
+            if res.get("ok"):
+                res["applied"] = numbers.apply(prof, which("hermes"))
+            return res
+        if route == "numbers/main":
+            return numbers.set_main(body.get("slug", ""), _target_profile(body))
+        if route == "numbers/remove":
+            prof = _target_profile(body)
+            # The paired session is kept unless the owner explicitly says otherwise:
+            # deleting it unlinks the phone, and re-pairing costs them a QR hunt.
+            res = numbers.remove(body.get("slug", ""), prof,
+                                 drop_session=bool(body.get("drop_session")))
+            if res.get("ok"):
+                res["restart"] = _queue_gateway_reload(prof)
+            return res
+
         # Updating. The supervisor is the only process that may swap src/ (it holds the
         # bridge handles), so the UI reads its state file and drops a request; see
         # wizard/updates.py. "check" forces a fresh look at GitHub for the button that
@@ -878,7 +932,7 @@ class Handler(BaseHTTPRequestHandler):
             return channels.send_test(body.get("target", ""),
                                       body.get("text", "Prueba desde el asistente ✅"), profile)
         if sub == "whatsapp-qr":
-            return channels.whatsapp_qr(profile)
+            return channels.whatsapp_qr(profile, body.get("number", ""))
         if sub == "whatsapp-save":
             return channels.whatsapp_save(profile, body.get("allowed_users", ""),
                                           body.get("home_channel", ""))

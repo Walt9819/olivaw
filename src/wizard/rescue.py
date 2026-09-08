@@ -471,6 +471,16 @@ TELEGRAM, in the order it breaks:
      state = connected_incomplete.
   Note `telegram.state` is measured against Telegram itself, not guessed from the log.
 
+WHATSAPP may be SEVERAL NUMBERS on one agent. Each extra number is its own Hermes platform
+(whatsapp_<slug>), registered by a generated plugin under <HERMES_HOME>/plugins/, with its own
+bridge port, session directory and WHATSAPP_<SLUG>_ALLOWED_USERS. The first number is always the
+plain `whatsapp` platform on port 3000 and is never touched. State: python -c "import sys;
+sys.path.insert(0,'src'); from wizard import numbers as n; print(n.status(<perfil>))". A number
+listed but `linked: false` has never been paired - it needs a QR, not a repair. When checking a
+delivery or escalating, the LINE matters: `--number <slug>`, because asking the wrong bridge about
+a message id answers `unknown` (i.e. "never sent") about a message that went out fine on another
+line.
+
 WHATSAPP is where CLIENTS write, not the owner. The client-handling skill follows the PAIRED
 SESSION, never the WHATSAPP_ENABLED flag: an agent carrying it with no WhatsApp behind it offers
 to message people through a channel that does not exist, which reads to the owner as a

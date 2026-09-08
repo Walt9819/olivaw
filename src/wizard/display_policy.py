@@ -143,6 +143,24 @@ def read_env(path):
     return out
 
 
+def extra_whatsapp_platforms(profile=None):
+    """The additional WhatsApp numbers this agent answers, as platform values.
+
+    Each extra number is its own Hermes platform (see numbers.py), and Hermes has no
+    per-platform display defaults for a name it does not know: an unregistered platform
+    falls through to the GLOBAL defaults, where tool_progress is "all". So a second number
+    that nobody silenced shows the customer exactly the tool progress and internal chatter
+    the first number was fixed not to show. Enumerating them here is what stops the fix
+    from applying to number one only.
+    """
+    try:
+        from . import numbers
+        return [p for p in numbers.platform_values(profile)
+                if p != numbers.BUILTIN_PLATFORM]
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def enabled_platforms(profile=None, hermes=None, env=None):
     """Which customer channels this profile actually has switched on.
 
@@ -157,6 +175,11 @@ def enabled_platforms(profile=None, hermes=None, env=None):
             if val and val.lower() not in _FALSEY:
                 out.append(plat)
                 break
+    # An extra number exists because the owner added it; it needs no env signal, and it is
+    # customer-facing by definition - nobody adds a second line for themselves.
+    for plat in extra_whatsapp_platforms(profile):
+        if plat not in out:
+            out.append(plat)
     return out
 
 
@@ -221,16 +244,22 @@ def _child_keys(text, path):
     return out
 
 
-def written(profile=None, hermes=None, path=None):
-    """{platform: set(keys explicitly set)} - what the owner or a past run already chose."""
+def written(profile=None, hermes=None, path=None, platforms=None):
+    """{platform: set(keys explicitly set)} - what the owner or a past run already chose.
+
+    `platforms` must cover the extra WhatsApp numbers too. Reading only the fixed
+    CUSTOMER_PLATFORMS would report "nothing is set" for every extra number, so plan()
+    would re-issue all seven writes on every supervisor pass - and, worse, would overwrite
+    a choice the owner had made for that number.
+    """
     path = path or config_file(hermes, profile)
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
             text = fh.read()
     except OSError:
         return {}
-    return {plat: _child_keys(text, ("display", "platforms", plat))
-            for plat in CUSTOMER_PLATFORMS}
+    plats = list(platforms) if platforms is not None else         list(CUSTOMER_PLATFORMS) + extra_whatsapp_platforms(profile)
+    return {plat: _child_keys(text, ("display", "platforms", plat)) for plat in plats}
 
 
 def plan(profile=None, hermes=None, platforms=None, env=None, path=None):
@@ -238,7 +267,7 @@ def plan(profile=None, hermes=None, platforms=None, env=None, path=None):
     plats = platforms if platforms is not None else enabled_platforms(profile, hermes, env)
     if not plats:
         return []
-    have = written(profile, hermes, path)
+    have = written(profile, hermes, path, platforms=plats)
     todo = []
     for plat in plats:
         already = have.get(plat) or set()

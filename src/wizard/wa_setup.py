@@ -45,13 +45,15 @@ _BODY = r"""
 
 WhatsApp lo usan **los clientes**, no el dueño. Dos reglas, y las dos tienen script propio.
 
+{numbers_block}
+
 ## 1. Nunca digas "ya lo mandé" sin comprobarlo
 
 El puente responde `success: true` en cuanto entrega los bytes al socket. Eso **no** es
 entrega. Después de enviar por WhatsApp, comprueba con el id que te devolvió el envío:
 
 ```bash
-"{python}" "{verify}" --ids <MESSAGE_ID> --json
+"{python}" "{verify}" --ids <MESSAGE_ID>{number_flag} --json
 ```
 
 Códigos de salida: `0` salió de verdad · `1` no salió · `2` no se pudo comprobar.
@@ -71,7 +73,7 @@ Si sale `unknown` o `failed`, **vuelve a enviar**. Si sale `unverifiable`, dilo 
 palabras: no inventes que se entregó. Para enviar y comprobar en un paso:
 
 ```bash
-"{python}" "{verify}" --chat <JID> --send "texto" --json
+"{python}" "{verify}" --chat <JID> --send "texto"{number_flag} --json
 ```
 
 ## 2. Cuando haga falta una persona, llama al script
@@ -83,7 +85,7 @@ de escribirlo, mandarlo, reintentarlo y dejar constancia:
 "{python}" "{escalate}"{home_arg} --reason <MOTIVO> \
   --summary "una línea de qué pasa" \
   --contact "+52..." --contact-name "Nombre" \
-  --excerpt "lo que escribió el cliente, textual" --json
+  --excerpt "lo que escribió el cliente, textual"{number_flag} --json
 ```
 
 Códigos de salida: `0` la dueña ya lo tiene, confirmado · `3` quedó guardado y se
@@ -164,6 +166,58 @@ def _repo_src():
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def _numbers_block(hermes_home=None):
+    """Tell the agent which lines it answers - only when there is more than one.
+
+    A single-number agent must read exactly the skill it read before: an extra paragraph
+    about "choosing a line" on an agent with one line is a way to get it hedging about
+    which number it is on when there is only one answer.
+
+    Home-based rather than profile-based, like everything else that builds this skill: the
+    caller has a home, and resolving a profile a second way is how the wrong agent's lines
+    end up written into a skill.
+    """
+    home = hermes_home or _hermes_home()
+    try:
+        with io.open(os.path.join(home, "olivaw-numbers.json"), encoding="utf-8") as fh:
+            extras = [r for r in ((json.load(fh) or {}).get("numbers") or [])
+                      if isinstance(r, dict) and r.get("slug")]
+    except (OSError, ValueError):
+        return ""
+    if not extras:
+        return ""
+    rows = [{"slug": "principal", "label": "Número principal",
+             "main": not any(r.get("main") for r in extras),
+             "linked": any(_paired(d) for d in _session_dirs_at(home))}]
+    for r in extras:
+        rows.append({"slug": r["slug"], "label": r.get("label") or r["slug"],
+                     "main": bool(r.get("main")),
+                     "linked": _paired(r.get("session") or "")})
+    lines = [
+        "## Este agente atiende varias líneas",
+        "",
+        "Son la misma persona - tú - contestando en varios números. Las respuestas salen",
+        "solas por el número donde te escribieron; no tienes que elegir nada para responder.",
+        "Lo que sí necesitas es **decir en qué línea estás** cuando llames a los scripts de",
+        "abajo, con `--number <clave>`. Si te equivocas de línea, comprobar una entrega te",
+        "dirá `unknown` (o sea «no se envió») sobre un mensaje que sí salió por otra.",
+        "",
+        "| clave | línea | vinculada |",
+        "|---|---|---|",
+    ]
+    for row in rows:
+        lines.append("| `%s` | %s%s | %s |"
+                     % (row["slug"], row["label"],
+                        " (principal)" if row.get("main") else "",
+                        "sí" if row.get("linked") else "todavía no"))
+    lines += [
+        "",
+        "Cuando el dueño te pida escribir a alguien por iniciativa propia y no haya una",
+        "conversación de por medio, usa la línea principal.",
+    ]
+    return "\n".join(lines)
+
+
 def _reasons_block(hermes_home=None):
     """Her actual reasons, in her own words, as a table the agent can act on.
 
@@ -228,6 +282,10 @@ def render_skill(hermes_home=None):
                 escalate=os.path.join(src, "tools", "escalate_owner.py"),
                 patch=os.path.join(src, "wizard", "wa_patch.py"),
                 reasons_block=_reasons_block(hermes_home),
+                numbers_block=_numbers_block(hermes_home),
+                # Only asked for when the agent HAS several lines; on a one-line agent the
+                # commands stay byte-identical to what they were.
+                number_flag=(" --number <clave>" if _numbers_block(hermes_home) else ""),
                 home_arg=_home_arg(hermes_home),
             ))
 
@@ -303,6 +361,12 @@ def whatsapp_on(profile=None):
     return bool(val) and val not in ("0", "false", "no", "off")
 
 
+def _session_dirs_at(home):
+    """The first number's session directories under a given Hermes home."""
+    return [os.path.join(home, "platforms", "whatsapp", "session"),
+            os.path.join(home, "whatsapp", "session")]
+
+
 def session_dirs(profile=None):
     """Both places Hermes may keep the paired session, newest layout first.
 
@@ -333,19 +397,33 @@ def whatsapp_linked(profile=None):
             (env.get("WHATSAPP_CLOUD_PHONE_NUMBER_ID") or "").strip():
         return True
     for d in session_dirs(profile):
-        try:
-            with io.open(os.path.join(d, "creds.json"), encoding="utf-8") as fh:
-                creds = json.load(fh)
-        except (OSError, ValueError):
-            continue
-        if not isinstance(creds, dict):
-            continue
-        if creds.get("registered") is True:
+        if _paired(d):
             return True
-        me = creds.get("me")
-        if isinstance(me, dict) and (me.get("id") or "").strip():
-            return True
+    # An agent can answer on several numbers. The first one may be unpaired while a later
+    # one is live, and that agent is still serving clients - it needs the skill.
+    try:
+        from . import numbers
+        for row in numbers.extras(profile):
+            if _paired(row.get("session") or ""):
+                return True
+    except Exception:  # noqa: BLE001
+        pass
     return False
+
+
+def _paired(session_dir):
+    """Has a phone actually been linked into this session directory?"""
+    try:
+        with io.open(os.path.join(session_dir, "creds.json"), encoding="utf-8") as fh:
+            creds = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(creds, dict):
+        return False
+    if creds.get("registered") is True:
+        return True
+    me = creds.get("me")
+    return isinstance(me, dict) and bool((me.get("id") or "").strip())
 
 
 def ensure(hermes_exe=None, hermes_home=None, log=None):

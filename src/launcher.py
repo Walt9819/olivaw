@@ -70,6 +70,10 @@ try:
 except Exception:  # noqa: BLE001
     _display = None
 try:
+    from wizard import numbers as _numbers
+except Exception:  # noqa: BLE001
+    _numbers = None
+try:
     from wizard import image_setup as _images
 except Exception:  # noqa: BLE001
     _images = None
@@ -1241,6 +1245,42 @@ def _skill_needs_reload(profile, what):
         log(f"{what}: could not queue a reload for {profile}: {e}")
 
 
+def _ensure_numbers():
+    """Keep Hermes agreeing with each agent's list of WhatsApp numbers.
+
+    An extra number is a plugin-registered platform plus a handful of config keys; both
+    are written from the registry, so this reconciles anything that drifted - a config.yaml
+    restored from backup, a plugin directory deleted by hand, a number added while the
+    gateway was down. Silent and free for the ordinary agent, which has no extra numbers
+    and gets an early return.
+    """
+    if not _numbers:
+        return
+    profiles = [None] + [a.get("profile") or a.get("slug")
+                         for a in _load_extra_agents()
+                         if (a.get("profile") or a.get("slug"))]
+    seen = set()
+    for prof in profiles:
+        key = prof or "default"
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if not _numbers.extras(prof):
+                continue
+            r = _numbers.apply(prof, log=log)
+        except Exception as e:  # noqa: BLE001
+            log(f"numbers: could not configure {key}: {e}")
+            continue
+        if (r.get("plugin") or {}).get("changed"):
+            # The gateway builds its platform list at boot, so a newly registered number
+            # answers nothing until it restarts. Same handoff the skills use.
+            _skill_needs_reload(key, "numbers")
+        if not r.get("ok"):
+            log(f"numbers: {key} is not fully configured: "
+                f"{r.get('plugin', {}).get('detail', '')}")
+
+
 def _ensure_display_policy():
     """Keep the customer's side of the screen free of the agent's working notes.
 
@@ -1404,6 +1444,9 @@ def main():
     state = {"child": start_bridge(cfg), "launcher_changed": False, "extra": {}}
     _reconcile_extras(cfg, state)
     _ensure_whatsapp()
+    # Before the display policy: a number that does not exist yet cannot be silenced, and
+    # silencing is what keeps its first customer message from showing internal work.
+    _ensure_numbers()
     _ensure_display_policy()
     _ensure_context_policy()
     _ensure_browser_skill()

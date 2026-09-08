@@ -272,16 +272,38 @@ _NOT_A_PERSON = ("@g.us", "@broadcast", "@newsletter")   # group, status, channe
 
 
 def session_dirs(home=None):
-    """Both places Hermes may keep the paired session, newest layout first.
+    """Every paired WhatsApp session this agent has, newest layout first.
 
-    Hermes picks between them with get_hermes_dir("platforms/whatsapp/session",
-    "whatsapp/session"): the legacy path wins only when it already holds something. Looking
-    in one of them is how a perfectly good install reads as "this LID cannot be resolved",
-    which here means an owner alert quietly loses the customer's phone number.
+    Two reasons this is a list rather than a path.
+
+    First, Hermes picks between two layouts with
+    get_hermes_dir("platforms/whatsapp/session", "whatsapp/session") - the legacy path wins
+    only when it already holds something. Looking in one of them is how a perfectly good
+    install reads as "this LID cannot be resolved", which here means an owner alert quietly
+    loses the customer's phone number.
+
+    Second, one agent can now answer on several numbers, each with its own session
+    (wizard/numbers.py). A LID is an identity WhatsApp assigns to a person, not to one of
+    our lines, so a mapping proven by any session this agent owns is proof about the same
+    human. Searching them all is strictly more coverage and no less certainty; searching
+    only the first line's session would drop the number for every customer who wrote to any
+    of the others.
     """
     home = home or _hermes_home()
-    return [os.path.join(home, "platforms", "whatsapp", "session"),
-            os.path.join(home, "whatsapp", "session")]
+    out = [os.path.join(home, "platforms", "whatsapp", "session"),
+           os.path.join(home, "whatsapp", "session")]
+    # The extra numbers, read straight from the registry Olivaw writes next to config.yaml.
+    # Its own tiny reader on purpose: this file imports nothing from the rest of Olivaw so
+    # the emergency path cannot break on a package layout change.
+    try:
+        with io.open(os.path.join(home, "olivaw-numbers.json"), encoding="utf-8") as fh:
+            rows = (json.load(fh) or {}).get("numbers") or []
+        for row in rows:
+            if isinstance(row, dict) and row.get("session"):
+                out.append(str(row["session"]))
+    except (OSError, ValueError):
+        pass
+    return out
 
 
 def session_dir(home=None):
@@ -411,6 +433,11 @@ def compose(rec):
     num = rec.get("phone") or ""
     both = " · ".join([p for p in (who, "+" + num if num else "") if p]) or "(sin identificar)"
     lines.append("Cliente:  %s" % both)
+    # WHICH line they wrote to. Only shown when the agent actually answers more than one:
+    # on a single-number agent it is noise, and on a multi-number one it is the first thing
+    # the owner needs - she has to reply from the same business line the customer chose.
+    if rec.get("line"):
+        lines.append("Línea:    %s" % rec["line"])
     lines.append("Motivo:   %s (prioridad %s)" % (label, priority))
     if rec.get("summary"):
         lines.append("Resumen:  %s" % rec["summary"])
@@ -545,8 +572,35 @@ def deliver_hermes_cli(text, log=print):
 
 # ── the operation ────────────────────────────────────────────────────────────
 
+def line_label(slug, home=None):
+    """The human name of one of this agent's WhatsApp numbers, or "" when it has only one.
+
+    Returns "" for a single-number agent so the alert stays exactly as it was: an extra
+    line saying "Línea: Número principal" on an agent with one line is clutter that makes
+    every alert slightly worse to read.
+    """
+    slug = str(slug or "").strip()
+    try:
+        with io.open(os.path.join(home or _hermes_home(), "olivaw-numbers.json"),
+                     encoding="utf-8") as fh:
+            rows = (json.load(fh) or {}).get("numbers") or []
+    except (OSError, ValueError):
+        return ""
+    rows = [r for r in rows if isinstance(r, dict)]
+    if not rows:
+        return ""
+    for row in rows:
+        if row.get("slug") == slug:
+            return str(row.get("label") or slug)
+    # A slug we do not recognise (or none given) on an agent that HAS several lines: say
+    # the main one rather than inventing a name, and never claim a line we cannot confirm.
+    if not slug:
+        return ""
+    return slug
+
+
 def escalate(reason, summary="", contact="", contact_name="", excerpt="",
-             chat_link="", force=False, retry_pending=True, log=print):
+             chat_link="", force=False, retry_pending=True, log=print, line=""):
     prefs = load_prefs()
     table = effective_reasons(prefs)
     if reason not in table:
@@ -571,6 +625,7 @@ def escalate(reason, summary="", contact="", contact_name="", excerpt="",
         # actually sent with. Empty means "no number was ever proven", which the alert says
         # out loud rather than papering over with digits that are not a phone.
         "phone": canonical_phone(contact),
+        "line": line_label(line),
     }
     fingerprint = hashlib.sha256(
         "|".join([payload["reason"], payload["contact"], payload["summary"]])
@@ -686,6 +741,9 @@ def main(argv=None):
     p.add_argument("--summary", default="", help="One line: what is happening.")
     p.add_argument("--contact", default="", help="Client phone or WhatsApp id.")
     p.add_argument("--contact-name", default="", help="Client name, if known.")
+    p.add_argument("--number", default="",
+                   help="Which of this agent's WhatsApp lines the client wrote to (its "
+                        "slug). Shown to the owner so she replies on the right line.")
     p.add_argument("--excerpt", default="", help="What the client actually wrote, verbatim.")
     p.add_argument("--chat-link", default="", help="Link to open the chat.")
     p.add_argument("--force", action="store_true",
@@ -723,7 +781,7 @@ def main(argv=None):
     log = (lambda m: None) if quiet else print
     r = escalate(reason=a.reason, summary=a.summary, contact=a.contact,
                  contact_name=a.contact_name, excerpt=a.excerpt,
-                 chat_link=a.chat_link, force=a.force, log=log)
+                 chat_link=a.chat_link, force=a.force, log=log, line=a.number)
 
     if a.json:
         print(json.dumps(r, ensure_ascii=False, indent=2))

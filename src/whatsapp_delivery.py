@@ -22,6 +22,13 @@ our hands.
 
 `unknown` is a real answer, not a gap: every send path in the bridge registers through
 trackSentMessageId, so an id the bridge has never heard of was never sent by it.
+
+SEVERAL NUMBERS. One agent can answer on more than one WhatsApp line, and each line is its
+own bridge on its own port (see wizard/numbers.py). Asking the wrong bridge about a message
+id returns `unknown` - "it was NOT sent" - about a message that went out perfectly well on
+another number. So `--number <slug>` resolves the right port from the agent's own registry,
+and the agent is told to pass the number the conversation is on. Without any of that the
+default is port 3000, the first number, exactly as before.
 """
 
 import json
@@ -32,6 +39,37 @@ import urllib.request
 
 DEFAULT_PORT = 3000
 DEFAULT_HOST = "127.0.0.1"
+
+
+def port_for_number(slug, home=None):
+    """The bridge port of one of this agent's WhatsApp numbers, by slug.
+
+    Reads the registry Olivaw writes next to the profile's config.yaml. Deliberately its
+    own tiny reader rather than an import of wizard.numbers: this file is run standalone by
+    the agent through a bare `python whatsapp_delivery.py`, with no guarantee that Olivaw's
+    package is importable from wherever the CLI happens to be.
+    """
+    import os
+    if not slug or slug in ("principal", "default", "1"):
+        return DEFAULT_PORT
+    base = home or os.environ.get("HERMES_HOME") or ""
+    if not base:
+        local = os.environ.get("LOCALAPPDATA")
+        base = (os.path.join(local, "hermes") if local and
+                os.path.isdir(os.path.join(local, "hermes"))
+                else os.path.join(os.path.expanduser("~"), ".hermes"))
+    try:
+        with open(os.path.join(base, "olivaw-numbers.json"), encoding="utf-8") as fh:
+            rows = (json.load(fh) or {}).get("numbers") or []
+    except (OSError, ValueError):
+        return None
+    for row in rows:
+        if isinstance(row, dict) and row.get("slug") == slug:
+            try:
+                return int(row.get("port"))
+            except (TypeError, ValueError):
+                return None
+    return None
 
 # How long to hold out for the recipient's device before falling back to the server ack.
 DELIVERY_WAIT = 25.0
@@ -247,11 +285,27 @@ def main(argv=None):  # pragma: no cover - operator/agent entry point
                    help="Seconds to wait for the recipient's device before "
                         "falling back to the server ack (default %(default)s).")
     p.add_argument("--port", type=int, default=DEFAULT_PORT)
+    p.add_argument("--number", default="",
+                   help="Which of this agent's WhatsApp numbers (its slug). Resolves the "
+                        "port for you; omit it for the main number.")
     p.add_argument("--host", default=DEFAULT_HOST)
     p.add_argument("--health", action="store_true",
                    help="Just report bridge and patch state.")
     p.add_argument("--json", action="store_true")
     a = p.parse_args(argv)
+
+    # --number wins over --port when both are given: the slug names a real line, the port is
+    # the low-level escape hatch. An unknown slug is refused rather than silently answered
+    # by the main number's bridge, which would report "unknown" - i.e. "never sent" - about
+    # a message that is sitting delivered on another line.
+    if a.number:
+        resolved = port_for_number(a.number)
+        if resolved is None:
+            print(json.dumps({"ok": False, "error": "unknown-number", "number": a.number},
+                             ensure_ascii=False) if a.json else
+                  "Este agente no tiene ningún número llamado '%s'." % a.number)
+            return 2
+        a.port = resolved
 
     if a.health:
         h = bridge_health(a.host, a.port)

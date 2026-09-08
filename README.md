@@ -376,6 +376,42 @@ the bridge (Claude Code MCP connectors do **not** work here — the bridge disab
   writes `SMTP_*` into the agent's profile `.env` (presets + app-password guides for Gmail, Outlook,
   Yahoo, iCloud), sends a live test email, and adds an email-capability note to the agent's `CLAUDE.md`.
 
+#### Several numbers, one agent
+
+A business with a sales line and a support line usually wants the *same* agent on both —
+same persona, same `CLAUDE.md`, same skills — not two agents configured alike that drift
+apart the first time somebody edits one.
+
+Hermes keeps one adapter per platform (`self.adapters[platform]`), so the unit of "one
+WhatsApp number" is **(profile, platform-value)**. The adapter itself is already
+per-instance — it reads `bridge_port` and `session_path` out of `config.extra` — so what
+was missing was a second *key*, and Hermes provides one: a plugin can register a platform
+under any name, and `Platform._missing_()` mints an enum member for it.
+
+So `src/wizard/numbers.py` keeps a registry of numbers per agent, and `wa_plugin.py`
+generates a small plugin into the agent's own Hermes profile that turns each row into a
+real platform. One profile, one gateway, one brain, N numbers — each with its own bridge
+port, paired session, allowlist and privacy settings.
+
+- **The first number never changes.** It stays on the plain `whatsapp` platform, port 3000,
+  default session. No migration, no re-pairing, and if the plugin ever fails to load, the
+  original number keeps working exactly as before.
+- **Replies go out the number they came in on**, for free — the gateway resolves the adapter
+  from `source.platform`. A conversation the *agent* starts uses the number marked `main`.
+- **Same customer, two of your numbers, two conversations.** The session key includes the
+  platform, so a sales enquiry and a support enquiry from one person stay separate.
+- **It lives in `$HERMES_HOME/plugins/`**, the owner's data directory — unlike `wa_patch`,
+  `hermes update` cannot take it away. The one remaining coupling is an *import* of Hermes'
+  bundled adapter class, and the plugin fails loudly (naming the affected lines) rather than
+  registering nothing if that ever moves.
+- **The ceiling is about six**, and the wizard says why: each number is a Node process
+  holding a live WhatsApp Web session, roughly 150–250 MB, and past a handful they start
+  dropping connections on an ordinary PC.
+
+Worth knowing: the Baileys bridge is an unofficial WhatsApp Web client, so several automated
+numbers from one machine carries more ban exposure than one. The official Cloud API
+(`whatsapp_cloud`) is the ToS-clean alternative and can run alongside.
+
 #### A customer sees the answer, never the work
 
 Hermes files WhatsApp under its `TIER_MEDIUM` display defaults — tool progress on, mid-turn
