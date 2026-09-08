@@ -206,13 +206,29 @@
     { id: "home", scope: "agent", icon: "🏠", label: "Resumen",
       blurb: "Cómo está y qué puedes hacer con él",
       render: secAgentHome, wire: eAgentHome },
-    { id: "canales", scope: "agent", icon: "💬", label: "Por dónde le hablan",
-      blurb: "WhatsApp, correo, Slack, webhooks",
-      title: "Por dónde puede hablarle la gente",
-      lead: "Telegram ya está listo. Aquí sumas los demás — y cada uno queda guardado en " +
-            "<b>este</b> agente, no en los otros.",
+    // WhatsApp gets its own page rather than a <details> among five others: it is the
+    // channel with STATE the owner needs to see (is it connected? which numbers?) and the
+    // only one that can have several accounts on one agent.
+    { id: "whatsapp", scope: "agent", icon: "💬", label: "WhatsApp",
+      blurb: "Números conectados y estado",
+      title: "WhatsApp de este agente",
+      lead: "Un agente puede atender <b>varios números a la vez</b> con las mismas " +
+            "instrucciones. Cada línea tiene su propia sesión y su propia lista de quién " +
+            "puede escribirle.",
+      render: secNumbers, wire: eNumbers },
+    { id: "hablar", scope: "agent", icon: "🖥️", label: "Háblale desde aquí",
+      blurb: "Sin pasar por Telegram",
+      title: "Háblale desde esta pantalla",
+      lead: "El mismo agente que te contesta por Telegram — con su memoria, sus " +
+            "habilidades y su forma de ser. Sólo que aquí, sin teléfono.",
+      render: secTalk, wire: eTalk },
+    { id: "canales", scope: "agent", icon: "🔗", label: "Otros canales",
+      blurb: "Correo, Slack, webhooks",
+      title: "Por dónde más puede hablarle la gente",
+      lead: "Telegram y WhatsApp tienen su propia página. Aquí van los demás — y cada uno " +
+            "queda guardado en <b>este</b> agente, no en los otros.",
       render: function () {
-        return secWhatsApp() + secGoogle() + secSlack() + secWebhook() + secSmtp();
+        return secGoogle() + secSlack() + secWebhook() + secSmtp();
       } },
     { id: "gasto", scope: "agent", icon: "⏱️", label: "Conversación y gasto",
       blurb: "Cada cuánto empieza de cero",
@@ -392,10 +408,65 @@
       '<div class="card pad"><ul class="filelist">' + facts + '</ul>' +
       '<div class="row" style="margin-top:12px">' + actions + '</div>' +
       '<span class="pill" data-pill="' + esc(a.slug) + '" style="display:none;margin-top:8px"></span></div>' +
+      connCard() +
       '<h2>¿Qué quieres ajustar de ' + esc(agentLabel(a)) + '?</h2>' +
       '<div class="secgrid">' + grid + '</div>';
   }
-  function eAgentHome() { wireAgentActions(); }
+
+  // ── how the agent is reachable, always on screen ─────────────────────────────
+  // The owner could not tell whether WhatsApp was connected: the state existed, but only
+  // inside the setup flow, behind a <details>, next to a button that started a pairing.
+  // So it is a card on the agent's own front page now, and it paints from local state
+  // first (instant) and then refines with what Telegram itself says. One server call for
+  // all of it - see wizard/connections.py - so two panels cannot disagree.
+  function connCard() {
+    return '<h2>Cómo le hablan</h2>' +
+      '<div class="card pad" id="connCard"><span class="muted small">Comprobando…</span></div>';
+  }
+
+  function connDot(state) {
+    var m = { ok: ["dot-ok", "Conectado"], warn: ["dot-warn", "Atención"],
+              off: ["dot-off", "Sin configurar"], checking: ["dot-wait", "Comprobando"] };
+    var v = m[state] || m.off;
+    return '<span class="cdot ' + v[0] + '" title="' + v[1] + '"></span>';
+  }
+
+  function paintConn(snap) {
+    var box = el("connCard");
+    if (!box) return;
+    if (!snap || !snap.channels) {
+      box.innerHTML = '<span class="muted small">No pude comprobarlo.</span>';
+      return;
+    }
+    var jump = { "Telegram": "canales", "WhatsApp": "whatsapp",
+                 "Desde esta pantalla": "hablar" };
+    box.innerHTML = '<ul class="connlist">' + snap.channels.map(function (c) {
+      var to = jump[c.label];
+      // The brain row is the one that does not link anywhere agent-scoped: it is shared.
+      var go = to ? ' <a href="#" class="clink" data-goto="' + to + '">abrir</a>' :
+        ' <a href="#" class="clink" data-goto="cerebro">abrir</a>';
+      return '<li>' + connDot(c.state) + '<span class="cico">' + c.icon + '</span>' +
+        '<b>' + esc(c.label) + '</b>' +
+        '<span class="muted small cdet">' + esc(c.detail || "") + go + '</span></li>';
+    }).join("") + '</ul>' +
+      (snap.fast ? '<div class="small muted" style="margin-top:8px">Comprobando con Telegram…</div>' : '');
+    Array.prototype.forEach.call(box.querySelectorAll("[data-goto]"), function (n) {
+      n.onclick = function (e) { e.preventDefault(); goSec(n.getAttribute("data-goto")); };
+    });
+  }
+
+  function loadConn() {
+    var prof = targetProfile();
+    // Two passes on purpose: the fast one answers from files and paints at once, the slow
+    // one asks Telegram whether the token still works. A single slow call would leave the
+    // card saying "Comprobando…" for as long as the network takes.
+    api("connections/status", { profile: prof, fast: true }).then(paintConn)
+      .then(function () { return api("connections/status", { profile: prof }); })
+      .then(paintConn)
+      .catch(function () { paintConn(null); });
+  }
+
+  function eAgentHome() { wireAgentActions(); loadConn(); }
 
   // Shared by the console's front page and the wizard's agent list, so pausing an agent
   // does the same thing (and says the same thing) in both.
@@ -1505,26 +1576,287 @@
       chLine("mcpPill") + '</details>';
   }
 
-  // WhatsApp — connect, show the QR HERE, then lock it to the owner's number
-  function secWhatsApp() {
-    return '' +
-      '<details><summary>💬 WhatsApp</summary>' +
-      '<p class="small muted">1) Pulsa «Conectar». 2) Aparecerá aquí un código QR. ' +
-      '3) En tu teléfono: WhatsApp → Ajustes → <b>Dispositivos vinculados</b> → Vincular. ' +
-      'No necesitas terminal.</p>' +
-      '<div class="row"><button class="btn btn-primary btn-sm" id="waPair">Conectar WhatsApp</button>' +
-      '<button class="btn btn-soft btn-sm" id="waQr">Ver código QR</button>' +
-      '<button class="btn btn-soft btn-sm" id="waCloud">Usar WhatsApp Business (Cloud)</button></div>' +
-      '<div id="waQrBox" style="display:none;margin-top:10px"></div>' +
-      '<div class="hr"></div><b class="small">Quién puede darle órdenes (obligatorio)</b>' +
-      '<label class="field" style="margin-top:8px"><span class="lab">Tu número con código de país ' +
-      '<span class="hint">ej: 5215512345678</span></span>' +
-      '<input type="text" id="waUsers" placeholder="5215512345678" value="' + esc(S.wa_users || "") + '"></label>' +
-      '<div class="row"><button class="btn btn-soft btn-sm" id="waSave">Guardar y bloquear a mi número</button></div>' +
-      chLine("waPill") +
+  // ── talking to your own agent, from here ─────────────────────────────────────
+  // Not the 🆘 console: that one talks to the BRAIN about the installation, with no
+  // persona and no memory, and it exists for when everything else is broken. This talks to
+  // the AGENT - same persona, same memory, same skills as on Telegram - through Hermes' own
+  // api_server platform. See wizard/talk.py for why that distinction is worth the work.
+  var TALK = { sid: "", msgs: [], busy: false, ready: false };
 
-      // WhatsApp is where CLIENTS write. The owner does not want every message - she wants
-      // the ones that need HER. Which ones, and what her own reasons mean, is decided here.
+  function secTalk() {
+    return '' +
+      '<div id="tkState" class="card pad"><span class="muted small">Comprobando…</span></div>' +
+      '<div id="tkChat" style="display:none">' +
+      '<div class="chatlog" id="tkLog"></div>' +
+      '<div class="row" style="margin-top:10px;align-items:flex-end">' +
+      '<textarea id="tkInput" rows="2" class="grow" placeholder="Escríbele como le escribirías por WhatsApp…"></textarea>' +
+      '<button class="btn btn-primary btn-sm" id="tkSend">Enviar</button></div>' +
+      '<div class="row" style="margin-top:6px">' +
+      '<button class="btn btn-ghost btn-sm" id="tkNew">Empezar de cero</button>' +
+      '<span class="muted small grow" id="tkHint"></span></div></div>';
+  }
+
+  function paintTalk(st) {
+    var box = el("tkState"), chat = el("tkChat");
+    if (!box) return;
+    TALK.ready = !!(st && st.ready);
+    if (!st) { box.innerHTML = '<span class="muted small">No pude comprobarlo.</span>'; return; }
+    var dot = connDot(st.ready ? "ok" : (st.enabled ? "warn" : "off"));
+    var act = "";
+    if (!st.enabled) {
+      act = '<button class="btn btn-primary btn-sm" id="tkOn">Activar</button>';
+    } else if (!st.ready) {
+      act = '<button class="btn btn-soft btn-sm" id="tkRetry">Volver a comprobar</button>' +
+        ' <button class="btn btn-ghost btn-sm" id="tkOff">Desactivar</button>';
+    } else {
+      act = '<button class="btn btn-ghost btn-sm" id="tkOff">Desactivar</button>';
+    }
+    box.innerHTML = '<div class="row" style="align-items:flex-start">' + dot +
+      '<div class="grow"><b>' + esc(st.detail || "") + '</b>' +
+      (st.enabled && st.port
+        ? '<div class="small muted">Escucha sólo en este equipo (127.0.0.1:' + esc(st.port) +
+          '), con una clave que no sale de aquí.</div>' : '') +
+      '</div></div><div class="row" style="margin-top:10px">' + act + '</div>' +
+      '<span class="pill" id="tkPill" style="display:none;margin-top:8px"></span>';
+    if (chat) chat.style.display = st.ready ? "" : "none";
+    var on = el("tkOn"), off = el("tkOff"), rt = el("tkRetry");
+    if (on) on.onclick = function () {
+      runTest(on, el("tkPill"), function () {
+        return api("talk/enable", { profile: targetProfile() });
+      }, "Activando…").then(function () { setTimeout(loadTalk, 1200); });
+    };
+    if (off) off.onclick = function () {
+      runTest(off, el("tkPill"), function () {
+        return api("talk/disable", { profile: targetProfile() });
+      }, "Desactivando…").then(loadTalk);
+    };
+    if (rt) rt.onclick = loadTalk;
+    if (st.ready && !TALK.sid) newTalk();
+    if (st.ready) paintLog();
+  }
+
+  function loadTalk() {
+    api("talk/status", { profile: targetProfile() }).then(paintTalk)
+      .catch(function () { paintTalk(null); });
+  }
+
+  function paintLog() {
+    var log = el("tkLog");
+    if (!log) return;
+    if (!TALK.msgs.length) {
+      log.innerHTML = '<div class="muted small" style="padding:14px">Esta conversación es ' +
+        '<b>aparte</b> de la de Telegram: el agente es el mismo y recuerda lo que ha ' +
+        'aprendido, pero este hilo empieza limpio.</div>';
+      return;
+    }
+    log.innerHTML = TALK.msgs.map(function (m) {
+      return '<div class="bub ' + (m.role === "user" ? "me" : "them") + '">' +
+        (m.pending ? '<span class="muted">escribiendo…</span>' : esc(m.text)) + '</div>';
+    }).join("");
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function newTalk() {
+    api("talk/new", { profile: targetProfile() }).then(function (r) {
+      if (r && r.ok) { TALK.sid = r.session_id; TALK.msgs = []; paintLog(); }
+      else if (el("tkHint")) el("tkHint").textContent = (r && r.detail) || "";
+    }).catch(function () {});
+  }
+
+  function sendTalk() {
+    var inp = el("tkInput");
+    if (!inp || !inp.value.trim() || TALK.busy || !TALK.ready) return;
+    if (!TALK.sid) { newTalk(); return; }
+    var text = inp.value;
+    inp.value = "";
+    TALK.busy = true;
+    TALK.msgs.push({ role: "user", text: text });
+    TALK.msgs.push({ role: "assistant", text: "", pending: true });
+    paintLog();
+    var hint = el("tkHint");
+    if (hint) hint.textContent = "Un turno real puede tardar: está usando sus herramientas.";
+    api("talk/send", { profile: targetProfile(), session_id: TALK.sid, text: text })
+      .then(function (r) {
+        TALK.busy = false;
+        TALK.msgs.pop();
+        if (r && r.ok) TALK.msgs.push({ role: "assistant", text: r.reply || "(sin respuesta)" });
+        else TALK.msgs.push({ role: "assistant", text: (r && r.detail) || "No pude enviarlo." });
+        if (hint) hint.textContent = "";
+        paintLog();
+      })
+      .catch(function () {
+        TALK.busy = false;
+        TALK.msgs.pop();
+        TALK.msgs.push({ role: "assistant", text: "Se cortó la conexión con el agente." });
+        paintLog();
+      });
+  }
+
+  function eTalk() {
+    loadTalk();
+    var s = el("tkSend"), i = el("tkInput"), n = el("tkNew");
+    if (s) s.onclick = sendTalk;
+    if (n) n.onclick = function () { newTalk(); };
+    if (i) i.onkeydown = function (e) {
+      // Enter sends, Shift+Enter makes a new line - the convention every chat uses.
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendTalk(); }
+    };
+  }
+
+  // ── WhatsApp, as a thing you MANAGE rather than a step you once did ──────────
+  // The old panel was a <details> inside the setup flow: three buttons, a QR box, and no
+  // statement anywhere of whether WhatsApp was actually connected. This is its own page,
+  // it opens with the state of every number, and every number is a row you can act on.
+  function secNumbers() {
+    return '' +
+      '<div id="waState" class="card pad"><span class="muted small">Comprobando…</span></div>' +
+      '<div id="waQrBox" class="qrbox" style="display:none"></div>' +
+      '<div id="waAdd" style="display:none">' +
+      '<div class="hr"></div><b class="small">Añadir otra línea</b>' +
+      '<p class="small muted">El <b>mismo</b> agente atiende la nueva línea: la misma ' +
+      'personalidad, las mismas instrucciones, la misma memoria. Sólo cambia el número por ' +
+      'el que le escriben.</p>' +
+      '<label class="field"><span class="lab">Cómo la vas a llamar ' +
+      '<span class="hint">ej: Ventas, Soporte, Citas</span></span>' +
+      '<input type="text" id="nmLabel" placeholder="Ventas"></label>' +
+      '<label class="field"><span class="lab">Quién puede escribirle ' +
+      '<span class="hint">números con código de país, separados por comas. Déjalo vacío si ' +
+      'es una línea de clientes abierta</span></span>' +
+      '<input type="text" id="nmUsers" placeholder="5215512345678"></label>' +
+      '<div class="row"><button class="btn btn-primary btn-sm" id="nmAdd">Añadir esta línea</button>' +
+      '<span class="pill" id="nmPill" style="display:none"></span></div></div>' +
+      chLine("waPill") +
+      escalationBlock();
+  }
+
+  function eNumbers() {
+    loadNumbers();
+    var add = el("nmAdd");
+    if (add) add.onclick = function () {
+      var label = (el("nmLabel") || {}).value || "";
+      if (!label.trim()) { toast("Ponle un nombre a la línea."); return; }
+      runTest(add, el("nmPill"), function () {
+        return api("numbers/add", { profile: targetProfile(), label: label,
+                                    allowed_users: (el("nmUsers") || {}).value || "" });
+      }, "Añadiendo…").then(function (r) {
+        if (r && r.ok) {
+          if (el("nmLabel")) el("nmLabel").value = "";
+          if (el("nmUsers")) el("nmUsers").value = "";
+          loadNumbers();
+        }
+      });
+    };
+    wireEscalation();
+  }
+
+  function waStateRow(n) {
+    var state = n.linked ? "ok" : (n.enabled ? "warn" : "off");
+    var what = n.linked ? "Conectado" : (n.enabled ? "Falta escanear el QR" : "Sin conectar");
+    var acts = '<button class="btn btn-soft btn-xs" data-wa="qr" data-slug="' + esc(n.slug) + '">' +
+      (n.linked ? "Volver a vincular" : "Ver código QR") + '</button>';
+    if (!n.main)
+      acts += ' <button class="btn btn-soft btn-xs" data-wa="main" data-slug="' + esc(n.slug) +
+        '" title="Desde esta línea saldrán los mensajes que el agente inicia por su cuenta">' +
+        'Hacer principal</button>';
+    if (!n.builtin)
+      acts += ' <button class="btn btn-soft btn-xs" data-wa="del" data-slug="' + esc(n.slug) +
+        '" style="color:var(--err)">Quitar</button>';
+    return '<li>' + connDot(state) +
+      '<b>' + esc(n.label) + '</b>' +
+      (n.main ? ' <span class="badge">principal</span>' : '') +
+      '<span class="muted small cdet">' + esc(what) +
+      ' · <span class="mono">' + esc(n.slug) + '</span></span>' +
+      '<div class="row" style="margin-top:6px">' + acts + '</div></li>';
+  }
+
+  function paintNumbers(snap) {
+    var box = el("waState");
+    if (!box) return;
+    var wa = (snap || {}).whatsapp;
+    if (!wa) { box.innerHTML = '<span class="muted small">No pude comprobarlo.</span>'; return; }
+    var head = '<div class="row" style="justify-content:space-between;align-items:flex-start">' +
+      '<div><b>' + esc(wa.detail || "") + '</b>' +
+      (wa.receipts && wa.receipts !== "applied"
+        ? '<div class="small" style="color:var(--warn)">No puedo confirmar entregas todavía ' +
+          '(' + esc(wa.receipts) + '). El agente no dirá que un mensaje llegó si no puede ' +
+          'probarlo.</div>'
+        : '') + '</div></div>';
+    if (!wa.count || !(wa.numbers || []).length) {
+      box.innerHTML = head;
+    } else {
+      box.innerHTML = head + '<ul class="connlist walist">' +
+        wa.numbers.map(waStateRow).join("") + '</ul>' +
+        (wa.can_add ? "" : '<div class="small muted">Has llegado al máximo de ' +
+          esc(wa.max) + ' líneas por agente. Cada una mantiene su propia sesión de WhatsApp ' +
+          'abierta, y en un equipo normal más de eso empieza a perder conexión.</div>');
+    }
+    var addBox = el("waAdd");
+    if (addBox) addBox.style.display = wa.can_add ? "" : "none";
+    Array.prototype.forEach.call(box.querySelectorAll("[data-wa]"), function (b) {
+      b.onclick = function () { waAction(b.getAttribute("data-wa"), b.getAttribute("data-slug"), b); };
+    });
+  }
+
+  function loadNumbers() {
+    api("connections/status", { profile: targetProfile(), fast: true })
+      .then(paintNumbers).catch(function () { paintNumbers(null); });
+  }
+
+  function waAction(act, slug, btn) {
+    var prof = targetProfile();
+    if (act === "qr") { showQr(prof, slug); return; }
+    if (act === "main") {
+      runTest(btn, el("waPill"), function () {
+        return api("numbers/main", { profile: prof, slug: slug });
+      }, "Guardando…").then(loadNumbers);
+      return;
+    }
+    if (act === "del") {
+      if (!confirm("¿Quitar esta línea del agente?\n\nEl teléfono queda vinculado: si la " +
+                   "vuelves a añadir no hace falta escanear otra vez.")) return;
+      runTest(btn, el("waPill"), function () {
+        return api("numbers/remove", { profile: prof, slug: slug });
+      }, "Quitando…").then(loadNumbers);
+    }
+  }
+
+  // The QR of ONE line. Naming the line matters: with several numbers, "the newest log"
+  // is whichever bridge last spoke, and pairing the wrong phone to the wrong line is a
+  // mistake nobody notices until a customer writes to the wrong business.
+  function showQr(prof, slug) {
+    var box = el("waQrBox");
+    if (!box) return;
+    box.style.display = "";
+    box.innerHTML = '<span class="muted small">Pidiendo el código…</span>';
+    var tries = 0;
+    (function poll() {
+      api("channel/whatsapp-qr", { profile: prof, number: slug }).then(function (r) {
+        if (r && r.connected) {
+          box.innerHTML = '<div class="callout">✅ Esta línea ya está conectada.</div>';
+          loadNumbers(); return;
+        }
+        if (r && r.qr) {
+          box.innerHTML = '<div class="small muted">En tu teléfono: WhatsApp → Ajustes → ' +
+            '<b>Dispositivos vinculados</b> → Vincular un dispositivo. Escanea esto:</div>' +
+            '<pre class="qr">' + esc(r.qr) + '</pre>' +
+            '<div class="small muted">El código caduca; si no te da tiempo, vuelve a pulsar ' +
+            '«Ver código QR».</div>';
+          if (++tries < 40) setTimeout(poll, 3000);   // keep watching for the connect
+          return;
+        }
+        box.innerHTML = '<div class="small muted">' + esc((r && r.detail) || "Esperando…") + '</div>';
+        if (++tries < 20) setTimeout(poll, 2500);
+      }).catch(function () {
+        box.innerHTML = '<div class="small muted">No pude leer el código.</div>';
+      });
+    })();
+  }
+
+  // When should a WhatsApp conversation reach the OWNER? Extracted so the setup step and
+  // the console's WhatsApp page show the same thing: two copies of a form that writes the
+  // same preferences is two forms that will disagree after the next edit.
+  function escalationBlock() {
+    return '' +
       '<div class="hr"></div><b class="small">🔔 Avísame cuando un cliente necesite a una persona</b>' +
       '<p class="small muted">Tu agente atiende WhatsApp solo. Cuando pase algo que te toca a ' +
       'ti, te escribe <b>por Telegram</b>. Tú eliges cuándo.</p>' +
@@ -1548,7 +1880,142 @@
       '<option value="media">Media — puede esperar un poco</option></select></label>' +
       '<div class="row"><button class="btn btn-soft btn-sm" id="escAdd">Añadir motivo</button></div>' +
       '<div class="row" style="margin-top:10px"><button class="btn btn-primary btn-sm" id="escSave">Guardar avisos</button></div>' +
-      '</div>' + chLine("escPill") + '</details>';
+      '</div>' +                     // closes #escBody, opened above
+      chLine("escPill");
+  }
+
+
+  // Extracted from eChannels so the setup step and the console's WhatsApp page wire the
+  // SAME form. Two copies of a form that writes one preferences file is two copies that
+  // disagree the first time either is edited - and this one decides whether a client is
+  // told a person was alerted, so disagreeing is expensive.
+  //
+  // Every el() call is guarded because both callers render only part of this: the panel
+  // that has no #escList simply does not load the catalogue.
+  function wireEscalation() {
+    var prof = targetProfile();
+  // Server-owned state, deliberately: the escalation script reads the same file, so the
+  // browser must not keep its own idea of what is switched on.
+  var escPill = el("escPill");
+  var ESC = { catalog: [], enabled: false, reasons: [], custom: [], ready: true, detail: "" };
+  var escSeq = 0;
+
+  function escRow(item, isCustom) {
+    var on = ESC.reasons.indexOf(item.key) >= 0;
+    return '<label class="row" style="gap:8px;align-items:flex-start;padding:6px 0;' +
+      'border-bottom:1px solid var(--line-2)">' +
+      '<input type="checkbox" data-esc="' + esc(item.key) + '"' + (on ? " checked" : "") + '>' +
+      '<span class="grow"><b class="small">' + esc(item.label) + '</b>' +
+      (item.priority === "alta" ? ' <span class="chip">urgente</span>' : "") +
+      (isCustom ? ' <span class="chip">tuyo</span>' : "") +
+      '<br><span class="muted small">' + esc(item.description || "") + '</span></span>' +
+      (isCustom ? '<button class="btn btn-ghost btn-sm" data-escdel="' + esc(item.key) +
+        '" title="Quitar">✕</button>' : "") + '</label>';
+  }
+
+  function paintEsc() {
+    var body = el("escBody"), list = el("escList"), warn = el("escWarn");
+    if (el("escOn")) el("escOn").checked = !!ESC.enabled;
+    if (body) body.style.display = ESC.enabled ? "block" : "none";
+    if (warn) {
+      warn.innerHTML = ESC.ready ? "" :
+        '<div class="callout small">⚠️ ' + esc(ESC.detail || "") + '</div>';
+    }
+    if (!list) return;
+    list.innerHTML = ESC.catalog.map(function (c) { return escRow(c, false); })
+      .concat(ESC.custom.map(function (c) { return escRow(c, true); })).join("");
+    Array.prototype.forEach.call(list.querySelectorAll("[data-esc]"), function (cb) {
+      cb.onchange = function () {
+        var k = cb.getAttribute("data-esc"), i = ESC.reasons.indexOf(k);
+        if (cb.checked && i < 0) ESC.reasons.push(k);
+        if (!cb.checked && i >= 0) ESC.reasons.splice(i, 1);
+      };
+    });
+    Array.prototype.forEach.call(list.querySelectorAll("[data-escdel]"), function (b) {
+      b.onclick = function (e2) {
+        e2.preventDefault();
+        var k = b.getAttribute("data-escdel");
+        ESC.custom = ESC.custom.filter(function (c) { return c.key !== k; });
+        ESC.reasons = ESC.reasons.filter(function (r) { return r !== k; });
+        paintEsc();
+      };
+    });
+  }
+
+  function loadEsc() {
+    api("channel/escalation-get", { profile: prof }).then(function (r) {
+      if (!r || !r.ok) return;
+      ESC.catalog = r.catalog || [];
+      ESC.custom = (r.prefs && r.prefs.custom) || [];
+      ESC.reasons = (r.prefs && r.prefs.reasons) || [];
+      ESC.enabled = !!(r.prefs && r.prefs.enabled);
+      ESC.ready = !!r.telegram_ready;
+      ESC.detail = r.telegram_detail || "";
+      paintEsc();
+    });
+  }
+
+  if (el("escOn")) el("escOn").onchange = function () {
+    ESC.enabled = this.checked;
+    paintEsc();
+  };
+
+  if (el("escAdd")) el("escAdd").onclick = function () {
+    var lab = (el("escNewLabel") || {}).value || "";
+    var desc = (el("escNewDesc") || {}).value || "";
+    var pri = (el("escNewPri") || {}).value || "media";
+    if (!lab.trim() || !desc.trim()) {
+      toast("Ponle un nombre y describe cuándo debe avisarte.");
+      return;
+    }
+    // A provisional key so the checkbox has something to hang on; the server assigns
+    // the real one when it saves, and loadEsc() replaces this with it.
+    var key = "nuevo_" + (++escSeq);
+    ESC.custom.push({ key: key, label: lab.trim(), description: desc.trim(), priority: pri });
+    ESC.reasons.push(key);
+    el("escNewLabel").value = ""; el("escNewDesc").value = "";
+    paintEsc();
+  };
+
+  if (el("escSave")) el("escSave").onclick = function () {
+    escPill.style.display = "inline-flex";
+    var custom = ESC.custom.map(function (c) {
+      return { key: (String(c.key).indexOf("nuevo_") === 0 ? "" : c.key),
+               label: c.label, description: c.description, priority: c.priority,
+               selected: ESC.reasons.indexOf(c.key) >= 0 };
+    });
+    var builtin = ESC.reasons.filter(function (k) {
+      return ESC.catalog.some(function (c) { return c.key === k; });
+    });
+    runTest(this, escPill, function () {
+      return api("channel/escalation-save",
+                 { profile: targetProfile(), enabled: ESC.enabled, reasons: builtin, custom: custom });
+    }, "Guardando…").then(function () { loadEsc(); });
+  };
+
+  if (el("escList")) loadEsc();
+  }
+
+  // WhatsApp — connect, show the QR HERE, then lock it to the owner's number
+  function secWhatsApp() {
+    return '' +
+      '<details><summary>💬 WhatsApp</summary>' +
+      '<p class="small muted">1) Pulsa «Conectar». 2) Aparecerá aquí un código QR. ' +
+      '3) En tu teléfono: WhatsApp → Ajustes → <b>Dispositivos vinculados</b> → Vincular. ' +
+      'No necesitas terminal.</p>' +
+      '<div class="row"><button class="btn btn-primary btn-sm" id="waPair">Conectar WhatsApp</button>' +
+      '<button class="btn btn-soft btn-sm" id="waQr">Ver código QR</button>' +
+      '<button class="btn btn-soft btn-sm" id="waCloud">Usar WhatsApp Business (Cloud)</button></div>' +
+      '<div id="waQrBox" style="display:none;margin-top:10px"></div>' +
+      '<div class="hr"></div><b class="small">Quién puede darle órdenes (obligatorio)</b>' +
+      '<label class="field" style="margin-top:8px"><span class="lab">Tu número con código de país ' +
+      '<span class="hint">ej: 5215512345678</span></span>' +
+      '<input type="text" id="waUsers" placeholder="5215512345678" value="' + esc(S.wa_users || "") + '"></label>' +
+      '<div class="row"><button class="btn btn-soft btn-sm" id="waSave">Guardar y bloquear a mi número</button></div>' +
+      chLine("waPill") +
+
+      escalationBlock() +
+      '</details>';
   }
 
   // Google Workspace: Gmail (native email platform) + Google Chat
@@ -2351,106 +2818,7 @@
     };
     if (el("polPresets")) loadPol();
 
-    // Server-owned state, deliberately: the escalation script reads the same file, so the
-    // browser must not keep its own idea of what is switched on.
-    var escPill = el("escPill");
-    var ESC = { catalog: [], enabled: false, reasons: [], custom: [], ready: true, detail: "" };
-    var escSeq = 0;
-
-    function escRow(item, isCustom) {
-      var on = ESC.reasons.indexOf(item.key) >= 0;
-      return '<label class="row" style="gap:8px;align-items:flex-start;padding:6px 0;' +
-        'border-bottom:1px solid var(--line-2)">' +
-        '<input type="checkbox" data-esc="' + esc(item.key) + '"' + (on ? " checked" : "") + '>' +
-        '<span class="grow"><b class="small">' + esc(item.label) + '</b>' +
-        (item.priority === "alta" ? ' <span class="chip">urgente</span>' : "") +
-        (isCustom ? ' <span class="chip">tuyo</span>' : "") +
-        '<br><span class="muted small">' + esc(item.description || "") + '</span></span>' +
-        (isCustom ? '<button class="btn btn-ghost btn-sm" data-escdel="' + esc(item.key) +
-          '" title="Quitar">✕</button>' : "") + '</label>';
-    }
-
-    function paintEsc() {
-      var body = el("escBody"), list = el("escList"), warn = el("escWarn");
-      if (el("escOn")) el("escOn").checked = !!ESC.enabled;
-      if (body) body.style.display = ESC.enabled ? "block" : "none";
-      if (warn) {
-        warn.innerHTML = ESC.ready ? "" :
-          '<div class="callout small">⚠️ ' + esc(ESC.detail || "") + '</div>';
-      }
-      if (!list) return;
-      list.innerHTML = ESC.catalog.map(function (c) { return escRow(c, false); })
-        .concat(ESC.custom.map(function (c) { return escRow(c, true); })).join("");
-      Array.prototype.forEach.call(list.querySelectorAll("[data-esc]"), function (cb) {
-        cb.onchange = function () {
-          var k = cb.getAttribute("data-esc"), i = ESC.reasons.indexOf(k);
-          if (cb.checked && i < 0) ESC.reasons.push(k);
-          if (!cb.checked && i >= 0) ESC.reasons.splice(i, 1);
-        };
-      });
-      Array.prototype.forEach.call(list.querySelectorAll("[data-escdel]"), function (b) {
-        b.onclick = function (e2) {
-          e2.preventDefault();
-          var k = b.getAttribute("data-escdel");
-          ESC.custom = ESC.custom.filter(function (c) { return c.key !== k; });
-          ESC.reasons = ESC.reasons.filter(function (r) { return r !== k; });
-          paintEsc();
-        };
-      });
-    }
-
-    function loadEsc() {
-      api("channel/escalation-get", { profile: prof }).then(function (r) {
-        if (!r || !r.ok) return;
-        ESC.catalog = r.catalog || [];
-        ESC.custom = (r.prefs && r.prefs.custom) || [];
-        ESC.reasons = (r.prefs && r.prefs.reasons) || [];
-        ESC.enabled = !!(r.prefs && r.prefs.enabled);
-        ESC.ready = !!r.telegram_ready;
-        ESC.detail = r.telegram_detail || "";
-        paintEsc();
-      });
-    }
-
-    if (el("escOn")) el("escOn").onchange = function () {
-      ESC.enabled = this.checked;
-      paintEsc();
-    };
-
-    if (el("escAdd")) el("escAdd").onclick = function () {
-      var lab = (el("escNewLabel") || {}).value || "";
-      var desc = (el("escNewDesc") || {}).value || "";
-      var pri = (el("escNewPri") || {}).value || "media";
-      if (!lab.trim() || !desc.trim()) {
-        toast("Ponle un nombre y describe cuándo debe avisarte.");
-        return;
-      }
-      // A provisional key so the checkbox has something to hang on; the server assigns
-      // the real one when it saves, and loadEsc() replaces this with it.
-      var key = "nuevo_" + (++escSeq);
-      ESC.custom.push({ key: key, label: lab.trim(), description: desc.trim(), priority: pri });
-      ESC.reasons.push(key);
-      el("escNewLabel").value = ""; el("escNewDesc").value = "";
-      paintEsc();
-    };
-
-    if (el("escSave")) el("escSave").onclick = function () {
-      escPill.style.display = "inline-flex";
-      var custom = ESC.custom.map(function (c) {
-        return { key: (String(c.key).indexOf("nuevo_") === 0 ? "" : c.key),
-                 label: c.label, description: c.description, priority: c.priority,
-                 selected: ESC.reasons.indexOf(c.key) >= 0 };
-      });
-      var builtin = ESC.reasons.filter(function (k) {
-        return ESC.catalog.some(function (c) { return c.key === k; });
-      });
-      runTest(this, escPill, function () {
-        return api("channel/escalation-save",
-                   { profile: prof, enabled: ESC.enabled, reasons: builtin, custom: custom });
-      }, "Guardando…").then(function () { loadEsc(); });
-    };
-
-    if (el("escList")) loadEsc();
+    wireEscalation();
 
     // Google Workspace (Gmail platform + Google Chat)
     var gwPill = el("gwPill"), gp = el("gwProv");
@@ -3014,7 +3382,20 @@
       if (!box) return;
       if (!c || !c.ok) { box.innerHTML = '<span class="muted small">No pude leer el estado.</span>'; return; }
       // Name the brain this install actually runs, everywhere the console mentions it.
-      paintSosLabels(c.engine === "codex" ? "Codex" : "Claude Code");
+      // The server decided which brain this is and what to call it (rescue.engine_status,
+      // which asks the RUNNING bridge). Mapping the string here as well was how the page
+      // ended up saying "Claude Code" on a Codex install: two places deciding the same
+      // thing, and only one of them had the evidence.
+      var est = c.engine_status || {};
+      paintSosLabels(est.label || (c.engine === "codex" ? "Codex" : "Claude Code"));
+      // A brain that is configured but whose CLI is missing is the one failure the console
+      // cannot talk its way out of - it is the thing it would run. Say so up front rather
+      // than letting the first question fail with "not installed".
+      var warnBox = el("sosBrainWarn");
+      if (warnBox) {
+        warnBox.innerHTML = (est.available === false)
+          ? '<div class="callout warn small">' + esc(est.detail || "") + '</div>' : "";
+      }
       var b = (c.bridges || []).map(function (x) {
         return '<span class="pill ' + (x.up ? "ok" : "err") + '" style="margin:0 6px 0 0">' +
           (x.up ? "✓" : "✕") + " puente :" + esc(x.port) + '</span>';

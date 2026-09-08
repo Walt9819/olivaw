@@ -30,17 +30,18 @@ if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from wizard import updates as updates_mod
     from wizard import (agents_registry, browser_setup, channels, checks, config_writer,
-                        context_policy, hermes_ctl, image_setup, numbers, obsidian,
-                        proposals, providers, rescue, selfcare, telegram_health,
-                        telegram_setup, usecases)
+                        connections, context_policy, hermes_ctl, image_setup, numbers,
+                        obsidian, proposals, providers, rescue, selfcare, talk,
+                        telegram_health, telegram_setup, usecases)
     from wizard import workspace as wsdir   # aliased: `workspace` is a local
                                             # variable name elsewhere in this file
     from wizard.procutil import http_json, which
 else:
     from . import updates as updates_mod
     from . import (agents_registry, browser_setup, channels, checks, config_writer,
-                   context_policy, hermes_ctl, image_setup, numbers, obsidian, proposals,
-                   providers, rescue, selfcare, telegram_health, telegram_setup, usecases)
+                   connections, context_policy, hermes_ctl, image_setup, numbers,
+                   obsidian, proposals, providers, rescue, selfcare, talk,
+                   telegram_health, telegram_setup, usecases)
     from . import workspace as wsdir        # aliased: see above
     from .procutil import http_json, which
 
@@ -95,6 +96,19 @@ def _target_profile(body, allow_new=False):
     """
     return agents_registry.resolve_profile(body.get("profile"), INSTALL_DIR,
                                            allow_new=allow_new)
+
+
+def _port_for_profile(profile):
+    """The brain-bridge port of one agent, so a status call can report its bridge too."""
+    if not profile or profile == "default":
+        return agents_registry.BASE_PORT
+    for a in agents_registry.list_agents(INSTALL_DIR):
+        if (a.get("profile") or a.get("slug")) == profile:
+            try:
+                return int(a.get("port"))
+            except (TypeError, ValueError):
+                return None
+    return None
 
 
 def _queue_gateway_reload(profile):
@@ -219,14 +233,17 @@ def agents_snapshot():
     return {"default": default, "extra": extra}
 
 
-def _configured_engine():
-    """Which brain this machine is set up for (the installer wrote it, or a previous run of
-    this wizard did). Absent means Claude Code, the default."""
+def _configured_engine(profile=None, port=None):
+    """Which brain this machine is set up for.
+
+    Delegates to rescue.configured_engine so the wizard and the help console can never
+    disagree about the brain. This used to be a second, worse copy: it read one key in
+    updater.config.json and answered "claude" for everything else, which is every install
+    written before that key existed and every extra agent (whose engine lives in
+    agents.json). See rescue.configured_engine for what it consults now.
+    """
     try:
-        with open(os.path.join(INSTALL_DIR, "updater.config.json"), encoding="utf-8") as fh:
-            cfg = json.load(fh) or {}
-        val = ((cfg.get("env") or {}).get("OLIVAW_ENGINE") or "").strip().lower()
-        return val if val in ("claude", "codex") else "claude"
+        return rescue.configured_engine(INSTALL_DIR, profile=profile, port=port)
     except Exception:  # noqa: BLE001
         return "claude"
 
@@ -662,6 +679,43 @@ class Handler(BaseHTTPRequestHandler):
         # owner's screen, so it is a button she presses, never something we decide.
         if route == "images/status":
             return image_setup.status(_target_profile(body), install_dir=INSTALL_DIR)
+
+        # How this agent is reachable, in one call. `fast` answers from local state only so
+        # a panel paints immediately; the same route without it measures Telegram against
+        # Telegram. See wizard/connections.py.
+        if route == "connections/status":
+            prof = _target_profile(body)
+            return connections.snapshot(prof, which("hermes"), INSTALL_DIR,
+                                        port=_port_for_profile(prof),
+                                        fast=bool(body.get("fast")))
+
+        # Talking to the agent from this screen, through Hermes' own api_server platform -
+        # so it is the SAME agent, with its persona, memory and skills, and not the raw
+        # brain behind the bridge. wizard/talk.py explains why that distinction matters.
+        if route == "talk/status":
+            prof = _target_profile(body)
+            return talk.status(prof, which("hermes"), INSTALL_DIR)
+        if route == "talk/enable":
+            prof = _target_profile(body)
+            res = talk.enable(prof, which("hermes"), INSTALL_DIR)
+            if res.get("ok"):
+                res["restart"] = _queue_gateway_reload(prof)
+            return res
+        if route == "talk/disable":
+            return talk.disable(_target_profile(body), which("hermes"))
+        if route == "talk/sessions":
+            return talk.sessions(_target_profile(body), which("hermes"),
+                                 limit=int(body.get("limit") or 20))
+        if route == "talk/new":
+            return talk.create(_target_profile(body), which("hermes"),
+                               title=body.get("title", ""))
+        if route == "talk/history":
+            return talk.history(_target_profile(body), which("hermes"),
+                                session_id=body.get("session_id", ""))
+        if route == "talk/send":
+            return talk.send(_target_profile(body), which("hermes"),
+                             session_id=body.get("session_id", ""),
+                             text=body.get("text", ""))
 
         # Several WhatsApp numbers on ONE agent - same persona, same instructions, several
         # business lines. See wizard/numbers.py for why this is a plugin-registered

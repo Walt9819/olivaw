@@ -29,6 +29,13 @@ function ok(name, cond, extra) {
   if (cond) { PASS++; console.log("  ok   " + name); }
   else { FAILED.push(name); console.log("  FAIL " + name + (extra ? "\n       " + String(extra).slice(0, 400) : "")); }
 }
+// The html of an element that may not have been rendered. Returns "" instead of throwing:
+// a panel that stopped rendering something should fail the assertion about it and let the
+// rest of the suite run, rather than crashing and reporting nothing at all.
+function htmlOf(id) {
+  const n = getEl(id);
+  return (n && n._html) || "";
+}
 function idsIn(html) {
   return [...String(html).matchAll(/id="([A-Za-z0-9_]+)"/g)].map((m) => m[1]);
 }
@@ -152,6 +159,40 @@ const CANNED = {
   "proposals/list": { ok: true, items: [], learning: {} },
   "channel/escalation-get": { ok: true, catalog: [{ key: "k1", label: "Uno", description: "d", priority: "alta" }],
     prefs: { enabled: false, reasons: [], custom: [] }, telegram_ready: true, telegram_detail: "" },
+  // How the agent is reachable, in the shape wizard/connections.py returns.
+  "connections/status": {
+    ok: true, profile: "default", fast: false,
+    gateway: { running: true, detail: "corriendo" },
+    brain: { engine: "codex", label: "Codex", source: "bridge", available: true,
+             detail: "Codex es el cerebro de este agente" },
+    telegram: { ok: true, state: "connected", bot: "mi_bot", owner_locked: true,
+                detail: "Telegram conectado como @mi_bot" },
+    whatsapp: {
+      enabled: true, count: 2, linked_count: 1, max: 6, can_add: true, main: "principal",
+      receipts: "applied", detail: "1 de 2 conectados. Falta vincular: Ventas.",
+      numbers: [
+        { slug: "principal", label: "Numero principal", platform: "whatsapp", port: 3000,
+          builtin: true, main: true, linked: true, enabled: true },
+        { slug: "ventas", label: "Ventas", platform: "whatsapp_ventas", port: 3001,
+          builtin: false, main: false, linked: false, enabled: true },
+      ],
+    },
+    talk: { ok: true, enabled: true, ready: true, port: 8642,
+            detail: "Puedes escribirle desde aqui." },
+    channels: [
+      { icon: "TG", label: "Telegram", state: "ok", detail: "Conectado como @mi_bot" },
+      { icon: "WA", label: "WhatsApp", state: "warn", detail: "1 de 2 conectados" },
+      { icon: "UI", label: "Desde esta pantalla", state: "ok", detail: "Listo" },
+      { icon: "BR", label: "Codex", state: "ok", detail: "Codex es el cerebro" },
+    ],
+  },
+  "talk/status": { ok: true, enabled: true, ready: true, port: 8642,
+                   detail: "Puedes escribirle desde aqui." },
+  "talk/new": { ok: true, session_id: "sess-1" },
+  "talk/send": { ok: true, reply: "Hola, soy tu agente.", session_id: "sess-1" },
+  "numbers/add": { ok: true, number: { slug: "soporte", label: "Soporte", port: 3002 } },
+  "channel/whatsapp-qr": { ok: true, connected: false,
+                           qr: "████\n████\n████\n████\n████\n████\n████\n████\n████", detail: "escanea" },
   "provider/check": { ok: true, path: "C:/claude.exe", detail: "listo" },
   check: { ok: true, path: "C:/hermes.exe", detail: "listo" },
 };
@@ -173,6 +214,7 @@ const HOOK = "\n  globalThis.__ol = { CONSOLE: CONSOLE, S: S, META: META, STEPS:
   " hasAnyAgent: hasAnyAgent, unfold: unfold, secPolicy: secPolicy, rChannels: rChannels," +
   " targetProfile: targetProfile, render: render, enterSetup: enterSetup," +
   " SOS: SOS, openSos: openSos, sendTurn: sendTurn, paintMsgs: paintMsgs," +
+  " showQr: showQr, TALK: TALK, sendTalk: sendTalk, loadConn: loadConn," +
   " get LIVE(){ return LIVE } };\n";
 const hooked = src.slice(0, cut) + HOOK + src.slice(cut);
 
@@ -261,7 +303,11 @@ for (const id of AGENT_SECS) {
      !wrong.length, wrong.map((c) => c.route + " -> " + JSON.stringify(c.body.profile)).join(", "));
 }
 CALLS.length = 0;
-OL.goSec("canales", "daneel");
+// "whatsapp" rather than "canales": the assertion belongs on a panel that actually loads
+// state for the selected agent, and the WhatsApp panel is now the one that does. (Before
+// the redesign this lived in "canales", which carried the WhatsApp <details>; that section
+// is now mail/Slack/webhooks, which render from local state and fetch nothing.)
+OL.goSec("whatsapp", "daneel");
 ok("selecting an agent actually reaches the server for that agent",
    CALLS.some((c) => c.body.profile === "daneel"), JSON.stringify(CALLS.map((c) => c.route)));
 
@@ -443,6 +489,127 @@ ok("and it is a machine-wide action, not one agent's",
 // browser. finishLive() nulls LIVE (the only copy of the answer on screen) and then waits
 // for rescue/conversation to hand back the persisted transcript. Any answer that call fails
 // to give back takes the conversation with it.
+// -- the three things the owner asked for -------------------------------------
+console.log("\n=== the agent's page says how it is reachable, without being asked ===");
+CALLS.length = 0;
+OL.goSec("home", "default");
+await new Promise((r) => setTimeout(r, 0));
+{
+  const home = getEl("panel")._html;
+  ok("there is a 'how they talk to it' card", home.includes('id="connCard"'), home.slice(0, 200));
+  const routes = CALLS.map((c) => c.route);
+  ok("it asks the server for the connection state", routes.includes("connections/status"));
+  // Two passes: local state paints at once, then Telegram is asked for real. A single slow
+  // call would leave the card saying "Comprobando..." for as long as the network takes.
+  const conn = CALLS.filter((c) => c.route === "connections/status");
+  ok("first pass is the fast one, so the card paints immediately",
+     conn.length >= 1 && conn[0].body.fast === true, JSON.stringify(conn.map((c) => c.body)));
+  ok("and a second pass measures Telegram for real",
+     conn.length >= 2 && !conn[1].body.fast, JSON.stringify(conn.map((c) => c.body)));
+  const card = htmlOf("connCard");
+  ok("every channel is listed with a state dot",
+     (card.match(/class="cdot/g) || []).length === 4, card.slice(0, 300));
+  ok("Telegram's real state is shown, not just a button", card.includes("@mi_bot"), card);
+  ok("WhatsApp says how many numbers are connected", card.includes("1 de 2"), card);
+  ok("the brain is named from what the server detected, not hardcoded",
+     card.includes("Codex") && !card.includes("Claude"), card);
+  ok("each row links to the page that fixes it", card.includes('data-goto="whatsapp"'), card);
+}
+
+console.log("\n=== WhatsApp is a page you manage, with every number's state on it ===");
+CALLS.length = 0;
+OL.goSec("whatsapp", "daneel");
+await new Promise((r) => setTimeout(r, 0));
+{
+  const wa = getEl("panel")._html;
+  ok("the panel exists for the selected agent", wa.includes('id="waState"'));
+  ok("it asks only about THAT agent",
+     CALLS.every((c) => !Object.prototype.hasOwnProperty.call(c.body, "profile") ||
+                        c.body.profile === "daneel"),
+     JSON.stringify(CALLS.map((c) => [c.route, c.body.profile])));
+  const st = htmlOf("waState");
+  ok("both numbers are listed",
+     st.includes("Numero principal") && st.includes("Ventas"), st.slice(0, 400));
+  ok("the connected one and the pending one look different",
+     st.includes("dot-ok") && st.includes("dot-warn"), st.slice(0, 400));
+  ok("the main line is marked", /principal<\/span>/.test(st), st.slice(0, 400));
+  ok("each number offers its own QR",
+     (st.match(/data-wa="qr"/g) || []).length === 2, st.slice(0, 400));
+  ok("the built-in number cannot be removed, the extra one can",
+     (st.match(/data-wa="del"/g) || []).length === 1, st.slice(0, 400));
+  ok("and there is a way to add another line", wa.includes('id="nmAdd"'));
+  ok("adding one explains it is the same agent",
+     /misma personalidad|mismo<\/b> agente/.test(wa), wa.slice(0, 900));
+}
+
+console.log("\n=== the QR is asked for BY NUMBER, not 'whichever log is newest' ===");
+CALLS.length = 0;
+{
+  const btn = [...htmlOf("waState").matchAll(/data-wa="qr" data-slug="([a-z]+)"/g)]
+    .map((m) => m[1]);
+  ok("the buttons carry the number they belong to",
+     btn.includes("principal") && btn.includes("ventas"), JSON.stringify(btn));
+  OL.showQr("daneel", "ventas");
+  const qrCall = CALLS.find((c) => c.route === "channel/whatsapp-qr");
+  ok("asking for a QR names the line", qrCall && qrCall.body.number === "ventas",
+     JSON.stringify(qrCall && qrCall.body));
+  ok("and the agent too", qrCall && qrCall.body.profile === "daneel",
+     JSON.stringify(qrCall && qrCall.body));
+}
+
+console.log("\n=== talking to the agent from the screen ===");
+CALLS.length = 0;
+OL.goSec("hablar", "default");
+await new Promise((r) => setTimeout(r, 0));
+{
+  const tk = getEl("panel")._html;
+  ok("there is a chat box", tk.includes('id="tkInput"') && tk.includes('id="tkSend"'));
+  ok("it asks whether it is available", CALLS.some((c) => c.route === "talk/status"));
+  ok("being ready opens a conversation", CALLS.some((c) => c.route === "talk/new"));
+  const st = htmlOf("tkState");
+  ok("it says it listens only on this machine", st.includes("127.0.0.1"), st);
+  OL.TALK.sid = "sess-1";
+  OL.TALK.ready = true;
+  getEl("tkInput").value = "hola";
+  CALLS.length = 0;
+  OL.sendTalk();
+  const sent = CALLS.find((c) => c.route === "talk/send");
+  ok("sending reaches the agent, with the session",
+     sent && sent.body.session_id === "sess-1", JSON.stringify(sent && sent.body));
+  ok("and the message is what was typed", sent && sent.body.text === "hola");
+  ok("the input is cleared so the message is not sent twice", getEl("tkInput").value === "");
+  await new Promise((r) => setTimeout(r, 0));
+  const log = htmlOf("tkLog");
+  ok("the question stays on screen", log.includes("hola"), log);
+  ok("and the answer arrives next to it", log.includes("Hola, soy tu agente"), log);
+}
+
+console.log("\n=== the new panels have the styles they render against ===");
+{
+  // A class the CSS does not define renders as an unstyled div - which for a status dot
+  // means an invisible one, i.e. exactly the "I cannot see whether it is connected" this
+  // work exists to fix. So the classes the panels emit are checked against the stylesheet.
+  for (const cls of ["cdot", "dot-ok", "dot-warn", "dot-off", "dot-wait", "connlist",
+                     "walist", "cdet", "clink", "qrbox", "chatlog", "bub", "btn-xs"]) {
+    ok("." + cls + " is defined", CSS.includes("." + cls), "missing from app.css");
+  }
+  ok("the waiting dot animates, so 'checking' cannot be mistaken for 'off'",
+     /\.dot-wait\{[^}]*animation/.test(CSS),
+     CSS.slice(CSS.indexOf(".dot-wait"), CSS.indexOf(".dot-wait") + 120));
+  // Block-drawing QR: too much line-height and the squares stop touching, and a phone
+  // cannot read the code.
+  ok("the QR keeps its squares touching", /\.qr\{line-height:1/.test(CSS));
+  ok("and shrinks on a narrow screen rather than overflowing",
+     /@media\(max-width:520px\)\{ \.qr\{font-size:7px\} \}/.test(CSS));
+  ok("the chat log scrolls instead of pushing the page down",
+     /\.chatlog\{[^}]*overflow-y:auto/.test(CSS));
+  ok("the two sides of the conversation are told apart",
+     CSS.includes(".bub.me") && CSS.includes(".bub.them"));
+  // Every colour here comes from the existing tokens, so dark mode needs no second set.
+  ok("the states use the shared colour tokens, not hardcoded hex",
+     !/\.dot-(ok|warn)\{[^}]*#[0-9a-f]{3,6}/i.test(CSS), "hardcoded colour in a state dot");
+}
+
 console.log("\n=== the SOS console does not lose what it just showed you ===");
 let SOS_TURNS = [];
 let SOS_CONV_OK = true;

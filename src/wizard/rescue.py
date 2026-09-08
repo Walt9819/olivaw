@@ -45,31 +45,140 @@ except Exception:  # noqa: BLE001 - the console must still open on an install wi
     codex_engine = None
 
 
-def configured_engine(install_dir=None):
-    """Which brain this installation thinks with.
+ENGINES = ("claude", "codex")
 
-    Read from updater.config.json rather than this process's environment: the wizard is launched
-    from a shortcut and inherits none of the bridge's env, so the console would otherwise offer
-    Claude on a Codex install.
+
+def _engine_available(engine):
+    """Is this brain's CLI actually on the machine?"""
+    if engine == "codex":
+        return bool(codex_engine is not None and codex_engine.available())
+    return bool(which("claude"))
+
+
+def live_engine(install_dir=None, port=None):
+    """What the RUNNING bridge says it is — the one answer that cannot be out of date.
+
+    Every bridge reports its engine on /status and /health. Asking it beats reading config
+    because config records an intention while the bridge records a fact, and the two diverge
+    during a brain switch, on an install whose config predates the key, and on any agent
+    whose engine lives somewhere this function was never told to look.
     """
+    ports = [port] if port else _ports()
+    for p in ports:
+        try:
+            ok, data, _ = http_json("http://127.0.0.1:%d/status" % int(p), timeout=3)
+            if not ok or not isinstance(data, dict):
+                ok, data, _ = http_json("http://127.0.0.1:%d/health" % int(p), timeout=3)
+            if ok and isinstance(data, dict):
+                eng = str(data.get("engine") or "").strip().lower()
+                if eng in ENGINES:
+                    return eng
+        except Exception:  # noqa: BLE001
+            continue
+    return ""
+
+
+def engine_sources(install_dir=None, profile=None, port=None):
+    """Every statement about which brain this agent uses, best evidence first.
+
+    Returned as [(source, engine)] so a caller can explain itself instead of asserting.
+    """
+    inst = install_dir or INSTALL_DIR
+    out = []
     env = (os.environ.get("OLIVAW_ENGINE") or "").strip().lower()
-    if env in ("claude", "codex"):
-        return env
+    if env in ENGINES:
+        out.append(("env", env))
+    # An EXTRA agent records its engine in agents.json; nothing else does, so a Codex second
+    # agent used to be offered Claude here no matter what.
+    if profile and profile != "default":
+        try:
+            from . import agents_registry
+            for a in agents_registry.list_agents(inst):
+                if (a.get("profile") or a.get("slug")) == profile:
+                    eng = str(a.get("engine") or "").strip().lower()
+                    if eng in ENGINES:
+                        out.append(("agents.json", eng))
+                    break
+        except Exception:  # noqa: BLE001
+            pass
     try:
-        with open(os.path.join(install_dir or INSTALL_DIR, "updater.config.json"),
-                  encoding="utf-8") as fh:
+        with open(os.path.join(inst, "updater.config.json"), encoding="utf-8") as fh:
             cfg = json.load(fh) or {}
-        val = ((cfg.get("env") or {}).get("OLIVAW_ENGINE") or "").strip().lower()
-        if val in ("claude", "codex"):
-            return val
+        for val in (((cfg.get("env") or {}).get("OLIVAW_ENGINE") or ""),
+                    (cfg.get("engine") or "")):
+            eng = str(val).strip().lower()
+            if eng in ENGINES:
+                out.append(("updater.config.json", eng))
+                break
     except Exception:  # noqa: BLE001
         pass
-    # Nothing configured: whichever brain is actually on the machine.
-    if which("claude"):
-        return "claude"
-    if codex_engine is not None and codex_engine.available():
-        return "codex"
-    return "claude"
+    live = live_engine(inst, port)
+    if live:
+        out.append(("bridge", live))
+    for eng in ENGINES:
+        if _engine_available(eng):
+            out.append(("installed", eng))
+    return out
+
+
+def configured_engine(install_dir=None, profile=None, port=None):
+    """Which brain this agent thinks with, decided rather than assumed.
+
+    The old version read one key in updater.config.json and returned "claude" for everything
+    else. Three ways that was wrong, all of them reachable:
+
+      * an install written before that key existed has no engine recorded at all, so a
+        Codex machine was told it was a Claude machine;
+      * an EXTRA agent keeps its engine in agents.json, which was never consulted;
+      * the fallback preferred Claude purely because the `claude` CLI existed, even with a
+        live Codex bridge answering on the port.
+
+    Takes the best-evidenced statement and stops there. Notably it does NOT quietly swap to
+    whichever CLI happens to be installed: a brain that is configured but missing its CLI is
+    a broken install, and reporting it as the other brain is how "your brain is Codex" turns
+    into "did you sign in to Claude?". Callers who need to know whether it can actually RUN
+    ask engine_status().
+    """
+    said = engine_sources(install_dir, profile, port)
+    return said[0][1] if said else "claude"
+
+
+def engine_status(install_dir=None, profile=None, port=None):
+    """The brain, where that was learned, and whether it can actually run here.
+
+    One dict so every surface - the help console, the wizard, the agent summary - says the
+    same thing about the same machine, including when the answer is uncomfortable.
+    """
+    said = engine_sources(install_dir, profile, port)
+    engine = said[0][1] if said else "claude"
+    source = said[0][0] if said else "default"
+    available = _engine_available(engine)
+    other = "codex" if engine == "claude" else "claude"
+    _WHERE = {
+        "env": "una variable de entorno",
+        "agents.json": "la ficha de este agente",
+        "updater.config.json": "la configuración de este equipo",
+        "bridge": "el puente que está corriendo ahora",
+        "installed": "lo que hay instalado en el equipo",
+        "default": "el valor por omisión",
+    }
+    return {
+        "engine": engine,
+        "label": engine_label(engine),
+        "source": source,
+        "source_label": _WHERE.get(source, source),
+        "available": available,
+        "exe": engine_exe(engine, install_dir),
+        "live": live_engine(install_dir, port),
+        "other_available": _engine_available(other),
+        "detail": ("%s es el cerebro de este agente, según %s."
+                   % (engine_label(engine), _WHERE.get(source, source))
+                   if available else
+                   "Este agente está configurado con %s, pero su programa no está instalado "
+                   "en este equipo%s." % (engine_label(engine),
+                                          " (sí está %s)" % engine_label(other)
+                                          if _engine_available(other) else "")),
+    }
 
 
 def engine_exe(engine=None, install_dir=None):
@@ -188,7 +297,11 @@ def collect_context(install_dir=None, fast=False):
     if cl and not fast:
         r = run([cl, "auth", "status"], timeout=12)
         ctx["claude_auth"] = redact((r["out"] or r["err"])[:300])
-    ctx["engine"] = configured_engine(inst)
+    # The brain, and WHERE that was learned. The console used to map the bare engine string
+    # to a label in the browser, which meant two places could disagree; now the server says
+    # it once and the UI renders what it is given.
+    ctx["engine_status"] = engine_status(inst)
+    ctx["engine"] = ctx["engine_status"]["engine"]
     cx = engine_exe("codex", inst)
     ctx["codex_installed"] = bool(cx)
     if cx and not fast and codex_engine is not None:
@@ -470,6 +583,27 @@ TELEGRAM, in the order it breaks:
      TELEGRAM_HOME_CHANNEL is empty (scheduled messages have nowhere to go).
      state = connected_incomplete.
   Note `telegram.state` is measured against Telegram itself, not guessed from the log.
+
+THE BRAIN IS DETECTED, NOT ASSUMED. `engine_status()` reports {engine, label, source,
+available}: source is where the answer came from (env / agents.json / updater.config.json /
+bridge / installed), and `available` is whether that brain's CLI is actually on this machine.
+An extra agent's engine lives in agents.json; the machine's in updater.config.json; the
+RUNNING bridge reports its own on /status and outranks stale config. A brain that is
+configured but whose CLI is missing is reported as exactly that - never renamed to the brain
+that happens to be installed, because that is how "your brain is Codex" became "did you sign
+in to Claude?".
+
+HOW AN AGENT IS REACHABLE, in one call: wizard/connections.py snapshot(profile, port). It
+returns gateway / brain / telegram / whatsapp / talk plus a `channels` list of
+{icon,label,state,detail} where state is ok|warn|off|checking. `fast=True` answers from local
+files only. Use it rather than re-deriving a verdict: two panels deriving the same verdict is
+how they start disagreeing.
+
+TALKING FROM THE UI is Hermes' api_server platform (wizard/talk.py), NOT the brain bridge on
+8790 - that one has no persona, memory or skills. Loopback-only, and Hermes refuses to start
+it without a strong API_SERVER_KEY. State: enabled (config) / reachable (listening) /
+ready (answering) are three different things; "configured but the gateway has not restarted
+yet" is the normal state right after enabling and is not a fault.
 
 WHATSAPP may be SEVERAL NUMBERS on one agent. Each extra number is its own Hermes platform
 (whatsapp_<slug>), registered by a generated plugin under <HERMES_HOME>/plugins/, with its own

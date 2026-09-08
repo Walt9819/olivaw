@@ -376,6 +376,49 @@ the bridge (Claude Code MCP connectors do **not** work here — the bridge disab
   writes `SMTP_*` into the agent's profile `.env` (presets + app-password guides for Gmail, Outlook,
   Yahoo, iCloud), sends a live test email, and adds an email-capability note to the agent's `CLAUDE.md`.
 
+#### You can see how it is connected, and talk to it here
+
+Three things the owner could not do.
+
+**See the state.** Whether WhatsApp was connected lived inside the setup flow, behind a
+collapsed `<details>`, beside a button that started a pairing — so "is it working?" was
+answered by trying it. `src/wizard/connections.py` is now the single reader, and the agent's
+own front page opens with a row per channel and a coloured dot: Telegram (measured against
+Telegram, showing the bot username), every WhatsApp number, chat-from-this-screen, and the
+brain. It paints from local files immediately and then refines with what the network says, so
+a slow check reads as *waiting* rather than as *off* — a distinction that decides whether
+somebody starts repairing something that was about to work by itself.
+
+**Manage WhatsApp.** It has its own page now, with every number as a row you can act on: its
+own QR, "make this the main line", remove. The QR is requested *by number* — with several
+lines, "the most recently modified log" is whichever bridge last spoke, and pairing the wrong
+phone to the wrong line is a mistake nobody notices until a customer writes to the wrong
+business.
+
+**Talk to it from the browser.** `src/wizard/talk.py` enables Hermes' own `api_server`
+platform, so what you type reaches the *same* agent — persona, memory, skills — by the same
+path as a Telegram message. Pointing a chat box at the bridge on 8790 would have been much
+less work and a lie: that is the raw brain, with none of those things. Hermes' security model
+carries this: loopback-only, and it refuses to start without a strong `API_SERVER_KEY`
+(a guessable key there is remote code execution). The key stays in the profile `.env` and
+never reaches the page — the wizard proxies and adds the bearer header server-side.
+
+#### Which brain, decided rather than assumed
+
+The help console used to offer Claude Code on a Codex install. Two separate detectors both
+returned `"claude"` whenever `OLIVAW_ENGINE` was missing from `updater.config.json` — which is
+every install written before that key existed, and every *extra* agent, whose engine lives in
+`agents.json` and was never read. Meanwhile the running bridge reports its own engine on
+`/status` and nobody asked it.
+
+`rescue.engine_status()` now consults, in order: an explicit env override, the agent's own
+record in `agents.json`, the machine's `updater.config.json`, **the live bridge**, and only
+then what happens to be installed — and it reports *where* the answer came from. It does not
+quietly swap to whichever CLI exists: a brain that is configured but missing its CLI is a
+broken install, and calling it the other brain is exactly how "your brain is Codex" became
+"did you sign in to Claude?". The wizard now delegates to this instead of keeping its own
+worse copy.
+
 #### Several numbers, one agent
 
 A business with a sales line and a support line usually wants the *same* agent on both —
