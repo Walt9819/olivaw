@@ -74,6 +74,10 @@ try:
 except Exception:  # noqa: BLE001
     _numbers = None
 try:
+    from wizard import session_health as _session
+except Exception:  # noqa: BLE001
+    _session = None
+try:
     from wizard import image_setup as _images
 except Exception:  # noqa: BLE001
     _images = None
@@ -1245,6 +1249,47 @@ def _skill_needs_reload(profile, what):
         log(f"{what}: could not queue a reload for {profile}: {e}")
 
 
+def _check_login(state):
+    """Tell the owner BEFORE the brain's login dies, and once when it has.
+
+    The session expires on its own schedule and nothing announces it: the agent simply
+    stops answering, on every channel at once, and from the outside that is
+    indistinguishable from the computer being off. The dashboard shows it, but the owner
+    has to be looking at the dashboard - so the one notice that reaches them where they
+    already are is worth sending.
+
+    Sent at most once per state change, never on a loop: an alert repeated every poll is an
+    alert that gets muted, and this is the one that must not be.
+    """
+    if not _session:
+        return
+    try:
+        st = _session.status(install_dir=INSTALL_DIR)
+    except Exception as e:  # noqa: BLE001
+        log(f"login check failed: {e}")
+        return
+    seen = state.get("login_state")
+    now = st.get("state")
+    if now == seen:
+        return
+    state["login_state"] = now
+    if now == "expired" or (now == "signed_out" and seen is not None):
+        # `seen is not None` on signed_out: a supervisor that has only just started has no
+        # way to tell "just expired" from "never set up", and telling a half-installed
+        # machine that its session died is a confusing first impression.
+        log(f"brain login: {st.get('detail', '')}")
+        notify(load_config(),
+               "\U0001F511 " + st.get("detail", "") +
+               "\n\nAbre Olivaw y pulsa «Volver a entrar» en el panel: "
+               "se abre el navegador y yo compruebo que todo vuelve a funcionar.")
+    elif now == "expiring":
+        log(f"brain login: {st.get('detail', '')}")
+        notify(load_config(), "\u23F3 " + st.get("detail", ""))
+    elif now == "ok" and seen in ("expired", "signed_out", "expiring"):
+        log("brain login: renewed")
+        notify(load_config(), "\u2705 La sesión del cerebro está renovada. Todo sigue.")
+
+
 def _ensure_numbers():
     """Keep Hermes agreeing with each agent's list of WhatsApp numbers.
 
@@ -1502,6 +1547,9 @@ def main():
                 log("update requested from the UI; checking now")
             if asked or time.time() - last_check >= poll:
                 last_check = time.time()
+                # Same cadence as the update poll: reading a JSON file and asking a CLI is
+                # cheap, but not 15-seconds-cheap, and a login does not expire suddenly.
+                _check_login(state)
                 maybe_update(cfg, state, forced=asked)
                 # after any update - ours or Hermes' - make sure WhatsApp can still
                 # prove a delivery.

@@ -31,8 +31,9 @@ if __package__ in (None, ""):
     from wizard import updates as updates_mod
     from wizard import (agents_registry, browser_setup, channels, checks, config_writer,
                         connections, context_policy, hermes_ctl, image_setup, numbers,
-                        obsidian, proposals, providers, rescue, selfcare, talk,
-                        telegram_health, telegram_setup, usecases)
+                        obsidian, proposals, providers, rescue, selfcare,
+                        session_health, talk, telegram_health, telegram_setup,
+                        usecases)
     from wizard import workspace as wsdir   # aliased: `workspace` is a local
                                             # variable name elsewhere in this file
     from wizard.procutil import http_json, which
@@ -40,8 +41,8 @@ else:
     from . import updates as updates_mod
     from . import (agents_registry, browser_setup, channels, checks, config_writer,
                    connections, context_policy, hermes_ctl, image_setup, numbers,
-                   obsidian, proposals, providers, rescue, selfcare, talk,
-                   telegram_health, telegram_setup, usecases)
+                   obsidian, proposals, providers, rescue, selfcare, session_health,
+                   talk, telegram_health, telegram_setup, usecases)
     from . import workspace as wsdir        # aliased: see above
     from .procutil import http_json, which
 
@@ -96,6 +97,45 @@ def _target_profile(body, allow_new=False):
     """
     return agents_registry.resolve_profile(body.get("profile"), INSTALL_DIR,
                                            allow_new=allow_new)
+
+
+def _dashboard(fast=False):
+    """The machine at a glance: the brain's session, every agent, and the update state.
+
+    One call rather than the page assembling six, because the dashboard is the first thing
+    the owner sees and six round trips is six chances to paint half a picture. `fast` skips
+    what leaves the machine so it can render immediately and refine after.
+    """
+    hp = which("hermes")
+    agents = agents_snapshot()
+    rows = [agents["default"]] + list(agents.get("extra") or [])
+    out = []
+    for a in rows:
+        prof = None if a.get("is_default") else (a.get("profile") or a.get("slug"))
+        try:
+            snap = connections.snapshot(prof, hp, INSTALL_DIR, port=a.get("port"), fast=fast)
+        except Exception as e:  # noqa: BLE001
+            snap = {"ok": False, "channels": [], "detail": str(e)}
+        out.append({
+            "slug": a.get("slug"), "name": a.get("name") or a.get("slug"),
+            "is_default": bool(a.get("is_default")),
+            "gateway_running": a.get("gateway_running"),
+            "bridge_up": a.get("bridge_up"),
+            "missing_profile": bool(a.get("missing_profile")),
+            "port": a.get("port"),
+            "channels": snap.get("channels") or [],
+        })
+    return {
+        "ok": True,
+        # The session is machine-wide: the brain is shared, so one expired login silences
+        # every agent at once. That is why it leads the dashboard rather than sitting in
+        # one agent's page.
+        "session": session_health.status(install_dir=INSTALL_DIR),
+        "agents": out,
+        "update": updates_mod.status(INSTALL_DIR),
+        "supervisor": updates_mod.supervisor(INSTALL_DIR),
+        "fast": bool(fast),
+    }
 
 
 def _port_for_profile(profile):
@@ -679,6 +719,25 @@ class Handler(BaseHTTPRequestHandler):
         # owner's screen, so it is a button she presses, never something we decide.
         if route == "images/status":
             return image_setup.status(_target_profile(body), install_dir=INSTALL_DIR)
+
+        # The brain's LOGIN, which expires. Nothing used to announce that: the agent just
+        # went quiet on every channel at once, and the repair is fifteen seconds of
+        # clicking. See wizard/session_health.py.
+        if route == "session/status":
+            return session_health.status(install_dir=INSTALL_DIR)
+        if route == "session/login":
+            # Launches the brain's OWN sign-in (it opens the browser and completes the
+            # exchange itself). Olivaw never sees a credential.
+            return session_health.login(install_dir=INSTALL_DIR, paths=_cli_paths(body))
+        if route == "session/verify":
+            # After the owner finishes in the browser. `deep` runs a real turn through the
+            # bridge, which is the only evidence worth reporting as "it works again".
+            return session_health.verify(install_dir=INSTALL_DIR,
+                                         deep=body.get("deep", True) is not False)
+
+        # Everything the dashboard shows, in one call.
+        if route == "dashboard":
+            return _dashboard(bool(body.get("fast")))
 
         # How this agent is reachable, in one call. `fast` answers from local state only so
         # a panel paints immediately; the same route without it measures Telegram against

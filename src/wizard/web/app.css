@@ -495,3 +495,70 @@ body.sos-open{overflow:hidden}
   border-bottom-right-radius:5px}
 .bub.them{align-self:flex-start; background:var(--panel); border:1px solid var(--line);
   border-bottom-left-radius:5px}
+
+/* ── the dashboard ─────────────────────────────────────────────────────────────
+   The machine before any one agent. Cards are clickable and keyboard-reachable,
+   because this is the page people land on and it is the fastest route to an agent. */
+.dashgrid{display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr));
+  gap:12px; margin:10px 0}
+.dashcard{border:1px solid var(--line); border-radius:14px; background:var(--panel);
+  padding:12px 14px; cursor:pointer; transition:border-color .12s, transform .12s}
+.dashcard:hover,.dashcard:focus{border-color:var(--accent); transform:translateY(-1px);
+  outline:none}
+.chchips{display:flex; flex-wrap:wrap; gap:6px; margin-top:9px}
+.chchip{display:inline-flex; align-items:center; gap:5px; font-size:11.5px;
+  color:var(--muted); background:var(--panel-2); border:1px solid var(--line-2);
+  border-radius:999px; padding:3px 9px}
+/* The sidebar's dashboard entry sits above the agent list, so it needs the separation
+   the "Tus agentes" heading gives every other group. */
+.tkid.flat.top{margin-bottom:6px}
+
+/* ── the first two seconds ─────────────────────────────────────────────────────
+   Olivaw checks a lot when it opens. Doing that behind one grey line reads as a
+   hang, so the mark moves and each check ticks off as it really lands. Everything
+   here is CSS animation - no rAF loop competing with the calls it is waiting on. */
+.boot{position:fixed; inset:0; z-index:60; display:grid; place-items:center;
+  background:var(--bg); transition:opacity .45s ease, visibility .45s}
+.boot.gone{opacity:0; visibility:hidden; pointer-events:none}
+.boot-inner{text-align:center; max-width:340px; padding:0 24px}
+.boot-mark{position:relative; width:94px; height:94px; margin:0 auto 18px;
+  display:grid; place-items:center}
+.boot-o{font:700 30px/1 ui-sans-serif,system-ui,sans-serif; color:var(--accent-ink);
+  width:52px; height:52px; border-radius:16px; background:var(--grad);
+  display:grid; place-items:center; box-shadow:var(--shadow);
+  animation:bootpulse 2.4s ease-in-out infinite}
+/* Two counter-rotating arcs: enough motion to read as "working" without the jitter
+   of a spinner, and it keeps its shape at any size. */
+.boot-ring{position:absolute; inset:0; border-radius:50%;
+  border:2px solid transparent; border-top-color:var(--accent);
+  border-right-color:var(--accent-2); animation:bootspin 1.5s linear infinite}
+.boot-ring.r2{inset:11px; border-top-color:transparent;
+  border-bottom-color:var(--accent-2); border-left-color:var(--accent);
+  animation:bootspin 2.1s linear infinite reverse; opacity:.6}
+@keyframes bootspin{to{transform:rotate(360deg)}}
+@keyframes bootpulse{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}}
+.boot-name{font:700 19px/1.2 ui-sans-serif,system-ui,sans-serif; letter-spacing:-.01em}
+.boot-sub{color:var(--muted); font-size:13px; margin-top:5px; min-height:18px}
+.boot-steps{list-style:none; margin:20px 0 0; padding:0; text-align:left;
+  display:inline-block; min-width:210px}
+.boot-steps li{display:flex; align-items:center; gap:9px; padding:5px 0;
+  font-size:12.5px; color:var(--muted); opacity:.45; transition:opacity .3s, color .3s}
+.boot-steps li.on{opacity:1; color:var(--ink)}
+.boot-steps li.done{opacity:1}
+.boot-tick{width:15px; height:15px; flex:none; border-radius:50%;
+  border:1.5px solid var(--line); display:grid; place-items:center; font-size:9px;
+  transition:background .3s, border-color .3s, color .3s}
+li.on .boot-tick{border-color:var(--accent); border-top-color:transparent;
+  animation:bootspin .7s linear infinite}
+li.done .boot-tick{background:var(--ok); border-color:var(--ok);
+  color:#fff; animation:none}
+/* A check that failed is not hidden: the console is about to say so anyway, and a
+   tick that lies here is worse than a cross that does not. */
+li.bad .boot-tick{background:var(--warn); border-color:var(--warn); color:#fff;
+  animation:none}
+/* Motion is decoration here; the ticks carry the meaning. Anyone who has asked the
+   system for less of it gets the state without the spinning. */
+@media (prefers-reduced-motion: reduce){
+  .boot-ring,.boot-o,li.on .boot-tick{animation:none}
+  .boot{transition:none}
+}

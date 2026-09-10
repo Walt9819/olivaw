@@ -55,7 +55,17 @@ function mkEl(id) {
     disabled: false,
     checked: false,
     style: new Proxy({}, { get: () => "", set: () => true }),
-    classList: { add() {}, remove() {}, contains: () => false, toggle() {} },
+    // A real classList, not a no-op: the boot splash covers the whole viewport and is
+    // torn down by adding a class and then removing the node. Stubbing that away would
+    // make "the splash goes away" untestable, which is the assertion that matters most.
+    _cls: new Set(),
+    classList: {
+      add(c) { e._cls.add(c); },
+      remove(c) { e._cls.delete(c); },
+      contains: (c) => e._cls.has(c),
+      toggle(c) { e._cls.has(c) ? e._cls.delete(c) : e._cls.add(c); },
+    },
+    _removed: false,
     dataset: {},
     parentNode: null,
     getAttribute: () => null,
@@ -64,7 +74,7 @@ function mkEl(id) {
     addEventListener() {},
     appendChild() {},
     insertBefore() {},
-    remove() {},
+    remove() { e._removed = true; },
     focus() {},
     scrollIntoView() {},
     querySelector: () => null,
@@ -75,10 +85,15 @@ function mkEl(id) {
   return e;
 }
 function live() {
+  // Ids that exist on the page right now: the static shell, plus whatever any element has
+  // been given as innerHTML. It used to look only at #panel and #navTree, which modelled a
+  // page one level deep - so a panel that paints a sub-card and then addresses something
+  // inside it (as the dashboard does) had that child come back null here while working
+  // perfectly in a browser. Walking every node keeps el()-guards meaningful without
+  // pretending the DOM is flat.
   const s = new Set(SHELL_IDS);
-  for (const key of ["panel", "navTree"]) {
-    const n = nodes.get(key);
-    if (n) for (const i of idsIn(n._html)) s.add(i);
+  for (const n of nodes.values()) {
+    if (n && n._html) for (const i of idsIn(n._html)) s.add(i);
   }
   return s;
 }
@@ -160,6 +175,29 @@ const CANNED = {
   "channel/escalation-get": { ok: true, catalog: [{ key: "k1", label: "Uno", description: "d", priority: "alta" }],
     prefs: { enabled: false, reasons: [], custom: [] }, telegram_ready: true, telegram_detail: "" },
   // How the agent is reachable, in the shape wizard/connections.py returns.
+  "dashboard": {
+    ok: true, fast: false,
+    session: { engine: "claude", label: "Claude Code", found: true, signed_in: false,
+               account: "walt@example.com", plan: "team", state: "expired",
+               needs_login: true, expires_in_days: -0.2, expiry_known: true,
+               detail: "La sesion de Claude Code caduco." },
+    agents: [
+      { slug: "default", name: "Agente principal", is_default: true, gateway_running: true,
+        bridge_up: true, port: 8790,
+        channels: [{ icon: "TG", label: "Telegram", state: "ok", detail: "ok" },
+                   { icon: "WA", label: "WhatsApp", state: "off", detail: "no" }] },
+      { slug: "daneel", name: "Daneel", is_default: false, gateway_running: false,
+        bridge_up: false, port: 8792,
+        channels: [{ icon: "TG", label: "Telegram", state: "ok", detail: "ok" }] },
+    ],
+    update: { version: "1.0.49", available: null },
+    supervisor: { running: true, known: true },
+  },
+  "session/status": { ok: true, engine: "claude", label: "Claude Code", state: "expired",
+                      needs_login: true, signed_in: false, detail: "caduco" },
+  "session/login": { ok: true, detail: "Abri la ventana de inicio de sesion." },
+  "session/verify": { ok: true, session: { signed_in: true, state: "ok" }, tested: true,
+                      detail: "Listo: Claude Code tiene sesion y tu agente volvio a responder." },
   "connections/status": {
     ok: true, profile: "default", fast: false,
     gateway: { running: true, detail: "corriendo" },
@@ -215,6 +253,7 @@ const HOOK = "\n  globalThis.__ol = { CONSOLE: CONSOLE, S: S, META: META, STEPS:
   " targetProfile: targetProfile, render: render, enterSetup: enterSetup," +
   " SOS: SOS, openSos: openSos, sendTurn: sendTurn, paintMsgs: paintMsgs," +
   " showQr: showQr, TALK: TALK, sendTalk: sendTalk, loadConn: loadConn," +
+  " startLogin: startLogin, loadDash: loadDash, DASH: DASH, BOOT: BOOT," +
   " get LIVE(){ return LIVE } };\n";
 const hooked = src.slice(0, cut) + HOOK + src.slice(cut);
 
@@ -233,7 +272,7 @@ const OL = globalThis.__ol;
 // ── what opens ─────────────────────────────────────────────────────────────────
 console.log("\n=== with agents on the machine, the console opens, not the stepper ===");
 ok("view is the console", OL.S.view === "console", OL.S.view);
-ok("it lands on the selected agent's own page", OL.curSec().id === "home");
+ok("it lands on the dashboard, not on one agent", OL.curSec().id === "panel");
 ok("the stepper is hidden and the tree is shown",
    getEl("stepper").hidden === true && getEl("navTree").hidden === false);
 ok("the sidebar lists every agent on the machine",
@@ -260,6 +299,7 @@ ok("and the agent list is what scrolls when it does not fit",
    /\.stepper,\.tree\{min-height:0; overflow-y:auto/.test(CSS), "rule missing");
 
 console.log("\n=== the agent's page says how it is and what else you can change ===");
+OL.goSec("home", "default");   // the console opens on the dashboard now; this is one click in
 const home = getEl("panel")._html;
 ok("it names the agent", home.includes("Agente principal"));
 ok("it says whether it is running", /Encendido|Pausado|No pude comprobarlo/.test(home));
@@ -490,6 +530,129 @@ ok("and it is a machine-wide action, not one agent's",
 // for rescue/conversation to hand back the persisted transcript. Any answer that call fails
 // to give back takes the conversation with it.
 // -- the three things the owner asked for -------------------------------------
+console.log("\n=== opening Olivaw shows real progress, not one grey line ===");
+{
+  // The splash is driven by calls RESOLVING, not by a timer. That is the difference
+  // between a slow machine looking busy and looking broken, and it is why this asserts
+  // against the recorded calls rather than against elapsed time.
+  const shell = fs.readFileSync(SHELL, "utf8");
+  ok("the shell carries a boot splash", shell.includes('id="boot"'));
+  ok("with a place for the steps", shell.includes('id="bootSteps"'));
+  ok("the old single grey line is not the whole story any more",
+     shell.includes("boot-mark") && shell.includes("boot-ring"), "no animated mark");
+  ok("every step is a real check, named", OL.BOOT.steps.length >= 4,
+     JSON.stringify(OL.BOOT.steps.map((s) => s.id)));
+  const ids = OL.BOOT.steps.map((s) => s.id);
+  ok("and they are the things it actually does",
+     ids.includes("state") && ids.includes("agents") && ids.includes("brain") &&
+     ids.includes("conn"), JSON.stringify(ids));
+  // boot() ran at load; by now every canned call has resolved.
+  ok("all of them ticked off", OL.BOOT.at === OL.BOOT.steps.length,
+     OL.BOOT.at + "/" + OL.BOOT.steps.length);
+  const li = getEl("bootSteps")._html;
+  ok("the list renders one row per check", (li.match(/<li/g) || []).length === OL.BOOT.steps.length, li);
+  ok("finished rows are marked done", li.includes('class="done"'), li);
+
+  ok("and the splash is dismissed once it is up", OL.BOOT.done === true);
+  // The teardown is on a timer (a minimum on screen, then the fade), so wait for it
+  // rather than assuming it already ran - and cap the wait so a regression fails the
+  // assertion instead of hanging the suite.
+  const b = getEl("boot");
+  for (let i = 0; i < 60 && !b._removed; i++) await new Promise((r) => setTimeout(r, 50));
+  ok("it fades rather than vanishing mid-frame", b._cls.has("gone"), [...b._cls]);
+  // Hiding is not enough: it covers the whole viewport, so a transition that never fires
+  // would leave an invisible sheet swallowing every click on the console underneath.
+  ok("and it is taken OUT of the page, not just hidden", b._removed === true,
+     "still in the document");
+}
+
+console.log("\n=== the splash cannot outlive the thing it is waiting for ===");
+{
+  const src = fs.readFileSync(APP, "utf8");
+  ok("a stalled check still ends it", /BOOT_MAX_MS/.test(src) &&
+     /setTimeout\(bootDone, BOOT_MAX_MS\)/.test(src), "no ceiling on the splash");
+  ok("a failed call marks its step instead of hanging on it",
+     /bootStep\("brain", true\)/.test(src) && /bootStep\("conn", true\)/.test(src), src.slice(0, 0));
+  ok("and a server that never answers takes the splash away before the error",
+     /BOOT\.done = false;\s*\n\s*bootDone\(\);/.test(src),
+     "the error page would render under a cheerful animation");
+  ok("a machine with no agents skips the checks that do not apply",
+     /if \(!hasAnyAgent\(\)\) \{ bootStep\("brain"\); bootStep\("conn"\); bootDone\(\); return; \}/.test(src));
+  const css = fs.readFileSync(path.join(ROOT, "src", "wizard", "web", "app.css"), "utf8");
+  ok("someone who asked for less motion gets the state without the spinning",
+     /@media \(prefers-reduced-motion: reduce\)\{[\s\S]*?\.boot-ring,\.boot-o/.test(css),
+     "no reduced-motion rule for the splash");
+  ok("a failed step is shown, not quietly ticked", /li\.bad \.boot-tick/.test(css));
+  for (const cls of ["boot", "boot-mark", "boot-ring", "boot-o", "boot-steps", "boot-tick"]) {
+    ok("." + cls + " is styled", css.includes("." + cls), "missing from app.css");
+  }
+}
+
+console.log("\n=== the dashboard leads with the brain's login ===");
+CALLS.length = 0;
+OL.goSec("panel");
+await new Promise((r) => setTimeout(r, 0));
+{
+  const pane = getEl("panel")._html;
+  ok("it asks for the whole machine in one call",
+     CALLS.some((c) => c.route === "dashboard"), CALLS.map((c) => c.route).join(","));
+  const dash = CALLS.filter((c) => c.route === "dashboard");
+  ok("fast first so it paints at once, then the real one",
+     dash.length >= 2 && dash[0].body.fast === true && !dash[1].body.fast,
+     JSON.stringify(dash.map((c) => c.body)));
+  ok("it has a place for the alert above everything", pane.includes('id="dashAlert"'));
+  const alert = htmlOf("dashAlert");
+  // An expired brain silences every agent at once. It must be impossible to miss, and it
+  // must say what the button will do - not just that something is wrong.
+  ok("an expired session raises a real alert", alert.includes("callout err"), alert);
+  ok("it says the agents cannot think", /no pueden pensar/i.test(alert), alert);
+  ok("and it tells the owner what happens when they click",
+     /navegador/i.test(alert) && /compruebo/i.test(alert), alert);
+  const card = htmlOf("dashSession");
+  ok("the session card names the brain", card.includes("Claude Code"), card);
+  ok("and the account it is signed in as", card.includes("walt@example.com"), card);
+  ok("the button is primary when a login is actually needed",
+     /id="dashLogin"/.test(card) && /btn-primary[^"]*" id="dashLogin"/.test(card), card);
+  const grid = htmlOf("dashAgents");
+  ok("every agent is on the dashboard",
+     grid.includes("Agente principal") && grid.includes("Daneel"), grid.slice(0, 300));
+  ok("each one shows its channels at a glance",
+     (grid.match(/class="chchip"/g) || []).length === 3, grid.slice(0, 400));
+  ok("a paused agent looks different from a running one",
+     grid.includes("dot-ok") && grid.includes("dot-off"), grid.slice(0, 400));
+  const mach = htmlOf("dashMachine");
+  ok("the machine's own state is there too",
+     mach.includes("vigilante") && mach.includes("1.0.49"), mach);
+}
+
+console.log("\n=== one click: log in, then PROVE it works again ===");
+{
+  CALLS.length = 0;
+  OL.startLogin();
+  // Read the box BEFORE awaiting: startLogin sets this synchronously, and the poll then
+  // correctly replaces it within a microtask. Asserting after an await was testing which
+  // message won a race, not that the owner is told what to do.
+  const box = htmlOf("dashLoginBox");
+  ok("and says what to do while it is open", /Term[ií]nalo/.test(box), box);
+  await new Promise((r) => setTimeout(r, 0));
+  ok("clicking starts the brain's own sign-in",
+     CALLS.some((c) => c.route === "session/login"), CALLS.map((c) => c.route).join(","));
+  // The poll is shallow while the owner is still typing; the expensive end-to-end turn
+  // runs once, after the session looks good. Both are asserted because doing only the
+  // cheap one would report success without evidence.
+  for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 10));
+  const verifies = CALLS.filter((c) => c.route === "session/verify");
+  ok("it waits for the login by asking, not by guessing", verifies.length >= 1,
+     JSON.stringify(CALLS.map((c) => c.route)));
+  ok("the waiting check is the cheap one", verifies[0] && verifies[0].body.deep === false,
+     JSON.stringify(verifies[0] && verifies[0].body));
+  ok("and once signed in it runs the real end-to-end test",
+     verifies.some((c) => c.body.deep === true), JSON.stringify(verifies.map((c) => c.body)));
+  const after = htmlOf("dashLoginBox");
+  ok("then it says so, in the owner's words",
+     /volvi[oó] a responder/.test(after), after);
+}
+
 console.log("\n=== the agent's page says how it is reachable, without being asked ===");
 CALLS.length = 0;
 OL.goSec("home", "default");
@@ -590,7 +753,8 @@ console.log("\n=== the new panels have the styles they render against ===");
   // means an invisible one, i.e. exactly the "I cannot see whether it is connected" this
   // work exists to fix. So the classes the panels emit are checked against the stylesheet.
   for (const cls of ["cdot", "dot-ok", "dot-warn", "dot-off", "dot-wait", "connlist",
-                     "walist", "cdet", "clink", "qrbox", "chatlog", "bub", "btn-xs"]) {
+                     "walist", "cdet", "clink", "qrbox", "chatlog", "bub", "btn-xs",
+                     "dashgrid", "dashcard", "chchips", "chchip"]) {
     ok("." + cls + " is defined", CSS.includes("." + cls), "missing from app.css");
   }
   ok("the waiting dot animates, so 'checking' cannot be mistaken for 'off'",

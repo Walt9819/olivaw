@@ -584,6 +584,17 @@ TELEGRAM, in the order it breaks:
      state = connected_incomplete.
   Note `telegram.state` is measured against Telegram itself, not guessed from the log.
 
+THE BRAIN'S LOGIN EXPIRES, and wizard/session_health.py is where that is known.
+status() -> {state, needs_login, expires_at, expires_in_days, account, plan}. States: ok /
+expiring (a WARNING - the session still works) / expired / signed_out / not_installed. Only
+expired and signed_out set needs_login. The date reported is the REFRESH token
+(refreshTokenExpiresAt), not the access token: access lasts hours and the CLI renews it
+silently, so warning on it would alarm a healthy machine daily. Only those two timestamps
+are ever read out of the credential file - never a token. Repair: session_health.login()
+opens the brain's own sign-in, then verify(deep=True) runs a REAL turn through the bridge,
+which is the only evidence worth reporting as fixed. The supervisor also notices, once per
+state change, via _check_login() in launcher.py.
+
 THE BRAIN IS DETECTED, NOT ASSUMED. `engine_status()` reports {engine, label, source,
 available}: source is where the answer came from (env / agents.json / updater.config.json /
 bridge / installed), and `available` is whether that brain's CLI is actually on this machine.

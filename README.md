@@ -376,6 +376,49 @@ the bridge (Claude Code MCP connectors do **not** work here — the bridge disab
   writes `SMTP_*` into the agent's profile `.env` (presets + app-password guides for Gmail, Outlook,
   Yahoo, iCloud), sends a live test email, and adds an email-capability note to the agent's `CLAUDE.md`.
 
+#### The login expires — Olivaw says so first
+
+Both brains sign in with a subscription, and both sessions expire. When one does, nothing
+announced it: the agent simply stopped answering, on every channel at once, and from the
+outside that is indistinguishable from "the computer is off". The repair is fifteen seconds
+of clicking.
+
+`src/wizard/session_health.py` reads the deadline out of Claude Code's own credential store
+and asks the Codex CLI for its equivalent. **Only the two expiry timestamps are read** — the
+tokens sitting beside them are never read, returned or logged, and a test plants a known key
+and asserts its value appears in nothing any route returns.
+
+The subtlety worth knowing: `expiresAt` is the *access* token, which lasts hours and the CLI
+renews silently. `refreshTokenExpiresAt` is the one whose death makes you log in again, and
+that is the date reported. Warning on the wrong one would put a red banner on a perfectly
+healthy machine every morning, which trains people to ignore banners.
+
+So there are three states, not two: **ok**, **expiring** (a warning, five days out — the
+session still works), and **expired** (an alert). Only the last one raises the alarm.
+
+The dashboard's button does the whole repair: it opens the brain's own sign-in, waits by
+*asking* rather than guessing, and once the session is back it runs a real turn through the
+bridge and says so. The cheap check polls while you type; the expensive end-to-end one runs
+once, at the end — because "the CLI says signed in" and "a request was accepted" are
+different claims and only the second is worth reporting. The supervisor watches too, and
+sends one Telegram notice per state change (never on a loop) so you hear about it where you
+already are.
+
+#### A dashboard, and an opening worth watching
+
+The console now opens on a **dashboard**: the brain's session first, then every agent with
+its channels at a glance, then the machine itself. The session leads because the brain is
+shared — one expired login silences every agent at once.
+
+And opening Olivaw does a fair amount of work: the machine, the agents, the brain, the
+channels. That used to happen behind one grey line reading *"Revisando tu computadora…"*,
+which reads as a hang and wastes the one moment the owner is definitely watching. Now the
+mark animates and **each check ticks off as it really lands** — genuine progress, not a
+fake bar, which is the difference between a slow machine looking busy and looking broken.
+It has a floor (so it cannot flash) and a ceiling (so a wedged check cannot strand it), it
+is removed from the DOM rather than hidden, and `prefers-reduced-motion` gets the state
+without the spinning.
+
 #### You can see how it is connected, and talk to it here
 
 Three things the owner could not do.

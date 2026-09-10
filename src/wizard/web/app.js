@@ -183,6 +183,7 @@
   // answer would quietly configure somebody else's agent.
   function curAgent() { return agentBySlug(S.sel || "default") || allAgents()[0] || null; }
   function isAgentSec(sec) { return sec.scope === "agent"; }
+  function isTeamSec(sec) { return sec.scope !== "agent" && sec.scope !== "dash"; }
   function curSec() {
     for (var i = 0; i < CONSOLE.length; i++) if (CONSOLE[i].id === S.sec) return CONSOLE[i];
     return CONSOLE[0];
@@ -203,6 +204,13 @@
   }
 
   var CONSOLE = [
+    // Machine-wide, and FIRST: the brain's login lives here, and an expired one silences
+    // every agent at once. Scope "dash" keeps it out of both the per-agent list and the
+    // team list, because it belongs above both.
+    { id: "panel", scope: "dash", icon: "📊", label: "Panel",
+      title: "Panel de Olivaw",
+      lead: "Cómo está todo, de un vistazo: la sesión del cerebro, tus agentes y el equipo.",
+      render: secDash, wire: eDash },
     { id: "home", scope: "agent", icon: "🏠", label: "Resumen",
       blurb: "Cómo está y qué puedes hacer con él",
       render: secAgentHome, wire: eAgentHome },
@@ -298,6 +306,11 @@
     var t = el("navTree");
     if (!t) return;
     var cur = curAgent(), sec = curSec(), html = "";
+    html += CONSOLE.filter(function (x) { return x.scope === "dash"; }).map(function (x) {
+      return '<div class="tkid flat top' + (x.id === sec.id ? " active" : "") +
+        '" data-sec="' + x.id + '" tabindex="0"><span class="tico">' + x.icon + '</span>' +
+        esc(x.label) + '</div>';
+    }).join("");
     html += '<div class="tree-h">Tus agentes</div>';
     allAgents().forEach(function (a) {
       var on = !!(cur && a.slug === cur.slug);
@@ -317,7 +330,9 @@
     });
     html += '<div class="tnew" id="treeNew" tabindex="0">➕ Crear un agente nuevo</div>';
     html += '<div class="tree-h">De todo el equipo</div>';
-    html += CONSOLE.filter(function (x) { return !isAgentSec(x); }).map(function (x) {
+    // "not an agent section" would now also catch the dashboard, which already has its own
+    // entry above the agent list. Team sections are the ones that are neither.
+    html += CONSOLE.filter(isTeamSec).map(function (x) {
       return '<div class="tkid flat' + (x.id === sec.id ? " active" : "") +
         '" data-sec="' + x.id + '" tabindex="0"><span class="tico">' + x.icon + '</span>' +
         esc(x.label) + '</div>';
@@ -1575,6 +1590,167 @@
       '<div class="row"><button class="btn btn-soft btn-sm" id="mcpAdd">Añadir</button></div>' +
       chLine("mcpPill") + '</details>';
   }
+
+  // ── the dashboard: the whole machine, before you pick an agent ───────────────
+  // The brain's LOGIN leads it, because the brain is shared: one expired session silences
+  // every agent at once, on every channel, with nothing announcing why. That failure looks
+  // exactly like "the computer is off" and is fifteen seconds of clicking to repair, so it
+  // gets the top of the page and a button rather than a line in a log.
+  var DASH = { polling: false, tries: 0 };
+
+  function secDash() {
+    return '<div id="dashAlert"></div>' +
+      '<div id="dashSession" class="card pad"><span class="muted small">Comprobando…</span></div>' +
+      '<h2>Tus agentes</h2>' +
+      '<div id="dashAgents"><span class="muted small">Comprobando…</span></div>' +
+      '<h2>El equipo</h2>' +
+      '<div id="dashMachine" class="card pad"><span class="muted small">Comprobando…</span></div>';
+  }
+
+  function sessionCard(s) {
+    if (!s) return '<span class="muted small">No pude comprobar la sesión.</span>';
+    var dot = connDot(s.state === "ok" ? "ok"
+      : (s.state === "expiring" ? "warn"
+      : (s.state === "not_installed" ? "off" : "warn")));
+    var who = s.account ? '<div class="small muted">' + esc(s.account) +
+      (s.plan ? ' · plan ' + esc(s.plan) : '') + '</div>' : '';
+    var btn = (s.state === "not_installed") ? '' :
+      '<button class="btn ' + (s.needs_login ? "btn-primary" : "btn-soft") +
+      ' btn-sm" id="dashLogin">' +
+      (s.needs_login ? "Volver a entrar" : "Renovar la sesión ahora") + '</button>';
+    return '<div class="row" style="align-items:flex-start">' + dot +
+      '<div class="grow"><b>' + esc(s.label || "Cerebro") + '</b>' + who +
+      '<div class="small" style="margin-top:4px">' + esc(s.detail || "") + '</div></div></div>' +
+      '<div class="row" style="margin-top:10px">' + btn +
+      '<span class="pill" id="dashPill" style="display:none"></span></div>' +
+      '<div id="dashLoginBox" style="display:none;margin-top:10px"></div>';
+  }
+
+  // The alert is deliberately separate from the card and rendered ABOVE everything: when
+  // the brain cannot think, nothing else on this page matters, and it should not be
+  // something the owner has to scroll to or recognise among four other panels.
+  function sessionAlert(s) {
+    if (!s || !s.needs_login) return "";
+    return '<div class="callout err" style="margin-bottom:14px">' +
+      '<b>Tus agentes no pueden pensar.</b> ' + esc(s.detail || "") +
+      ' Pulsa «Volver a entrar»: se abre el navegador, entras con tu cuenta, y yo compruebo ' +
+      'que todo vuelve a funcionar.</div>';
+  }
+
+  function agentCards(rows) {
+    if (!rows || !rows.length) return '<span class="muted small">Todavía no hay agentes.</span>';
+    return '<div class="dashgrid">' + rows.map(function (a) {
+      var state = a.missing_profile ? "warn"
+        : (a.gateway_running === true ? (a.bridge_up ? "ok" : "warn")
+        : (a.gateway_running === false ? "off" : "warn"));
+      var chans = (a.channels || []).map(function (c) {
+        return '<span class="chchip" title="' + esc(c.label + ": " + (c.detail || "")) + '">' +
+          connDot(c.state) + esc(c.label) + '</span>';
+      }).join("");
+      return '<div class="dashcard" data-agent="' + esc(a.slug) + '" tabindex="0">' +
+        '<div class="row" style="align-items:center">' + connDot(state) +
+        '<b class="grow">' + esc(a.name) + '</b>' +
+        (a.is_default ? '<span class="badge">principal</span>' : '') + '</div>' +
+        '<div class="chchips">' + chans + '</div></div>';
+    }).join("") + '</div>';
+  }
+
+  function machineCard(d) {
+    var up = d.update || {}, sup = d.supervisor || {};
+    var rows = "";
+    rows += sumline(sup.running ? "🟢" : "🔴", "El vigilante",
+      sup.running ? "Encendido: mantiene todo vivo y busca actualizaciones"
+                  : "Apagado — sin él no se actualiza ni se reinicia solo");
+    rows += sumline("🔄", "Versión",
+      (up.version || "?") + (up.available ? " · hay una nueva (" + esc(up.available) + ")" : " · al día"));
+    return '<ul class="filelist">' + rows + '</ul>' +
+      '<div class="row" style="margin-top:10px">' +
+      '<button class="btn btn-soft btn-sm" data-sec="version">Actualizaciones</button>' +
+      '<button class="btn btn-soft btn-sm" data-sec="cerebro">El cerebro</button></div>';
+  }
+
+  function paintDash(d) {
+    if (!d) return;
+    var a = el("dashAlert"); if (a) a.innerHTML = sessionAlert(d.session);
+    var s = el("dashSession"); if (s) s.innerHTML = sessionCard(d.session);
+    var g = el("dashAgents"); if (g) g.innerHTML = agentCards(d.agents);
+    var m = el("dashMachine"); if (m) m.innerHTML = machineCard(d);
+    wireSecCards();
+    Array.prototype.forEach.call(document.querySelectorAll("#dashAgents [data-agent]"),
+      function (n) {
+        n.onclick = function () { goSec("home", n.getAttribute("data-agent")); };
+      });
+    var b = el("dashLogin");
+    if (b) b.onclick = startLogin;
+  }
+
+  function loadDash() {
+    api("dashboard", { fast: true }).then(paintDash)
+      .then(function () { return api("dashboard", {}); })
+      .then(paintDash)
+      .catch(function () {});
+  }
+
+  // The whole point of the button: the owner clicks once, the brain's own sign-in opens,
+  // and Olivaw waits and then PROVES it worked with a real turn - rather than leaving them
+  // to guess whether it took, which is the same uncertainty they started with.
+  function startLogin() {
+    var box = el("dashLoginBox"), btn = el("dashLogin");
+    if (btn) btn.disabled = true;
+    if (box) {
+      box.style.display = "";
+      box.innerHTML = '<div class="callout small">Abriendo el inicio de sesión… ' +
+        'Termínalo en la ventana que se abre y vuelve aquí. Yo me doy cuenta solo.</div>';
+    }
+    api("session/login", {}).then(function (r) {
+      if (box && r && !r.ok) {
+        box.innerHTML = '<div class="callout err small">' + esc(r.detail || "No pude abrirlo.") + '</div>';
+        if (btn) btn.disabled = false;
+        return;
+      }
+      DASH.tries = 0;
+      DASH.polling = true;
+      pollLogin();
+    }).catch(function () {
+      if (btn) btn.disabled = false;
+    });
+  }
+
+  function pollLogin() {
+    if (!DASH.polling) return;
+    var box = el("dashLoginBox");
+    // Shallow while waiting: asking the CLI is cheap and the owner is still typing a
+    // password. The expensive end-to-end turn runs ONCE, when the session looks good.
+    api("session/verify", { deep: false }).then(function (r) {
+      var st = (r && r.session) || {};
+      if (st.signed_in && st.state !== "expired") {
+        DASH.polling = false;
+        if (box) box.innerHTML = '<div class="callout small">Sesión iniciada. ' +
+          'Comprobando que tu agente vuelve a responder…</div>';
+        return api("session/verify", { deep: true }).then(function (v) {
+          if (box) {
+            box.innerHTML = v && v.ok
+              ? '<div class="callout small">✅ ' + esc(v.detail || "Todo funciona otra vez.") + '</div>'
+              : '<div class="callout err small">La sesión está iniciada, pero la prueba ' +
+                'falló: ' + esc((v && v.detail) || "") + '</div>';
+          }
+          loadDash();
+        });
+      }
+      if (++DASH.tries > 100) {          // ~5 minutes, then stop asking
+        DASH.polling = false;
+        if (box) box.innerHTML = '<div class="callout small">Sigo sin ver la sesión. ' +
+          'Cuando termines de entrar, pulsa el botón otra vez.</div>';
+        var btn = el("dashLogin"); if (btn) btn.disabled = false;
+        return;
+      }
+      setTimeout(pollLogin, 3000);
+    }).catch(function () {
+      if (DASH.tries < 100) setTimeout(pollLogin, 4000);
+    });
+  }
+
+  function eDash() { loadDash(); }
 
   // ── talking to your own agent, from here ─────────────────────────────────────
   // Not the 🆘 console: that one talks to the BRAIN about the installation, with no
@@ -3587,11 +3763,87 @@
     });
   })();
   // ── boot ──────────────────────────────────────────────────────────────
+  // ── the opening ─────────────────────────────────────────────────────────────
+  // Olivaw checks a fair amount when it opens, and it used to do all of it behind one grey
+  // line reading "Revisando tu computadora…". That reads as a hang, and it spends the one
+  // moment the owner is definitely watching on nothing.
+  //
+  // So the splash ticks off each check AS IT REALLY LANDS. The progress is genuine - every
+  // row is a call that resolved - which is the difference between a slow machine looking
+  // busy and looking broken. A fake progress bar would have been less code and a small lie.
+  var BOOT = {
+    steps: [
+      { id: "state", label: "Leyendo tu equipo" },
+      { id: "agents", label: "Buscando tus agentes" },
+      { id: "brain", label: "Comprobando el cerebro" },
+      { id: "conn", label: "Viendo cómo está conectado" },
+    ],
+    at: 0, t0: 0, done: false,
+  };
+
+  function bootPaint() {
+    var ul = el("bootSteps");
+    if (!ul) return;
+    ul.innerHTML = BOOT.steps.map(function (s, i) {
+      var cls = s.bad ? "bad" : (i < BOOT.at ? "done" : (i === BOOT.at ? "on" : ""));
+      var mark = s.bad ? "!" : (i < BOOT.at ? "✓" : "");
+      return '<li class="' + cls + '"><span class="boot-tick">' + mark + '</span>' +
+        esc(s.label) + '</li>';
+    }).join("");
+  }
+
+  function bootStep(id, bad) {
+    for (var i = 0; i < BOOT.steps.length; i++) {
+      if (BOOT.steps[i].id === id) {
+        if (bad) BOOT.steps[i].bad = true;
+        BOOT.at = Math.max(BOOT.at, i + 1);
+        break;
+      }
+    }
+    bootPaint();
+  }
+
+  function bootSay(text) {
+    var n = el("bootSub");
+    if (n) n.textContent = text;
+  }
+
+  // A minimum on screen, because the alternative is a flash. On a warm machine every call
+  // resolves in well under a second, and a splash that appears and vanishes inside 200ms
+  // reads as a glitch rather than as an opening.
+  var BOOT_MIN_MS = 900;
+  // ...and a ceiling. If a check hangs - a wedged gateway, a CLI that never returns - the
+  // console underneath is perfectly usable, and a splash that waits forever turns a slow
+  // check into a dead app.
+  var BOOT_MAX_MS = 9000;
+
+  function bootDone() {
+    if (BOOT.done) return;
+    BOOT.done = true;
+    var wait = Math.max(0, BOOT_MIN_MS - (Date.now() - BOOT.t0));
+    setTimeout(function () {
+      var b = el("boot");
+      if (!b) return;
+      if (b.classList && b.classList.add) b.classList.add("gone");
+      // Taken out of the document rather than just hidden: it covers the whole viewport,
+      // and a transition that never fires (reduced motion, a stalled tab) would otherwise
+      // leave an invisible sheet over everything the owner is trying to click.
+      setTimeout(function () { if (b.remove) b.remove(); }, 600);
+    }, wait);
+  }
+
   function boot() {
+    BOOT.t0 = Date.now();
+    bootPaint();
+    setTimeout(bootDone, BOOT_MAX_MS);
+    // The panel still gets its own placeholder: the splash sits over it, and if anything
+    // here throws, what is underneath must not be an empty white page.
     el("panel").innerHTML = '<div style="text-align:center;padding:60px 0;color:var(--muted)">' +
       '<div class="spinner" style="margin:0 auto 14px;width:26px;height:26px;color:var(--accent)"></div>' +
       'Revisando tu computadora…</div>';
     api("state", {}).then(function (st) {
+      bootStep("state", !(st && st.ok));
+      bootSay(st && st.ok ? "Reconociendo lo que ya tienes…" : "Sigo, pero algo no contestó…");
       if (st && st.ok) {
         META.providers = st.providers || [];
         META.usecases = st.usecases || [];
@@ -3655,9 +3907,35 @@
           if (idx >= 0) { S.view = "setup"; S.step = idx; S._max = Math.max(S._max || 0, idx); }
         }
       }
+      bootStep("agents");
+      bootSay(hasAnyAgent() ? "Comprobando el cerebro…" : "Preparando la instalación…");
       render();
       if (wantSos) openSos();
+
+      // A machine with no agents yet has nothing to check and nobody waiting on a status:
+      // it goes straight into the guided install rather than ticking two rows about
+      // things that do not exist.
+      if (!hasAnyAgent()) { bootStep("brain"); bootStep("conn"); bootDone(); return; }
+
+      // The last two rows are REAL work the console needs anyway - the brain's session and
+      // the machine snapshot - so the splash is spent doing something rather than waiting
+      // out a timer. Whatever they return is already painted by the panels themselves;
+      // here they only move the ticks.
+      api("session/status", {}).then(function (s) {
+        bootStep("brain", !!(s && s.needs_login));
+        bootSay(s && s.needs_login
+          ? "Tu cerebro necesita que vuelvas a entrar."
+          : "Casi listo…");
+      }).catch(function () { bootStep("brain", true); }).then(function () {
+        return api("dashboard", { fast: true });
+      }).then(function () { bootStep("conn"); })
+        .catch(function () { bootStep("conn", true); })
+        .then(bootDone);
     }).catch(function () {
+      // The server did not answer at all. Take the splash away rather than leaving a
+      // cheerful animation over an error the owner needs to read.
+      BOOT.done = false;
+      bootDone();
       el("panel").innerHTML = '<h1>No pude conectar con el asistente.</h1>' +
         '<p class="muted">Cierra esta pestaña y vuelve a ejecutar el instalador.</p>';
     });

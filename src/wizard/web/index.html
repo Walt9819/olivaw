@@ -8,6 +8,26 @@
   <link rel="stylesheet" href="app.css">
 </head>
 <body>
+  <!-- The first two seconds. Olivaw checks a fair amount when it opens - the machine, the
+       agents, the brain's session, every channel - and it used to do all of it behind one
+       grey line that said "Revisando tu computadora…". That reads as a hang, and it wastes
+       the one moment the owner is actually watching.
+       So: the mark animates, and each check TICKS OFF AS IT REALLY FINISHES. The progress
+       is genuine - every row is a call that resolved - which is why a slow machine looks
+       busy here instead of broken. Removed from the DOM once the console is up. -->
+  <div class="boot" id="boot">
+    <div class="boot-inner">
+      <div class="boot-mark" aria-hidden="true">
+        <span class="boot-ring"></span>
+        <span class="boot-ring r2"></span>
+        <span class="boot-o">O</span>
+      </div>
+      <div class="boot-name">Olivaw</div>
+      <div class="boot-sub" id="bootSub">Poniendo todo en marcha…</div>
+      <ul class="boot-steps" id="bootSteps"></ul>
+    </div>
+  </div>
+
   <div class="app">
     <aside class="sidebar">
       <div class="brand">

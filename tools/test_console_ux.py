@@ -363,10 +363,207 @@ def test_talk():
           ws.count("talk.") >= 6 and "_target_profile(body)" in ws)
 
 
+def test_session():
+    from wizard import session_health as SH
+
+    section("the login expires, and that has to be seen coming")
+    src = io.open(os.path.join(SRC, "wizard", "session_health.py"), encoding="utf-8").read()
+    # The access token lasts hours and the CLI renews it silently; the REFRESH token is the
+    # one whose death makes the owner log in again. Warning on the wrong one would put a red
+    # banner on a healthy machine every morning, which trains people to ignore banners.
+    check("the deadline reported is the refresh token, not the access one",
+          'out["refresh"] = _epoch(oauth.get("refreshTokenExpiresAt"))' in src)
+    # Behavioural, not a comment-grep: with the ACCESS token already past and the refresh
+    # token still weeks out, the machine is perfectly healthy - the CLI renews access
+    # silently. Alarming here would put a red banner on a working machine every morning.
+    acc = SH.claude_expiry().get("access")
+    ref = SH.claude_expiry().get("refresh")
+    if acc and ref and ref > acc:
+        after_access = acc + 3600
+        s0 = SH.status(now=after_access)
+        check("an expired ACCESS token is not an expired session",
+              s0["state"] == "ok" and s0["needs_login"] is False,
+              {"state": s0["state"], "alert": s0["needs_login"]})
+        check("though it is still reported, for diagnosis",
+              s0["access_expires_at"] == acc, s0["access_expires_at"])
+    else:
+        print("  ..   (no distinct access/refresh pair here; that case unchecked)")
+
+    section("nothing but the two timestamps is read")
+    # This module is imported by an HTTP server. A status that leaked a credential to draw a
+    # nicer dashboard would be a bad trade at any price.
+    check("the credential file is opened only for expiry fields",
+          "accessToken" not in src and "refreshToken\"" not in src,
+          "a token field name appears in the source")
+    real = SH.claude_expiry()
+    check("reading it returns timestamps and nothing else",
+          set(real) <= {"access", "refresh", "source"}, sorted(real))
+    st = SH.status()
+    blob = json.dumps(st, default=str).lower()
+    for word in ("accesstoken", "refreshtoken", "bearer", "sk-", "eyj"):
+        check("no %r anywhere in the status payload" % word, word not in blob)
+
+    section("the states, walked across a real deadline")
+    # Driven off the machine's own expiry so the arithmetic is exercised against a real
+    # timestamp rather than a made-up one.
+    exp = real.get("refresh")
+    if not exp:
+        print("  ..   (no Claude credential file here; timeline unchecked)")
+    else:
+        for label, when, want, alert in (
+            ("a month out", exp - 30 * 86400, "ok", False),
+            ("just outside the warning", exp - (SH.WARN_DAYS + 1) * 86400, "ok", False),
+            ("just inside it", exp - (SH.WARN_DAYS - 1) * 86400, "expiring", False),
+            ("tomorrow", exp - 1.5 * 86400, "expiring", False),
+            ("an hour before", exp - 3000, "expiring", False),
+            ("one minute after", exp + 60, "expired", True),
+        ):
+            s = SH.status(now=when)
+            check("%s -> %s" % (label, want), s["state"] == want, s["state"])
+            check("   and the alert is %s" % ("on" if alert else "off"),
+                  s["needs_login"] is alert, s)
+        # "expiring" must NOT raise the alarm: the session still works, and an alert that
+        # fires while everything is fine is an alert nobody reads by the time it matters.
+        s = SH.status(now=exp - 86400)
+        check("a session about to expire still works, so it warns rather than alarms",
+              s["needs_login"] is False and s["state"] == "expiring", s)
+        check("but it does tell the owner when", "caduca" in s["detail"], s["detail"])
+
+    section("deadlines in words, because nobody reads '4.87 days'")
+    for days, want in ((None, ""), (-1, "ya caducó"), (0.02, "en menos de una hora"),
+                       (0.5, "hoy"), (1.4, "mañana"), (9.2, "en 9 días")):
+        check("%s -> %r" % (days, want), SH._when(days) == want, SH._when(days))
+
+    section("milliseconds and seconds both understood")
+    check("a millisecond epoch is scaled", abs(SH._epoch(1789040751418) - 1789040751.418) < 1)
+    check("a second epoch is left alone", SH._epoch(1789040751) == 1789040751)
+    for bad in (None, "", "abc", 0, -5):
+        check("%r is not a date" % (bad,), SH._epoch(bad) is None)
+
+    section("Codex is asked, not guessed at")
+    # Codex is not installed on the machine this was written on, so its auth file's shape
+    # could not be verified. Inventing a field name and reporting a confident wrong date is
+    # worse than admitting the date is unknown.
+    # The `or` that used to be here made this vacuous - it passed whether certain was
+    # True or False. The property is: `certain` is True ONLY when a file really provided a
+    # timestamp, and with no file both must be empty.
+    tmpc = tempfile.mkdtemp(prefix="codexauth-")
+    real_home = SH.codex_home
+    try:
+        SH.codex_home = lambda: tmpc
+        cx = SH.codex_expiry()
+        check("with no auth file, no date and no confidence",
+              cx["refresh"] is None and cx["certain"] is False, cx)
+        # A file that DOES carry an expiry-shaped field: found, and only then trusted.
+        io.open(os.path.join(tmpc, "auth.json"), "w", encoding="utf-8").write(
+            json.dumps({"tokens": {"access_token": "x", "expires_at": 1789040751418}}))
+        cx2 = SH.codex_expiry()
+        check("a real expiry field is found", bool(cx2["refresh"]), cx2)
+        check("and only then is it called certain", cx2["certain"] is True, cx2)
+        check("the token beside it is not carried out",
+              "x" not in json.dumps({k: v for k, v in cx2.items() if k != "source"}), cx2)
+        # A file with no expiry-shaped field must not invent one.
+        io.open(os.path.join(tmpc, "auth.json"), "w", encoding="utf-8").write(
+            json.dumps({"tokens": {"access_token": "x"}}))
+        cx3 = SH.codex_expiry()
+        check("a file with no expiry does not get a guessed one",
+              cx3["refresh"] is None and cx3["certain"] is False, cx3)
+    finally:
+        SH.codex_home = real_home
+        shutil.rmtree(tmpc, ignore_errors=True)
+    check("and the source says why it is best-effort", "could not be verified" in src)
+
+    section("a brain that is missing is not a brain that is logged out")
+    st2 = SH.status(engine="codex")
+    if not st2["found"]:
+        check("Codex absent reads as not_installed", st2["state"] == "not_installed", st2)
+        check("and does NOT raise a login alert - there is nothing to log into",
+              st2["needs_login"] is False, st2)
+
+    section("verifying after a login runs a REAL turn")
+    check("the shallow check exists for polling while the owner types",
+          "if not deep:" in src)
+    check("the deep one goes through the same end-to-end test the wizard uses",
+          "checks.test_brain(url" in src)
+    check("and the test's verdict wins over the CLI's opinion",
+          'out["ok"] = bool(t.get("ok"))' in src)
+    v = SH.verify(deep=False)
+    check("a healthy machine verifies shallowly without touching the bridge",
+          v.get("ok") is True and v.get("tested") is False, v)
+
+    section("Olivaw never handles the credential itself")
+    check("login delegates to the brain's own flow",
+          "p.login(dict(paths or {}))" in src)
+    check("and that is written down as the reason",
+          "never touches a credential" in src)
+
+    section("the supervisor tells the owner, where they already are")
+    # The dashboard shows an expired login, but only to somebody who opens the dashboard.
+    # The one notice that reaches the owner where they already are is worth sending - once
+    # per change, never on a loop, because an alert repeated every poll gets muted and this
+    # is the one that must not be.
+    import launcher as L
+    lsrc = io.open(os.path.join(SRC, "launcher.py"), encoding="utf-8").read()
+    check("the supervisor has a login check", "def _check_login(" in lsrc)
+    check("and runs it on the update cadence, not every 15s loop",
+          "_check_login(state)" in lsrc.split("if asked or time.time() - last_check", 1)[1][:400],
+          lsrc.split("if asked or time.time() - last_check", 1)[1][:300])
+
+    sent = []
+    real_notify, real_status = L.notify, L._session.status
+    L.notify = lambda cfg, text, maintainer=False: sent.append(text)
+    try:
+        state = {}
+        L._session.status = lambda **k: {"state": "ok", "detail": "bien"}
+        L._check_login(state)
+        first = len(sent)
+        L._check_login(state)
+        check("an unchanged state says nothing at all", len(sent) == first == 0, sent)
+
+        L._session.status = lambda **k: {"state": "expired", "detail": "caducó"}
+        L._check_login(state)
+        check("an expiry is announced once", len(sent) == 1, sent)
+        check("and the notice says exactly what to press",
+              "Volver a entrar" in sent[-1], sent[-1][:120])
+        L._check_login(state)
+        check("and not again on the next pass", len(sent) == 1, sent)
+
+        L._session.status = lambda **k: {"state": "ok", "detail": "bien"}
+        L._check_login(state)
+        check("coming back is announced too, so silence is not the only signal",
+              len(sent) == 2 and "renovada" in sent[-1], sent[-1][:80])
+
+        # A machine mid-install has no session yet. Telling it the session "died" would be
+        # a confusing first impression, so signed_out only speaks once something was known.
+        state2 = {}
+        L._session.status = lambda **k: {"state": "signed_out", "detail": "sin sesión"}
+        before = len(sent)
+        L._check_login(state2)
+        check("a half-installed machine is not told its session died",
+              len(sent) == before, sent[before:])
+    finally:
+        L.notify, L._session.status = real_notify, real_status
+
+    section("the dashboard is one call, and the session leads it")
+    ws = io.open(os.path.join(SRC, "wizard", "wizard_server.py"), encoding="utf-8").read()
+    for route in ("session/status", "session/login", "session/verify", "dashboard"):
+        check("route %s exists" % route, '"%s"' % route in ws)
+    check("the dashboard carries the session, the agents and the machine",
+          '"session": session_health.status' in ws and '"agents": out' in ws and
+          '"update": updates_mod.status' in ws)
+    import wizard.wizard_server as WS
+    d = WS._dashboard(fast=True)
+    check("and it really answers", d.get("ok") and "session" in d, sorted(d))
+    check("with one entry per agent on this machine",
+          len(d["agents"]) >= 1 and all("channels" in a for a in d["agents"]),
+          [a["slug"] for a in d["agents"]])
+
+
 def main():
     test_brain()
     test_connections()
     test_talk()
+    test_session()
     print("\n%d passed, %d failed" % (len(PASSED), len(FAILED)))
     for f in FAILED:
         print("  - " + f)
