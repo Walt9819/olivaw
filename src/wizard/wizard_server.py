@@ -53,6 +53,7 @@ else:
 # icon simply did nothing.
 from winspawn import CREATE_NEW_PROCESS_GROUP, quiet     # noqa: E402
 import intercom                                          # noqa: E402
+import teams                                             # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))          # .../src/wizard
 SRC_DIR = os.path.dirname(HERE)                            # .../src
@@ -865,6 +866,13 @@ class Handler(BaseHTTPRequestHandler):
             text = intercom.transcript(body.get("thread") or "")
             return {"ok": bool(text), "text": text or "No encontré esa conversación."}
 
+        # The team map. Every one of these answers with the WHOLE state, so the page
+        # repaints from a single source instead of patching its own copy - the map is a
+        # permission, and a stale picture of a permission is the one thing it must not be.
+        if route in ("teams/adopt", "teams/link", "teams/unlink", "teams/card",
+                     "teams/decide"):
+            return self._teams(route[len("teams/"):], body)
+
         if route == "apply":
             return self._apply(body)
 
@@ -878,6 +886,77 @@ class Handler(BaseHTTPRequestHandler):
             return {"ok": True}
 
         return {"ok": False, "detail": "ruta desconocida"}
+
+    def _teams(self, what, body):
+        """Edit the map, then hand back the state the owner should now be looking at.
+
+        ValueError from teams.py is the owner's own mistake spelled out in Spanish
+        ("No había un enlace entre X e Y"), and dispatch() already turns it into a 400 with
+        that text - so these are deliberately not caught here. A 500 "error interno" would
+        send her looking for a bug in Olivaw instead of reading the sentence.
+        """
+        roster = intercom.roster(INSTALL_DIR)
+        wrote, extra = {"ok": True}, {}
+
+        if what == "adopt":
+            wrote = teams.adopt(roster, INSTALL_DIR)
+        elif what == "unlink":
+            wrote = teams.remove_link(body.get("from", ""), body.get("to", ""),
+                                      install_dir=INSTALL_DIR)
+        elif what == "decide":
+            wrote = teams.decide_request(body.get("from", ""), body.get("to", ""),
+                                         accept=bool(body.get("accept")),
+                                         both=bool(body.get("both")),
+                                         install_dir=INSTALL_DIR)
+        elif what == "card":
+            wrote = teams.set_card(body.get("slug", ""), role=body.get("role"),
+                                   description=body.get("description"),
+                                   never=body.get("never"), roster=roster,
+                                   install_dir=INSTALL_DIR)
+            if wrote.get("adopted"):
+                extra["adopted"] = True
+        elif what == "link":
+            # An empty map is the one state where a link cannot be written, so adopt first
+            # rather than refusing: the owner asked for this pair, and on a legacy machine
+            # that means she also wants the connections she already had written down.
+            status, _ = teams.read(INSTALL_DIR)
+            if status == teams.LEGACY:
+                res = teams.adopt(roster, INSTALL_DIR)
+                if not res.get("ok"):
+                    return dict(res, ok=False)
+                extra["adopted"] = True
+            hours = body.get("hours")
+            wrote = teams.set_link(
+                body.get("from", ""), body.get("to", ""),
+                why=body.get("why"), both=body.get("both"),
+                max_turns=body.get("max_turns"), hourly_limit=body.get("hourly_limit"),
+                hours=(hours if isinstance(hours, dict) else
+                       (None if hours is None else {})),
+                enabled=body.get("enabled"), direction=bool(body.get("direction")),
+                install_dir=INSTALL_DIR)
+
+        # The map is baked into every agent's skill, so a change here is only half applied
+        # until each one has been rewritten. Doing it now - rather than waiting for the
+        # supervisor's next sweep - is what makes the owner's edit take effect while she is
+        # still looking at the screen.
+        touched = []
+        if wrote.get("ok"):
+            try:
+                for r in intercom.ensure_all(install_dir=INSTALL_DIR):
+                    if r.get("changed"):
+                        prof = r.get("profile") or "default"
+                        touched.append(prof)
+                        _queue_gateway_reload(None if prof == "default" else prof)
+            except Exception as e:  # noqa: BLE001
+                extra["skill_warning"] = str(e)
+
+        st = intercom.status(install_dir=INSTALL_DIR)
+        st.update(extra)
+        st["ok"] = wrote.get("ok", False)
+        st["retaught"] = touched
+        if not wrote.get("ok"):
+            st["detail"] = wrote.get("detail", "No pude guardar.")
+        return st
 
     def _intercom_save(self, body):
         """Write the owner's limits, then report the state she should actually see."""

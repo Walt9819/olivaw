@@ -253,7 +253,7 @@ const HOOK = "\n  globalThis.__ol = { CONSOLE: CONSOLE, S: S, META: META, STEPS:
   " targetProfile: targetProfile, render: render, enterSetup: enterSetup," +
   " SOS: SOS, openSos: openSos, sendTurn: sendTurn, paintMsgs: paintMsgs," +
   " showQr: showQr, TALK: TALK, sendTalk: sendTalk, loadConn: loadConn," +
-  " startLogin: startLogin, loadDash: loadDash, DASH: DASH, BOOT: BOOT," +
+  " startLogin: startLogin, loadDash: loadDash, DASH: DASH, BOOT: BOOT, paintTeam: paintTeam, teamSvg: teamSvg, TEAM: TEAM, secTeam: secTeam," +
   " get LIVE(){ return LIVE } };\n";
 const hooked = src.slice(0, cut) + HOOK + src.slice(cut);
 
@@ -870,6 +870,211 @@ ok("a transcript that lags behind does not erase the answer",
    raced.includes("tercera pregunta") && raced.includes("Esta es la respuesta"),
    "lost it: " + JSON.stringify(raced.slice(0, 200)));
 global.fetch = realFetch;
+
+// ── the team map ───────────────────────────────────────────────────────────────
+// Drawn by hand in SVG, so there is no library to trust and nothing between a wrong
+// number and a wrong picture. These check the four states the owner can actually be in -
+// no map, a map, an unreadable map, one agent - plus the one that costs money if it is
+// wrong: an arrow pointing the way traffic cannot go.
+console.log("\n=== the team map ===");
+
+function teamState(over) {
+  const out = Object.assign({
+    ok: true, enabled: true, max_turns: 8, hourly_limit: 30,
+    quota: { used: 3, limit: 30 },
+    agents: [{ slug: "default", name: "Principal", reachable: true },
+             { slug: "daneel", name: "Daneel", reachable: true },
+             { slug: "heraldo", name: "HERALDO", reachable: true }],
+    threads: [],
+    team: Object.assign({
+      ok: true, status: "ok", configured: true, broken: false, error: "",
+      agents: [
+        { slug: "default", name: "Principal", role: "Coordina", description: "",
+          never: "", reachable: true },
+        { slug: "daneel", name: "Daneel", role: "Atiende la clinica", description: "",
+          never: "", reachable: true },
+        { slug: "heraldo", name: "HERALDO", role: "", description: "", never: "",
+          reachable: true }],
+      links: [
+        { from: "default", to: "daneel", from_name: "Principal", to_name: "Daneel",
+          both: true, why: "para cosas de la clinica", enabled: true, stale: false,
+          max_turns: null, hourly_limit: null, hours: null },
+        { from: "daneel", to: "heraldo", from_name: "Daneel", to_name: "HERALDO",
+          both: false, why: "para preguntar precios", enabled: true, stale: false,
+          max_turns: 4, hourly_limit: null, hours: { from: 9, to: 18 } }],
+      pending: [],
+    }, (over && over.team) || {}),
+  }, over || {});
+  // The outer assign above copies `over` wholesale, which puts the RAW partial back over
+  // the team we just merged - so every override that touched `team` silently became a
+  // team with no agents, and eight assertions failed for a reason that had nothing to do
+  // with the page. Put the merged one back, last.
+  out.team = Object.assign({
+    ok: true, status: "ok", configured: true, broken: false, error: "",
+    agents: [
+      { slug: "default", name: "Principal", role: "Coordina", description: "",
+        never: "", reachable: true },
+      { slug: "daneel", name: "Daneel", role: "Atiende la clinica", description: "",
+        never: "", reachable: true },
+      { slug: "heraldo", name: "HERALDO", role: "", description: "", never: "",
+        reachable: true }],
+    links: [
+      { from: "default", to: "daneel", from_name: "Principal", to_name: "Daneel",
+        both: true, why: "para cosas de la clinica", enabled: true, stale: false,
+        max_turns: null, hourly_limit: null, hours: null },
+      { from: "daneel", to: "heraldo", from_name: "Daneel", to_name: "HERALDO",
+        both: false, why: "para preguntar precios", enabled: true, stale: false,
+        max_turns: 4, hourly_limit: null, hours: { from: 9, to: 18 } }],
+    pending: [],
+  }, (over && over.team) || {});
+  return out;
+}
+
+OL.S.view = "console"; OL.S.sec = "entre-agentes";
+let teamErr = null;
+try { OL.render(); } catch (e) { teamErr = e; }
+ok("the team section renders", !teamErr, teamErr && teamErr.stack);
+{
+  const shell = idsIn(htmlOf("panel"));
+  for (const id of ["teamWarn", "teamPend", "teamMap", "teamLinks", "teamWho"])
+    ok("the page has #" + id, shell.includes(id));
+  // The limits panel is REUSED from the setup step rather than copied. Two sets of inputs
+  // writing one config file is how a page starts disagreeing with itself.
+  for (const id of ["icBox", "icOn", "icTurns", "icHour", "icSave"])
+    ok("and still carries the limits control #" + id, shell.includes(id));
+  ok("the limits panel is unfolded here, not an accordion",
+     !htmlOf("panel").includes("<summary>🤝"));
+}
+
+ok("opening it asks the server for the map",
+   CALLS.some((c) => c.route === "intercom/status"),
+   CALLS.map((c) => c.route).join(", "));
+
+// — a map that exists —
+OL.paintTeam(teamState());
+{
+  const svg = htmlOf("teamMap");
+  ok("every agent is a node in the picture",
+     (svg.match(/class="tmnd/g) || []).length === 3,
+     (svg.match(/class="tmnd[^"]*"/g) || []).join(" "));
+  ok("every link is drawn", (svg.match(/data-lk="/g) || []).length === 2);
+  ok("a two-way link has an arrowhead at BOTH ends",
+     (svg.match(/marker-start="url\(#tmStart\)"/g) || []).length === 1);
+  ok("and a one-way link has only one",
+     (svg.match(/marker-end="url\(#tmEnd\)"/g) || []).length === 2);
+  ok("the owner's sentence is on the wire", svg.includes("para preguntar precios"));
+  ok("an agent with no role is shown as such, not blank", svg.includes("sin ficha"));
+
+  const list = htmlOf("teamLinks");
+  ok("the list says who asks whom", list.includes("Principal") && list.includes("Daneel"));
+  ok("a one-way link shows a one-way arrow", list.includes("→"));
+  ok("a two-way link shows a two-way arrow", list.includes("⇄"));
+  ok("a per-link turn cap is visible without opening the editor",
+     list.includes("4 turnos"));
+  ok("so is an opening-hours window", list.includes("09:00"));
+  OL.paintTeam(teamState({ team: { links: [
+    { from: "default", to: "daneel", from_name: "P", to_name: "D", both: false,
+      why: "", enabled: true, stale: false, max_turns: null, hourly_limit: null,
+      hours: null }] } }));
+  ok("a link with no explanation is called out",
+     htmlOf("teamLinks").includes("sin explicaci"), htmlOf("teamLinks").slice(0, 200));
+
+  OL.paintTeam(teamState());
+  const who = htmlOf("teamWho");
+  ok("each agent's role is listed", who.includes("Atiende la clinica"));
+  ok("and one without a role is offered the button to write it", who.includes("Describir"));
+}
+
+// — a machine that has never been mapped —
+OL.paintTeam(teamState({ team: { configured: false, status: "legacy", links: [] } }));
+{
+  const warn = htmlOf("teamWarn");
+  ok("a map-less machine is told that everyone can reach everyone",
+     warn.includes("cualquier"), warn.slice(0, 160));
+  ok("and is told adopting it changes nothing today",
+     warn.includes("no se corta nada") || warn.includes("no cambia nada"));
+  ok("with a button to do it", idsIn(warn).includes("tmAdopt"));
+  // Caught by looking at it: four boxes and no lines, directly under a banner saying
+  // every agent can reach every other one. The empty diagram was the more believable of
+  // the two, and it was the wrong one.
+  const m = htmlOf("teamMap");
+  ok("and the picture shows the connections that really exist right now",
+     (m.match(/data-lk="/g) || []).length === 0 &&
+     (m.match(/tmlk implied/g) || []).length === 3,
+     (m.match(/class="tmlk[^"]*"/g) || []).join(" "));
+  ok("drawn as nobody's decision yet, not as editable links",
+     m.includes("todos con todos"));
+}
+
+// — a map that cannot be read —
+OL.paintTeam(teamState({ team: {
+  broken: true, configured: false, status: "broken", error: "no es JSON valido",
+  links: [], agents: [] } }));
+{
+  const warn = htmlOf("teamWarn");
+  ok("an unreadable map says so", warn.includes("No puedo leer"));
+  ok("and says plainly that nobody can call anybody meanwhile",
+     warn.includes("ningún agente puede llamar"));
+  ok("and names the backup to recover from", warn.includes("teams.json.bak"));
+}
+
+// — an agent asking for a link —
+OL.paintTeam(teamState({ team: { pending: [
+  { from: "daneel", to: "heraldo", from_name: "Daneel", to_name: "HERALDO",
+    why: "necesito precios" }] } }));
+{
+  const p = htmlOf("teamPend");
+  ok("a pending request is shown to the owner", p.includes("quiere poder preguntarle"));
+  ok("with the agent's own reason", p.includes("necesito precios"));
+  ok("and three ways to answer it",
+     p.includes("tmYes") && p.includes("tmYes2") && p.includes("tmNo"));
+}
+
+// — one agent —
+OL.paintTeam(teamState({ team: {
+  agents: [{ slug: "default", name: "Principal", role: "", description: "", never: "",
+             reachable: true }], links: [], configured: false } }));
+{
+  const m = htmlOf("teamMap");
+  ok("one agent gets a sentence, not an empty diagram",
+     !m.includes("<svg") && m.includes("un agente"));
+}
+
+// — an agent that was deleted while links pointed at it —
+OL.paintTeam(teamState({ team: { links: [
+  { from: "daneel", to: "fantasma", from_name: "Daneel", to_name: "fantasma",
+    both: true, why: "", enabled: true, stale: true, max_turns: null,
+    hourly_limit: null, hours: null }] } }));
+{
+  ok("a link to a departed agent is flagged rather than drawn wrong",
+     htmlOf("teamLinks").includes("ya no est"));
+  ok("and the picture does not invent a node for it",
+     (htmlOf("teamMap").match(/data-lk="/g) || []).length === 0);
+}
+
+// — a paused link —
+OL.paintTeam(teamState({ team: { links: [
+  { from: "daneel", to: "heraldo", from_name: "Daneel", to_name: "HERALDO",
+    both: false, why: "x", enabled: false, stale: false, max_turns: null,
+    hourly_limit: null, hours: null }] } }));
+ok("a paused link is visibly paused in the list", htmlOf("teamLinks").includes("en pausa"));
+ok("and dimmed in the picture", htmlOf("teamMap").includes("tmlk off"));
+
+// — a map with no links at all is a choice, not a bug —
+OL.paintTeam(teamState({ team: { links: [] } }));
+ok("an empty map says nobody can talk, and that that is allowed",
+   htmlOf("teamLinks").includes("Nadie puede hablar"));
+
+// — the global switch overrides the map, and the page says so —
+OL.paintTeam(teamState());
+{
+  // paintIc lives in the other closure; drive it the way the page does.
+  const before = CALLS.length;
+  ok("the limits box does not repeat the roster the map already draws",
+     !htmlOf("icBox").includes("Daneel") || htmlOf("icBox") === "",
+     htmlOf("icBox").slice(0, 120));
+  CALLS.length = before;
+}
 
 // ── the first run must still be the stepper ────────────────────────────────────
 console.log("\n=== a machine with no agents still gets the guided install ===");

@@ -252,9 +252,13 @@
       lead: "Navegar por internet, generar imágenes y conectarse a herramientas externas.",
       render: function () { return secBrowser() + secImages() + secMcp(); } },
 
-    { id: "entre-agentes", scope: "team", icon: "🤝", label: "Que se hablen entre ellos",
-      title: "Que tus agentes se hablen entre ellos",
-      render: function () { return unfold(secIntercom()); } },
+    { id: "entre-agentes", scope: "team", icon: "🗺️", label: "El equipo",
+      title: "El equipo: quién habla con quién",
+      lead: "Tus agentes saben cosas distintas, y a veces el que recibe la pregunta no es " +
+            "el que tiene la respuesta. Aquí decides <b>quién puede preguntarle a quién, " +
+            "y para qué</b>. No es una recomendación: es la puerta — lo que no esté " +
+            "dibujado aquí, se rechaza.",
+      render: secTeam, wire: eTeam },
     { id: "rutinas", scope: "team", icon: "🌙", label: "Rutinas automáticas",
       title: "Rutinas automáticas",
       lead: "Igual que una persona: de madrugada repasa el día y guarda lo que importa; " +
@@ -1548,29 +1552,530 @@
   }
 
   // Agents talking to agents. Off is a real answer, so both buttons are here.
+  // ── the team map: who may talk to whom ──────────────────────────────────────
+  // Server-owned, and more strictly than anything else on this screen. These links are
+  // what teams.py enforces inside the gate, so a copy cached in this page would be a
+  // picture of permissions the gate had already stopped agreeing with - the one kind of
+  // stale a page like this must never be. Every edit answers with the WHOLE state and
+  // repaints from it, so what is drawn is always what is enforced.
+  var TEAM = { st: null, edit: null, adding: false, card: "", note: "" };
+
+  function tmShort(s, n) {
+    s = String(s || "");
+    return s.length > n ? s.slice(0, n - 1) + "…" : s;
+  }
+  function tmPad(n) { return (n < 10 ? "0" : "") + n; }
+  function tmHours(h) { return tmPad(h.from) + ":00–" + tmPad(h.to) + ":00"; }
+  function tmArrow(ln) { return ln.both ? "⇄" : "→"; }
+
+  // The picture. Agents on a ring, links between them, arrows showing direction.
+  // Deliberately drawn by hand instead of pulling in a graph library: this page ships
+  // offline inside the kit, and a layout engine would be a dependency and a stylesheet
+  // for a diagram that never has more than a handful of nodes.
+  function teamSvg(st) {
+    var ags = st.agents || [];
+    if (ags.length < 2) return "";
+    var W = 620, H = 330, cx = W / 2, cy = H / 2, NW = 152, NH = 48;
+    var at = {}, order = [];
+    ags.forEach(function (a, i) {
+      var x, y;
+      if (ags.length === 2) { x = i ? W - 100 : 100; y = cy; }
+      else {
+        var ang = -Math.PI / 2 + i * 2 * Math.PI / ags.length;
+        x = cx + Math.cos(ang) * (cx - NW / 2 - 10);
+        y = cy + Math.sin(ang) * (cy - NH / 2 - 18);
+      }
+      at[a.slug] = { a: a, x: x, y: y };
+      order.push(a.slug);
+    });
+    // Where a line should stop so the arrowhead lands on the box edge instead of
+    // disappearing underneath it.
+    function edge(p, dx, dy) {
+      var hw = NW / 2 + 6, hh = NH / 2 + 6;
+      var tx = dx ? hw / Math.abs(dx) : 1e9, ty = dy ? hh / Math.abs(dy) : 1e9;
+      var t = Math.min(tx, ty);
+      return [p.x + dx * t, p.y + dy * t];
+    }
+    var wires = (st.links || []).map(function (ln, i) {
+      var A = at[ln.from], B = at[ln.to];
+      if (!A || !B) return "";              // a link to an agent that is gone
+      var dx = B.x - A.x, dy = B.y - A.y;
+      var p1 = edge(A, dx, dy), p2 = edge(B, -dx, -dy);
+      var mx = (p1[0] + p2[0]) / 2, my = (p1[1] + p2[1]) / 2;
+      var cls = "tmlk" + (ln.enabled ? "" : " off") + (TEAM.edit === i ? " sel" : "") +
+                (ln.implied ? " implied" : "");
+      var tip = ln.from_name + "  " + tmArrow(ln) + "  " + ln.to_name +
+        (ln.why ? "  ·  " + ln.why : "") + (ln.enabled ? "" : "  ·  en pausa") +
+        (ln.hours ? "  ·  " + tmHours(ln.hours) : "");
+      var xy = ' x1="' + p1[0].toFixed(1) + '" y1="' + p1[1].toFixed(1) +
+               '" x2="' + p2[0].toFixed(1) + '" y2="' + p2[1].toFixed(1) + '"';
+      // An implied link is not a row anyone can edit, so it gets no index, no tab stop and
+      // no button role - clicking it would open the editor for whatever link happened to
+      // sit at that position in a list it is not part of.
+      return '<g class="' + cls + '"' +
+        (ln.implied ? "" : ' data-lk="' + i + '" tabindex="0" role="button"') + ">" +
+        '<title>' + esc(tip) + '</title>' +
+        // A 1px line is a 1px click target. This fat invisible one is what you actually hit.
+        '<line class="tmhit"' + xy + '/>' +
+        '<line class="tmwire"' + xy + ' marker-end="url(#tmEnd)"' +
+          (ln.both ? ' marker-start="url(#tmStart)"' : '') + '/>' +
+        (ln.why ? '<text class="tmwhy" x="' + mx.toFixed(1) + '" y="' +
+                  (my - 7).toFixed(1) + '">' + esc(tmShort(ln.why, 22)) + '</text>' : '') +
+        '</g>';
+    }).join("");
+    var boxes = order.map(function (slug) {
+      var p = at[slug], a = p.a;
+      var cls = "tmnd" + (TEAM.card === a.slug ? " sel" : "") +
+                (a.reachable === false ? " dim" : "");
+      return '<g class="' + cls + '" data-ag="' + esc(a.slug) + '" tabindex="0" ' +
+        'role="button"><title>' + esc(a.name + " — " +
+          (a.role || "sin ficha") +
+          (a.reachable === false ? " (no se le puede llamar desde aquí)" : "")) +
+        '</title>' +
+        '<rect x="' + (p.x - NW / 2) + '" y="' + (p.y - NH / 2) + '" width="' + NW +
+          '" height="' + NH + '" rx="12"/>' +
+        '<text class="tmnm" x="' + p.x + '" y="' + (p.y - 4) + '">' +
+          esc(tmShort(a.name, 18)) + '</text>' +
+        '<text class="tmrl" x="' + p.x + '" y="' + (p.y + 13) + '">' +
+          esc(a.role ? tmShort(a.role, 26) : "sin ficha") + '</text></g>';
+    }).join("");
+    // Two markers rather than one with orient="auto-start-reverse": the reversed form is
+    // newer, and a wrong-way arrowhead on a two-way link is a lie about who may call whom.
+    return '<svg class="teamsvg" viewBox="0 0 ' + W + ' ' + H + '" role="img" ' +
+      'aria-label="Mapa del equipo: quién puede hablar con quién"><defs>' +
+      '<marker id="tmEnd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" ' +
+        'markerHeight="6.5" orient="auto"><path d="M0,0 L10,5 L0,10 z"/></marker>' +
+      '<marker id="tmStart" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="6.5" ' +
+        'markerHeight="6.5" orient="auto"><path d="M10,0 L0,5 L10,10 z"/></marker>' +
+      '</defs>' + wires + boxes + '</svg>';
+  }
+
+  function tmOptions(ags, cur) {
+    return ags.map(function (a) {
+      return '<option value="' + esc(a.slug) + '"' +
+        (a.slug === cur ? " selected" : "") + ">" + esc(a.name) + "</option>";
+    }).join("");
+  }
+
+  // One open editor at a time, so these ids are unique by construction.
+  function tmLinkForm(ln, ags) {
+    var h = ln.hours || { from: 9, to: 18 };
+    return '<div class="tmform">' +
+      '<label class="field"><span class="lab">¿Para qué sirve este enlace?</span>' +
+      '<input type="text" id="lkWhy" maxlength="300" value="' + esc(ln.why || "") +
+      '" placeholder="Ej: para preguntar precios y disponibilidad"></label>' +
+      '<p class="small muted" style="margin:-4px 0 10px">Esta frase se la lee ' +
+      '<b>' + esc(ln.from_name) + '</b> en sus instrucciones: es lo que le dice ' +
+      '<i>cuándo</i> escribir. Si la dejas vacía, sabrá que puede, pero no cuándo.</p>' +
+      '<label class="field"><span class="lab">Sentido</span><select id="lkDir">' +
+      '<option value="fwd"' + (ln.both ? "" : " selected") + ">" +
+        esc(ln.from_name + " → " + ln.to_name) + " (sólo en un sentido)</option>" +
+      '<option value="rev">' + esc(ln.to_name + " → " + ln.from_name) +
+        " (sólo en un sentido)</option>" +
+      '<option value="both"' + (ln.both ? " selected" : "") + ">" +
+        esc(ln.from_name + " ⇄ " + ln.to_name) + " (los dos pueden)</option>" +
+      '</select></label>' +
+      '<div class="row" style="gap:14px;align-items:center;flex-wrap:wrap">' +
+      '<label class="small"><input type="checkbox" id="lkOn"' +
+        (ln.enabled ? " checked" : "") + "> Activo</label>" +
+      '<label class="small"><input type="checkbox" id="lkHOn"' +
+        (ln.hours ? " checked" : "") + "> Sólo a ciertas horas</label>" +
+      '<span class="small" id="lkHWrap"' + (ln.hours ? "" : ' style="display:none"') + '>' +
+        'de <input type="number" id="lkH1" min="0" max="23" style="width:58px" value="' +
+        h.from + '"> a <input type="number" id="lkH2" min="0" max="23" style="width:58px" ' +
+        'value="' + h.to + '"></span></div>' +
+      '<div class="row" style="gap:14px;align-items:center;margin-top:10px;flex-wrap:wrap">' +
+      '<label class="small">Turnos por conversación <input type="number" id="lkTurns" ' +
+        'min="0" max="40" style="width:70px" value="' + (ln.max_turns || "") +
+        '" placeholder="por defecto"></label>' +
+      '<label class="small">Llamadas por hora <input type="number" id="lkHour" min="0" ' +
+        'max="500" style="width:80px" value="' + (ln.hourly_limit || "") +
+        '" placeholder="por defecto"></label></div>' +
+      '<p class="small muted" style="margin:8px 0 0">En blanco = usa los límites ' +
+      'generales de abajo. Un límite aquí sólo puede ser más estricto, nunca más ' +
+      'amplio.</p>' +
+      '<div class="row" style="margin-top:12px">' +
+      '<button class="btn btn-primary btn-sm" id="lkSave">Guardar</button>' +
+      '<button class="btn btn-soft btn-sm" id="lkCancel">Cancelar</button>' +
+      '<button class="btn btn-soft btn-sm" id="lkDel" style="margin-left:auto">' +
+      'Quitar este enlace</button></div></div>';
+  }
+
+  function tmAddForm(ags) {
+    return '<div class="tmform">' +
+      '<div class="row" style="gap:10px;align-items:end;flex-wrap:wrap">' +
+      '<label class="field" style="flex:1;min-width:150px"><span class="lab">Quién ' +
+      'pregunta</span><select id="adFrom">' + tmOptions(ags, ags[0].slug) +
+      '</select></label>' +
+      '<label class="field" style="flex:1;min-width:150px"><span class="lab">A quién</span>' +
+      '<select id="adTo">' + tmOptions(ags, ags[1].slug) + '</select></label></div>' +
+      '<label class="field"><span class="lab">¿Para qué?</span>' +
+      '<input type="text" id="adWhy" maxlength="300" ' +
+      'placeholder="Ej: para preguntar precios y disponibilidad"></label>' +
+      '<label class="small"><input type="checkbox" id="adBoth"> Que puedan los dos ' +
+      'sentidos</label>' +
+      '<div class="row" style="margin-top:12px">' +
+      '<button class="btn btn-primary btn-sm" id="adSave">Conectar</button>' +
+      '<button class="btn btn-soft btn-sm" id="adCancel">Cancelar</button></div></div>';
+  }
+
+  function tmCardForm(a) {
+    return '<div class="tmform">' +
+      '<label class="field"><span class="lab">¿De qué se encarga? (una línea)</span>' +
+      '<input type="text" id="cdRole" maxlength="120" value="' + esc(a.role || "") +
+      '" placeholder="Ej: Atiende a los clientes de la clínica"></label>' +
+      '<label class="field"><span class="lab">¿Qué sabe y qué tiene a mano? ' +
+      '(opcional)</span><textarea id="cdDesc" maxlength="600" placeholder="Ej: Tiene la ' +
+      'agenda, los precios y el historial de pacientes.">' + esc(a.description || "") +
+      '</textarea></label>' +
+      '<label class="field"><span class="lab">¿Qué NO deben pedirle? ' +
+      '(opcional)</span><input type="text" id="cdNever" maxlength="300" value="' +
+      esc(a.never || "") + '" placeholder="Ej: nada que toque facturación"></label>' +
+      '<p class="small muted" style="margin:-4px 0 10px">Lo que escribas aquí lo leen ' +
+      '<b>los otros agentes</b> antes de escribirle, y le ayuda a él a saber qué ' +
+      'contestar y qué no.</p>' +
+      '<div class="row">' +
+      '<button class="btn btn-primary btn-sm" id="cdSave">Guardar</button>' +
+      '<button class="btn btn-soft btn-sm" id="cdCancel">Cancelar</button></div></div>';
+  }
+
+  function secTeam() {
+    return '' +
+      '<div id="teamWarn"></div>' +
+      '<div id="teamPend"></div>' +
+      '<div class="card pad"><div id="teamMap" class="muted small">Cargando el ' +
+      'equipo…</div></div>' +
+      '<h2>Quién puede hablar con quién</h2>' +
+      '<div class="card pad"><div id="teamLinks" class="muted small">…</div></div>' +
+      '<h2>Quién es quién</h2>' +
+      '<p class="small muted" style="margin-top:-6px">La ficha de cada agente. Los demás ' +
+      'la leen antes de escribirle, así que cuanto más claro, menos preguntas tontas.</p>' +
+      '<div class="card pad"><div id="teamWho" class="muted small">…</div></div>' +
+      '<h2>Límites y seguridad</h2>' +
+      // The same panel the setup step shows, with its accordion taken off. Reused rather
+      // than copied: these are the limits teams.py reads, and two sets of inputs writing
+      // one config is how a page starts disagreeing with itself.
+      unfold(secIntercom());
+  }
+
+  // The compact version, for the setup wizard's optional-extras step. At that point there
+  // is usually one agent and nothing to map, so it is the switch and the limits only.
   function secIntercom() {
     return '' +
       '<details><summary>🤝 Que tus agentes se hablen entre ellos</summary>' +
       '<p class="small muted">Si tienes más de un agente, cada uno sabe cosas ' +
       'distintas. Con esto <b>uno puede preguntarle al otro</b> y seguir la conversación ' +
       'hasta resolver, sin que tú hagas de mensajero. Cada pregunta es un turno completo ' +
-      'del otro agente (~30-120 s), y queda escrita.</p>' +
+      'del otro agente (~30-120 s), y queda escrita. Quién puede hablar con quién lo ' +
+      'decides en <b>El equipo</b>.</p>' +
       '<div id="icBox" class="small muted">Comprobando…</div>' +
       '<div class="row" style="margin-top:10px">' +
       '<button class="btn btn-primary btn-sm" id="icOn">Permitir que se hablen</button>' +
       '<button class="btn btn-soft btn-sm" id="icOff">No permitirlo</button></div>' +
-      '<div class="row" style="margin-top:8px;align-items:center;gap:10px">' +
+      '<div class="row" style="margin-top:10px;align-items:center;gap:10px">' +
       '<label class="small">Turnos por conversación ' +
       '<input id="icTurns" type="number" min="2" max="40" style="width:70px"></label>' +
       '<label class="small">Llamadas por hora ' +
       '<input id="icHour" type="number" min="1" max="500" style="width:80px"></label>' +
       '<button class="btn btn-soft btn-sm" id="icSave">Guardar límites</button></div>' +
-      '<p class="small muted" style="margin-top:8px">Un agente que le escribe a otro <b>no ' +
-      'manda</b>: el mensaje llega marcado como venido de otro agente, y el que lo recibe ' +
-      'tiene instrucciones de no ejecutar nada delicado por petíción de un compañero. ' +
-      'Para eso estás tú.</p>' +
+      '<p class="small muted" style="margin-top:10px">Un agente que le escribe a otro ' +
+      '<b>no manda</b>: el mensaje llega marcado como venido de otro agente, y el que lo ' +
+      'recibe tiene instrucciones de no ejecutar nada delicado por petición de un ' +
+      'compañero. Para eso estás tú.</p>' +
       '<div id="icThreads" style="margin-top:6px"></div>' +
       chLine("icPill") + '</details>';
+  }
+
+  function paintTeam(st) {
+    if (!el("teamMap")) return;
+    TEAM.st = st;
+    var t = (st && st.team) || { agents: [], links: [], pending: [] };
+    var ags = t.agents || [];
+
+    // ── banners: the three states that are not "a normal map" ───────────────
+    var warn = "";
+    if (st && st.ok === false && st.detail) {
+      warn += '<div class="callout bad">⚠️ ' + esc(st.detail) + "</div>";
+    }
+    if (t.broken) {
+      warn += '<div class="callout bad"><b>No puedo leer el mapa del equipo.</b><br>' +
+        esc(t.error || "") + '<br>Mientras tanto <b>ningún agente puede llamar a ' +
+        'otro</b>: prefiero pararlo a adivinar quién tenía permiso. Hay una copia en ' +
+        '<code>teams.json.bak</code> dentro de la carpeta de Olivaw.</div>';
+    } else if (!t.configured && ags.length > 1) {
+      warn += '<div class="callout"><b>Tu equipo todavía no tiene mapa.</b><br>' +
+        'Ahora mismo <b>cualquiera de tus ' + ags.length + ' agentes puede preguntarle a ' +
+        'cualquier otro</b>. Eso funciona, pero no es una decisión tuya: es lo que había ' +
+        'por defecto.<br><br>Si dibujas el mapa, anoto las conexiones que ya existen ' +
+        '<b>tal cual están</b> — no se corta nada, no cambia nada hoy — y a partir de ahí ' +
+        'puedes quitar las que no quieras.' +
+        '<div class="row" style="margin-top:10px">' +
+        '<button class="btn btn-primary btn-sm" id="tmAdopt">Dibujar el mapa</button>' +
+        "</div></div>";
+    }
+    if (st && st.adopted) {
+      warn += '<div class="callout good">He anotado las conexiones que ya tenías. ' +
+        'Hoy no cambia nada; ahora puedes editarlas.</div>';
+    }
+    if (st && (st.retaught || []).length) {
+      warn += '<div class="callout good">Avisados: <b>' +
+        esc((st.retaught || []).join(", ")) + '</b>. Cada uno lo verá en cuanto termine ' +
+        'lo que esté haciendo.</div>';
+    }
+    el("teamWarn").innerHTML = warn;
+
+    // ── an agent asking for a link it does not have ─────────────────────────
+    el("teamPend").innerHTML = (t.pending || []).length
+      ? '<div class="callout"><b>Te piden permiso</b>' + (t.pending || []).map(function (p) {
+          return '<div class="tmpend"><div class="grow"><b>' + esc(p.from_name) +
+            "</b> quiere poder preguntarle a <b>" + esc(p.to_name) + "</b>" +
+            (p.why ? '<div class="small muted">«' + esc(p.why) + "»</div>" : "") +
+            '</div><div class="row" style="gap:6px">' +
+            '<button class="btn btn-primary btn-sm tmYes" data-f="' + esc(p.from) +
+              '" data-t="' + esc(p.to) + '">Permitir</button>' +
+            '<button class="btn btn-soft btn-sm tmYes2" data-f="' + esc(p.from) +
+              '" data-t="' + esc(p.to) + '">En los dos sentidos</button>' +
+            '<button class="btn btn-soft btn-sm tmNo" data-f="' + esc(p.from) +
+              '" data-t="' + esc(p.to) + '">No</button></div></div>';
+        }).join("") + "</div>"
+      : "";
+
+    // ── the picture ─────────────────────────────────────────────────────────
+    if (ags.length < 2) {
+      el("teamMap").innerHTML = '👤 Por ahora sólo hay <b>un agente</b> en ' +
+        'este equipo, así que no hay mapa que dibujar. En cuanto crees otro, aparecen ' +
+        'aquí y podrás decidir si se hablan y para qué.';
+    } else {
+      // On a machine with no map the diagram would otherwise be four boxes and nothing
+      // between them - which reads as "none of these can talk to each other" directly
+      // under a banner saying every one of them can. So draw what is actually happening,
+      // in a dashed hand: these connections are real, they are just nobody's decision yet.
+      var drawn = t;
+      var implied = !t.configured && !t.broken;
+      if (implied) {
+        var lines = [];
+        for (var i = 0; i < ags.length; i++) {
+          for (var j = i + 1; j < ags.length; j++) {
+            lines.push({ from: ags[i].slug, to: ags[j].slug, from_name: ags[i].name,
+                         to_name: ags[j].name, both: true, why: "", enabled: true,
+                         stale: false, implied: true, max_turns: null,
+                         hourly_limit: null, hours: null });
+          }
+        }
+        drawn = { agents: ags, links: lines };
+      }
+      el("teamMap").innerHTML = teamSvg(drawn) +
+        '<div class="tmlegend small muted">' + (implied
+          ? 'Así está ahora mismo: <b>todos con todos</b>, por defecto. Dibuja el mapa ' +
+            'para decidirlo tú.'
+          : 'Pulsa un agente para escribir su ficha, o una flecha para cambiar ese ' +
+            'enlace. La punta de la flecha indica quién puede empezar la conversación.') +
+        "</div>";
+    }
+
+    // ── the list: the same thing, but readable and editable ─────────────────
+    var lh = "";
+    if (!t.configured) {
+      lh = '<p class="muted small" style="margin:0">Sin mapa, todos pueden con todos. ' +
+        "Dibújalo arriba para decidirlo tú.</p>";
+    } else if (!(t.links || []).length) {
+      lh = '<p class="muted small" style="margin:0 0 10px"><b>Nadie puede hablar con ' +
+        'nadie.</b> Tus agentes trabajan cada uno por su cuenta, que también es una ' +
+        'forma válida de tenerlo.</p>';
+    } else {
+      lh = '<div class="tmlist">' + (t.links || []).map(function (ln, i) {
+        var tags = [];
+        if (!ln.enabled) tags.push("en pausa");
+        if (ln.hours) tags.push(tmHours(ln.hours));
+        if (ln.max_turns) tags.push(ln.max_turns + " turnos");
+        if (ln.hourly_limit) tags.push(ln.hourly_limit + "/hora");
+        if (ln.stale) tags.push("alguno ya no está");
+        return '<div class="tmrow' + (ln.enabled ? "" : " off") + '">' +
+          '<div class="grow"><div><b>' + esc(ln.from_name) + "</b> " +
+          '<span class="tmar">' + tmArrow(ln) + "</span> <b>" + esc(ln.to_name) +
+          "</b>" + tags.map(function (x) {
+            return ' <span class="tmtag">' + esc(x) + "</span>";
+          }).join("") + "</div>" +
+          '<div class="small muted">' +
+          (ln.why ? esc(ln.why)
+                  : "<i>sin explicación — sabe que puede, pero no cuándo</i>") +
+          "</div></div>" +
+          '<button class="btn btn-soft btn-sm tmEdit" data-i="' + i + '">Cambiar</button>' +
+          "</div>" +
+          (TEAM.edit === i ? tmLinkForm(ln, ags) : "");
+      }).join("") + "</div>";
+    }
+    if (t.configured && ags.length > 1) {
+      lh += TEAM.adding
+        ? tmAddForm(ags)
+        : '<div class="row" style="margin-top:10px">' +
+          '<button class="btn btn-soft btn-sm" id="tmAdd">+ Conectar dos agentes</button>' +
+          "</div>";
+    }
+    el("teamLinks").innerHTML = lh;
+
+    // ── who is who ──────────────────────────────────────────────────────────
+    el("teamWho").innerHTML = ags.length
+      ? '<div class="tmlist">' + ags.map(function (a) {
+          return '<div class="tmrow"><div class="grow"><div><b>' + esc(a.name) + "</b>" +
+            (a.reachable === false
+              ? ' <span class="tmtag">no se le puede llamar</span>' : "") + "</div>" +
+            '<div class="small muted">' +
+            (a.role ? esc(a.role) : "<i>sin ficha</i>") +
+            (a.description ? "<br>" + esc(a.description) : "") +
+            (a.never ? '<br><b>No le pidas:</b> ' + esc(a.never) : "") +
+            "</div></div>" +
+            '<button class="btn btn-soft btn-sm tmCard" data-s="' + esc(a.slug) + '">' +
+            (a.role ? "Cambiar" : "Describir") + "</button></div>" +
+            (TEAM.card === a.slug ? tmCardForm(a) : "");
+        }).join("") + "</div>"
+      : "No encontré agentes.";
+
+    wireTeam();
+  }
+
+  function teamSave(btn, body, route) {
+    var pill = el("icPill");
+    if (pill) pill.style.display = "inline-flex";
+    return runTest(btn, pill, function () {
+      return api(route || "teams/link", body);
+    }, "Guardando…").then(function (r) {
+      TEAM.edit = null; TEAM.adding = false; TEAM.card = "";
+      paintTeam(r);
+      // The limits box below is painted from another closure and would otherwise keep
+      // showing the quota as it was before this edit.
+      if (TEAM.reloadIc) TEAM.reloadIc();
+      return r;
+    });
+  }
+
+  function wireTeam() {
+    var t = (TEAM.st && TEAM.st.team) || { agents: [], links: [] };
+    var ags = t.agents || [];
+    function each(sel, fn) {
+      Array.prototype.forEach.call(document.querySelectorAll(sel), fn);
+    }
+
+    if (el("tmAdopt")) el("tmAdopt").onclick = function () {
+      teamSave(this, {}, "teams/adopt");
+    };
+    if (el("tmAdd")) el("tmAdd").onclick = function () {
+      TEAM.adding = true; TEAM.edit = null; TEAM.card = ""; paintTeam(TEAM.st);
+    };
+
+    each(".tmEdit", function (b) {
+      b.onclick = function () {
+        var i = parseInt(b.getAttribute("data-i"), 10);
+        TEAM.edit = (TEAM.edit === i) ? null : i;
+        TEAM.adding = false; TEAM.card = "";
+        paintTeam(TEAM.st);
+      };
+    });
+    each(".tmCard", function (b) {
+      b.onclick = function () {
+        var s = b.getAttribute("data-s");
+        TEAM.card = (TEAM.card === s) ? "" : s;
+        TEAM.edit = null; TEAM.adding = false;
+        paintTeam(TEAM.st);
+      };
+    });
+
+    // Clicking the picture does the same as clicking the list. Keyboard too: these are
+    // role="button" with tabindex, so they have to answer Enter and Space like one.
+    function hook(nodes, fn) {
+      Array.prototype.forEach.call(nodes, function (g) {
+        g.onclick = fn;
+        g.onkeydown = function (e) {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fn.call(g); }
+        };
+      });
+    }
+    hook(document.querySelectorAll(".tmnd"), function () {
+      TEAM.card = this.getAttribute("data-ag"); TEAM.edit = null; TEAM.adding = false;
+      paintTeam(TEAM.st);
+      var box = el("teamWho"); if (box) box.scrollIntoView({ block: "center" });
+    });
+    hook(document.querySelectorAll(".tmlk"), function () {
+      TEAM.edit = parseInt(this.getAttribute("data-lk"), 10);
+      TEAM.card = ""; TEAM.adding = false;
+      paintTeam(TEAM.st);
+      var box = el("teamLinks"); if (box) box.scrollIntoView({ block: "center" });
+    });
+
+    if (el("lkHOn")) el("lkHOn").onchange = function () {
+      el("lkHWrap").style.display = this.checked ? "" : "none";
+    };
+    if (el("lkCancel")) el("lkCancel").onclick = function () {
+      TEAM.edit = null; paintTeam(TEAM.st);
+    };
+    if (el("adCancel")) el("adCancel").onclick = function () {
+      TEAM.adding = false; paintTeam(TEAM.st);
+    };
+    if (el("cdCancel")) el("cdCancel").onclick = function () {
+      TEAM.card = ""; paintTeam(TEAM.st);
+    };
+
+    if (el("lkSave")) el("lkSave").onclick = function () {
+      var ln = (t.links || [])[TEAM.edit];
+      if (!ln) return;
+      var dir = el("lkDir").value;
+      var from = dir === "rev" ? ln.to : ln.from;
+      var to = dir === "rev" ? ln.from : ln.to;
+      var hOn = el("lkHOn").checked;
+      teamSave(this, {
+        from: from, to: to, direction: dir === "rev",
+        why: el("lkWhy").value, both: dir === "both",
+        enabled: el("lkOn").checked,
+        max_turns: parseInt(el("lkTurns").value, 10) || 0,
+        hourly_limit: parseInt(el("lkHour").value, 10) || 0,
+        hours: hOn ? { from: parseInt(el("lkH1").value, 10) || 0,
+                       to: parseInt(el("lkH2").value, 10) || 0 } : {}
+      });
+    };
+    if (el("lkDel")) el("lkDel").onclick = function () {
+      var ln = (t.links || [])[TEAM.edit];
+      if (!ln) return;
+      teamSave(this, { from: ln.from, to: ln.to }, "teams/unlink");
+    };
+    if (el("adSave")) el("adSave").onclick = function () {
+      var from = el("adFrom").value, to = el("adTo").value;
+      if (from === to) {
+        var p = el("icPill");
+        if (p) { p.style.display = "inline-flex"; p.className = "pill bad";
+                 p.textContent = "Elige dos agentes distintos."; }
+        return;
+      }
+      teamSave(this, { from: from, to: to, why: el("adWhy").value,
+                       both: el("adBoth").checked, enabled: true });
+    };
+    if (el("cdSave")) el("cdSave").onclick = function () {
+      teamSave(this, { slug: TEAM.card, role: el("cdRole").value,
+                       description: el("cdDesc").value, never: el("cdNever").value },
+               "teams/card");
+    };
+    each(".tmYes", function (b) {
+      b.onclick = function () {
+        teamSave(b, { from: b.getAttribute("data-f"), to: b.getAttribute("data-t"),
+                      accept: true, both: false }, "teams/decide");
+      };
+    });
+    each(".tmYes2", function (b) {
+      b.onclick = function () {
+        teamSave(b, { from: b.getAttribute("data-f"), to: b.getAttribute("data-t"),
+                      accept: true, both: true }, "teams/decide");
+      };
+    });
+    each(".tmNo", function (b) {
+      b.onclick = function () {
+        teamSave(b, { from: b.getAttribute("data-f"), to: b.getAttribute("data-t"),
+                      accept: false }, "teams/decide");
+      };
+    });
+  }
+
+  function eTeam() {
+    TEAM.edit = null; TEAM.adding = false; TEAM.card = "";
+    api("intercom/status", {}).then(paintTeam);
   }
 
   // Connectors (MCP)
@@ -2821,18 +3326,18 @@
       if (!box) return;
       if (!st || !st.ok) { box.innerHTML = "No pude comprobarlo."; return; }
       var others = (st.agents || []).length;
+      var used = st.quota ? st.quota.used : 0, cap = st.quota ? st.quota.limit : 0;
       if (others < 2) {
         box.innerHTML = '👤 Por ahora sólo hay <b>un agente</b> en este equipo, ' +
           'así que no hay con quién hablar. En cuanto crees otro, se verán entre ellos.';
       } else if (st.enabled) {
-        box.innerHTML = '✅ <b>Activado</b> — ' + others + ' agentes pueden preguntarse ' +
-          'entre ellos: ' + (st.agents || []).map(function (a) {
-            return '<b>' + esc(a.name) + '</b>' + (a.reachable ? '' : ' <span class="muted">(no alcanzable)</span>');
-          }).join(' · ') + '.<br><span class="muted">Van ' + (st.quota ? st.quota.used : 0) +
-          ' de ' + (st.quota ? st.quota.limit : 0) + ' llamadas esta hora.</span>';
+        box.innerHTML = '✅ <b>Activado</b> — tus agentes pueden preguntarse entre ' +
+          'ellos <b>por donde el mapa de arriba lo permita</b>.<br><span class="muted">Van ' +
+          used + ' de ' + cap + ' llamadas esta hora.</span>';
       } else {
-        box.innerHTML = '⛔ <b>Desactivado</b>. Tus agentes no pueden escribirse; si uno lo ' +
-          'intenta, se le dice que no y ahí queda.';
+        box.innerHTML = '⛔ <b>Desactivado</b> — y esto manda sobre el mapa: ningún ' +
+          'agente puede escribirle a otro, tenga el enlace que tenga. Si uno lo intenta, ' +
+          'se le dice que no y ahí queda.';
       }
       if (el("icTurns")) el("icTurns").value = st.max_turns || 8;
       if (el("icHour")) el("icHour").value = st.hourly_limit || 30;
@@ -2863,6 +3368,7 @@
       }
     }
     function loadIc() { api("intercom/status", {}).then(paintIc); }
+    TEAM.reloadIc = loadIc;   // so a team edit can refresh the quota line below it
     function icSave(patch, label) {
       icPill.style.display = "inline-flex";
       runTest(this, icPill, function () { return api("intercom/save", patch); },

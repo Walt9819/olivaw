@@ -31,12 +31,30 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 def show_list():
+    """Who you may call - not who exists.
+
+    Those became different lists the moment the owner drew a map, and printing the roster
+    would now be worse than useless: it would show an agent a colleague it is about to be
+    refused by, and invite it to keep trying.
+    """
     who = intercom.me()
-    print("Tú eres «%s». En este equipo:" % who)
-    for a in intercom.roster():
-        mark = "  (tú)" if a["slug"] == who else ""
-        how = "" if intercom._base(a["profile"]) else "   [no alcanzable desde aquí]"
-        print("  %-12s %s%s%s" % (a["slug"], a["name"], mark, how))
+    people = intercom.neighbours_of(who)
+    print("Tú eres «%s»." % who)
+    if not people:
+        print("\nAhora mismo no tienes enlace con ningún otro agente: lo que te pidan "
+              "lo resuelves tú o se lo preguntas a tu dueño.")
+    else:
+        print("\nPuedes hablar con:")
+        for a in people:
+            how = "" if a.get("known") else "   [ya no está en este equipo]"
+            print("  %-12s %s%s" % (a["slug"], a["name"], how))
+            if a.get("role"):
+                print("               se encarga de: %s" % a["role"])
+            if a.get("why"):
+                print("               cuándo: %s" % a["why"])
+            if a.get("hours"):
+                print("               sólo de %02d:00 a %02d:00"
+                      % (a["hours"]["from"], a["hours"]["to"]))
     q = intercom.quota()
     print("\nLlamadas esta hora: %d de %d." % (q["used"], q["limit"]))
     open_ = [t for t in intercom.threads(8) if not t["done"]]
@@ -58,11 +76,33 @@ def main(argv=None):
                     help="tu propio slug (la skill ya te lo pasa)")
     ap.add_argument("--thread", default="", help="seguir un hilo ya empezado")
     ap.add_argument("--show", action="store_true", help="ver un hilo completo")
+    ap.add_argument("--request", default="",
+                    help="pedirle a tu dueño un enlace con ese agente (no te lo da)")
+    ap.add_argument("--why", default="", help="para qué lo necesitas (con --request)")
     ap.add_argument("--timeout", type=int, default=0, help="segundos de espera")
     args = ap.parse_args(argv)
 
     if args.list:
         show_list()
+        return 0
+
+    if args.request:
+        try:
+            r = intercom.request_link(args.request, args.why, sender=args.sender)
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            return 2
+        if r.get("already"):
+            print("Ya tienes enlace con «%s»: escríbele directamente."
+                  % args.request)
+        elif r.get("already_pending"):
+            print("Esa petición ya está esperando a tu dueño. No insistas.")
+        elif r.get("ok"):
+            print("Anotado. Tu dueño lo verá en Olivaw y decide él; mientras "
+                  "tanto NO tienes acceso a «%s»." % args.request)
+        else:
+            print(r.get("detail", "No se pudo anotar."), file=sys.stderr)
+            return 1
         return 0
 
     if args.show:

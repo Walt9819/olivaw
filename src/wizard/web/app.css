@@ -562,3 +562,69 @@ li.bad .boot-tick{background:var(--warn); border-color:var(--warn); color:#fff;
   .boot-ring,.boot-o,li.on .boot-tick{animation:none}
   .boot{transition:none}
 }
+
+/* ── the team map ─────────────────────────────────────────────────────────────
+   The diagram is drawn by hand in SVG, so everything it needs is here: no library
+   stylesheet, nothing fetched. Colours come from the same variables as the rest of the
+   console, which is what makes it follow the light/dark theme for free. */
+.callout.bad{border-color:var(--err); background:var(--err-bg)}
+.callout.good{border-color:var(--ok); background:var(--ok-bg)}
+
+.teamsvg{width:100%; height:auto; max-width:660px; margin:0 auto; display:block;
+  overflow:visible}
+.tmlegend{margin-top:10px; text-align:center}
+
+/* nodes */
+.tmnd rect{fill:var(--panel); stroke:var(--line); stroke-width:1.5}
+.tmnd{cursor:pointer}
+.tmnd:hover rect{stroke:var(--accent)}
+.tmnd:focus{outline:none}
+.tmnd:focus rect{stroke:var(--accent); stroke-width:2.5}
+.tmnd.sel rect{stroke:var(--accent); stroke-width:2.5; fill:var(--panel-2)}
+.tmnd.dim rect{stroke-dasharray:4 3; opacity:.65}
+.tmnm{fill:var(--ink); font:700 13.5px system-ui,-apple-system,Segoe UI,sans-serif;
+  text-anchor:middle}
+.tmrl{fill:var(--muted); font:11.5px system-ui,-apple-system,Segoe UI,sans-serif;
+  text-anchor:middle}
+
+/* links */
+.tmlk{cursor:pointer}
+.tmlk:focus{outline:none}
+.tmhit{stroke:transparent; stroke-width:18}
+.tmwire{stroke:var(--muted); stroke-width:2; opacity:.75}
+.tmlk:hover .tmwire,.tmlk:focus .tmwire,.tmlk.sel .tmwire{stroke:var(--accent); opacity:1;
+  stroke-width:2.8}
+.tmlk.off .tmwire{stroke-dasharray:5 4; opacity:.45}
+.tmwhy{fill:var(--muted); font:11px system-ui,-apple-system,Segoe UI,sans-serif;
+  text-anchor:middle; pointer-events:none}
+.tmlk:hover .tmwhy,.tmlk:focus .tmwhy,.tmlk.sel .tmwhy{fill:var(--accent)}
+#tmEnd path,#tmStart path{fill:var(--muted)}
+
+/* the same thing as a list, which is the half that stays usable at 400px */
+.tmlist{display:flex; flex-direction:column; gap:2px}
+.tmrow{display:flex; align-items:center; gap:10px; padding:10px 2px;
+  border-bottom:1px solid var(--line-2)}
+.tmrow:last-child{border-bottom:0}
+.tmrow.off{opacity:.6}
+.tmar{color:var(--accent); font-weight:700}
+.tmtag{display:inline-block; font-size:11px; font-weight:700; color:var(--muted);
+  background:var(--panel-2); border:1px solid var(--line); border-radius:999px;
+  padding:1px 8px; margin-left:4px; white-space:nowrap}
+.tmpend{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:8px}
+.tmform{border:1px solid var(--line); border-radius:12px; background:var(--panel-2);
+  padding:14px 16px; margin:4px 0 12px}
+.tmform .field{margin-bottom:10px}
+
+@media (max-width:560px){
+  .tmrow{flex-wrap:wrap}
+  .tmnm{font-size:15px}
+  .tmrl{font-size:13px}
+  .tmwhy{font-size:12.5px}
+}
+
+/* A connection that exists only because nobody has decided otherwise. Drawn, because the
+   alternative is an empty diagram under a banner saying everyone can reach everyone - but
+   drawn in a dashed hand, and not clickable: there is no row to open. */
+.tmlk.implied{cursor:default}
+.tmlk.implied .tmwire{stroke-dasharray:3 5; opacity:.3}
+.tmlk.implied:hover .tmwire{stroke:var(--muted); opacity:.3; stroke-width:2}

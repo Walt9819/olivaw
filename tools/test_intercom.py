@@ -27,6 +27,7 @@ SRC = os.path.join(ROOT, "src")
 sys.path.insert(0, SRC)
 
 import intercom  # noqa: E402
+import teams  # noqa: E402
 
 FAILED = []
 CHECKS = [0]
@@ -52,6 +53,14 @@ class Sandbox:
         intercom.INSTALL_DIR = self.dir
         intercom.CONFIG_PATH = os.path.join(self.dir, "intercom.json")
         intercom.THREAD_DIR = os.path.join(self.dir, "intercom")
+        teams.INSTALL_DIR = self.dir
+        # HERMES_HOME decides who the caller IS, and since the map made that a permission
+        # the ambient value changes what these tests mean. Inherited, this whole file
+        # passed on a machine whose HERMES_HOME was the root home and died on one pointing
+        # at a profile - the second case being an ordinary agent's terminal. Cleared here,
+        # so each test states its own identity through --from; the ones that are ABOUT
+        # identity set the variable themselves.
+        self._home = os.environ.pop("HERMES_HOME", None)
         with io.open(os.path.join(self.dir, "agents.json"), "w", encoding="utf-8") as fh:
             json.dump({"agents": [
                 {"slug": "daneel", "name": "Daneel", "profile": "daneel", "enabled": True},
@@ -62,6 +71,11 @@ class Sandbox:
 
     def __exit__(self, *a):
         (intercom.INSTALL_DIR, intercom.CONFIG_PATH, intercom.THREAD_DIR) = self._saved
+        teams.INSTALL_DIR = self._saved[0]
+        if self._home is None:
+            os.environ.pop("HERMES_HOME", None)
+        else:
+            os.environ["HERMES_HOME"] = self._home
         shutil.rmtree(self.dir, ignore_errors=True)
 
 
@@ -368,7 +382,14 @@ def main():
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
             print("-- " + name)
-            fn()
+            # Same reason as tools/test_teams.py: one test raising must not silence every
+            # test after it.
+            try:
+                fn()
+            except Exception as e:  # noqa: BLE001
+                CHECKS[0] += 1
+                FAILED.append("%s raised %s: %s" % (name, type(e).__name__, e))
+                print("FAIL %s raised %s: %s" % (name, type(e).__name__, e))
     print("\n%d checks, %d failed" % (CHECKS[0], len(FAILED)))
     for f in FAILED:
         print("  FAILED: " + f)
