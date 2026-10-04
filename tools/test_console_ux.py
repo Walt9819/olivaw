@@ -381,8 +381,13 @@ def test_session():
     if acc and ref and ref > acc:
         after_access = acc + 3600
         s0 = SH.status(now=after_access)
+        # The claim is "an expired access token does not make the session expired", and
+        # that is what is asserted. Demanding state == "ok" also asserted that the refresh
+        # token was still far away, which is a fact about the clock, not about the code:
+        # this went red the week the real refresh token came within the warning window,
+        # on a machine where nothing was wrong and nothing had changed.
         check("an expired ACCESS token is not an expired session",
-              s0["state"] == "ok" and s0["needs_login"] is False,
+              s0["state"] != "expired" and s0["needs_login"] is False,
               {"state": s0["state"], "alert": s0["needs_login"]})
         check("though it is still reported, for diagnosis",
               s0["access_expires_at"] == acc, s0["access_expires_at"])
