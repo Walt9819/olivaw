@@ -54,6 +54,7 @@ else:
 from winspawn import CREATE_NEW_PROCESS_GROUP, quiet     # noqa: E402
 import intercom                                          # noqa: E402
 import teams                                             # noqa: E402
+import teams_advisor                                     # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))          # .../src/wizard
 SRC_DIR = os.path.dirname(HERE)                            # .../src
@@ -250,8 +251,14 @@ def agents_snapshot():
     """All agents on this machine: the built-in `default` plus registered extras."""
     hp = which("hermes")
     owners = hermes_ctl.pairing_list(hp).get("approved", []) if hp else []
+    # One name per agent across the whole console. The owner can say what the other agents
+    # should call this one ("Chalenus"), and a sidebar that went on saying "Agente
+    # principal" would leave her reading two names for the same agent on one screen - the
+    # exact confusion that override exists to end.
+    names = intercom.config().get("names") or {}
     default = {
-        "slug": "default", "name": "Agente principal", "profile": "default",
+        "slug": "default", "name": names.get("default") or "Agente principal",
+        "profile": "default",
         "port": agents_registry.BASE_PORT, "workspace": _default_workspace(),
         "is_default": True,
         "gateway_running": hermes_ctl.gateway_status(hp).get("running") if hp else None,
@@ -263,6 +270,8 @@ def agents_snapshot():
         slug = a.get("slug")
         row = dict(a)
         row["is_default"] = False
+        if names.get(slug):
+            row["name"] = names[slug]
         row["bridge_up"] = _bridge_up(a.get("port", 0)) if a.get("port") else False
         if hp and hermes_ctl.profile_exists(slug, hp):
             row["gateway_running"] = hermes_ctl.gateway_status(hp, profile=slug).get("running")
@@ -870,8 +879,16 @@ class Handler(BaseHTTPRequestHandler):
         # repaints from a single source instead of patching its own copy - the map is a
         # permission, and a stale picture of a permission is the one thing it must not be.
         if route in ("teams/adopt", "teams/link", "teams/unlink", "teams/card",
-                     "teams/decide"):
+                     "teams/decide", "teams/name", "teams/apply"):
             return self._teams(route[len("teams/"):], body)
+
+        # Asking the main agent for a proposal is the one team route that does NOT write,
+        # and must not pretend to: it answers with the proposal alone, and the console
+        # sends back whatever the owner ticked as a separate teams/apply.
+        if route == "teams/suggest":
+            return teams_advisor.suggest(roster=intercom.roster(INSTALL_DIR),
+                                         install_dir=INSTALL_DIR,
+                                         focus=body.get("focus", ""))
 
         if route == "apply":
             return self._apply(body)
@@ -928,12 +945,28 @@ class Handler(BaseHTTPRequestHandler):
             hours = body.get("hours")
             wrote = teams.set_link(
                 body.get("from", ""), body.get("to", ""),
-                why=body.get("why"), both=body.get("both"),
+                why=body.get("why"), why_back=body.get("why_back"),
+                both=body.get("both"),
                 max_turns=body.get("max_turns"), hourly_limit=body.get("hourly_limit"),
                 hours=(hours if isinstance(hours, dict) else
                        (None if hours is None else {})),
                 enabled=body.get("enabled"), direction=bool(body.get("direction")),
                 install_dir=INSTALL_DIR)
+        elif what == "name":
+            # How the OTHER agents refer to this one. The main agent calls itself Chalenus
+            # in its own memory while every skill on the machine called it "Agente
+            # principal", because its display name only ever came from a HOME_CHANNEL_NAME
+            # line in a .env that nothing in Olivaw could write. So the owner can type it.
+            wrote = self._team_name(body)
+        elif what == "apply":
+            wrote = teams_advisor.apply_proposal(
+                {"cards": body.get("cards") or [], "links": body.get("links") or []},
+                roster, install_dir=INSTALL_DIR, replace=bool(body.get("replace")))
+            if wrote.get("adopted"):
+                extra["adopted"] = True
+            extra["applied"] = {"cards": wrote.get("cards", 0),
+                                "links": wrote.get("links", 0),
+                                "removed": wrote.get("removed", 0)}
 
         # The map is baked into every agent's skill, so a change here is only half applied
         # until each one has been rewritten. Doing it now - rather than waiting for the
@@ -957,6 +990,91 @@ class Handler(BaseHTTPRequestHandler):
         if not wrote.get("ok"):
             st["detail"] = wrote.get("detail", "No pude guardar.")
         return st
+
+    def _team_connect(self, slug, pick):
+        """Wire a just-created agent into the team, from the choice made while creating it.
+
+        The complaint this answers, in the owner's words: "when created they where not
+        connected to any other". An agent born after the map was drawn joins it with no
+        links, hears from nobody, and nothing says so - it looks exactly like an agent that
+        was meant to work alone. Asking during setup is the only moment the answer is
+        obvious.
+
+        `asked` is what makes this safe to ship. A front-end that never showed the question
+        does not send it, and then this does nothing at all: no map is written, no legacy
+        machine is quietly converted. Only an owner who saw the checkboxes changes anything.
+        """
+        if not pick.get("asked") or not slug:
+            return {"ok": True, "skipped": True}
+        roster = intercom.roster(INSTALL_DIR)
+        slugs = set(a["slug"] for a in roster)
+        if slug not in slugs:
+            return {"ok": False, "detail": "El agente todavía no aparece en el equipo."}
+        want = []
+        for s in (pick.get("connect") or []):
+            s = (s or "").strip().lower()
+            if s in slugs and s != slug and s not in want:
+                want.append(s)
+
+        status, _ = teams.read(INSTALL_DIR)
+        if status == teams.BROKEN:
+            return {"ok": False, "detail": "El mapa del equipo no se puede leer, así que "
+                                           "no toqué las conexiones."}
+        adopted = False
+        if status == teams.LEGACY:
+            # Writing the map freezes today's all-to-all mesh for the agents that already
+            # existed - byte-identical behaviour for them - and then the new agent gets
+            # only what the owner ticked. Nothing that worked this morning stops working;
+            # the only agent whose reach is decided here is the one being created.
+            res = teams.adopt(roster, INSTALL_DIR)
+            if not res.get("ok"):
+                return dict(res, ok=False)
+            adopted = True
+            for other in slugs:
+                if other == slug:
+                    continue
+                try:
+                    teams.remove_link(slug, other, install_dir=INSTALL_DIR)
+                except ValueError:
+                    pass
+
+        made = []
+        for other in want:
+            teams.set_link(slug, other, both=True, enabled=True, install_dir=INSTALL_DIR)
+            made.append(other)
+
+        touched = []
+        try:
+            for r in intercom.ensure_all(install_dir=INSTALL_DIR):
+                if r.get("changed"):
+                    prof = r.get("profile") or "default"
+                    touched.append(prof)
+                    _queue_gateway_reload(None if prof == "default" else prof)
+        except Exception as e:  # noqa: BLE001
+            return {"ok": True, "linked": made, "adopted": adopted,
+                    "skill_warning": str(e)}
+        return {"ok": True, "linked": made, "adopted": adopted, "retaught": touched}
+
+    def _team_name(self, body):
+        """The name the other agents use for one agent, stored in intercom.json.
+
+        Not the .env: HOME_CHANNEL_NAME belongs to a channel's own config and changing it
+        needs that gateway restarted. This is the name used for the roster, the map and
+        every generated skill, so a rewrite is enough - and the owner gets to say
+        "Chalenus" instead of being told what her main agent is called.
+        """
+        slug = (body.get("slug") or "").strip().lower()
+        if not teams.SLUG_RE.match(slug):
+            raise ValueError("«%s» no es un agente válido." % slug)
+        if not intercom.find(slug, INSTALL_DIR):
+            raise ValueError("En este equipo no hay ningún agente «%s»." % slug)
+        name = teams._clip(body.get("name"), 40)
+        names = dict(intercom.config().get("names") or {})
+        if name:
+            names[slug] = name
+        else:
+            names.pop(slug, None)          # empty box = go back to the detected name
+        return intercom.save_config({"names": names})
 
     def _intercom_save(self, body):
         """Write the owner's limits, then report the state she should actually see."""
@@ -1077,6 +1195,9 @@ class Handler(BaseHTTPRequestHandler):
         if provisioned:
             agents_registry.upsert(provisioned, INSTALL_DIR)
             res["agent"] = provisioned
+            # The registry row has to exist before the map can name it: teams.set_link
+            # writes a slug, but intercom.roster is what decides that slug is real.
+            res["team"] = self._team_connect(slug, body.get("team") or {})
         elif mode == "reconfigure" and slug != "default":
             rec = agents_registry.get(slug, INSTALL_DIR) or {"slug": slug}
             rec.update({"profile": profile, "port": port, "workspace": workspace,
@@ -1087,6 +1208,7 @@ class Handler(BaseHTTPRequestHandler):
                 rec["bot_username"] = body["bot_username"]
             agents_registry.upsert(rec, INSTALL_DIR)
             res["agent"] = rec
+            res["team"] = self._team_connect(slug, body.get("team") or {})
         res["port"] = port
         return res
 

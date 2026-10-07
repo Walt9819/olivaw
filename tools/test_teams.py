@@ -525,6 +525,146 @@ def test_the_agent_tool_can_narrow_but_only_ask_to_widen():
         ok("NO" in (r.stdout or ""), "and plainly says it grants nothing")
 
 
+# ── two lanes, two instructions ──────────────────────────────────────────────
+# The bug these are about was live on the owner's own machine: `baco <-> forja` carried
+# one sentence, "cuestiones de código y detalles técnicos". Correct for the accountant
+# writing to the developer. The developer read the same line as its reason to write to the
+# accountant, so the only instruction it had was to ask the bookkeeper about code.
+def test_each_direction_of_a_two_way_link_carries_its_own_instruction():
+    with Sandbox() as s:
+        teams.adopt(ROSTER, s.dir)
+        teams.set_link("daneel", "heraldo", both=True,
+                       why="para pedirle los numeros del mes",
+                       why_back="para avisarle de una cita urgente", install_dir=s.dir)
+        out = {a["slug"]: a["why"]
+               for a in teams.neighbours("daneel", ROSTER, install_dir=s.dir)}
+        back = {a["slug"]: a["why"]
+                for a in teams.neighbours("heraldo", ROSTER, install_dir=s.dir)}
+        eq(out["heraldo"], "para pedirle los numeros del mes",
+           "the agent that starts the link reads the outbound sentence")
+        eq(back["daneel"], "para avisarle de una cita urgente",
+           "and the one at the other end reads the one written for IT")
+        sk_d = intercom.render_skill("daneel", install_dir=s.dir)
+        sk_h = intercom.render_skill("heraldo", install_dir=s.dir)
+        ok("para pedirle los numeros del mes" in sk_d,
+           "the outbound sentence reaches the right skill")
+        ok("para pedirle los numeros del mes" not in sk_h,
+           "and does NOT reach the other one - this is the whole bug")
+        ok("para avisarle de una cita urgente" in sk_h,
+           "the return sentence reaches the agent it was written for")
+
+
+def test_a_link_written_before_why_back_existed_still_works():
+    with Sandbox() as s:
+        teams.adopt(ROSTER, s.dir)
+        # Exactly the shape every teams.json on disk has today.
+        teams.set_link("daneel", "heraldo", both=True, why="coordinacion general",
+                       install_dir=s.dir)
+        back = {a["slug"]: a["why"]
+                for a in teams.neighbours("heraldo", ROSTER, install_dir=s.dir)}
+        eq(back["daneel"], "coordinacion general",
+           "the return direction falls back to the only sentence there is")
+        st = teams.state(ROSTER, s.dir)
+        ln = [x for x in st["links"] if {x["from"], x["to"]} == {"daneel", "heraldo"}][0]
+        ok(ln["shared_why"], "but the console is told the two ends share one sentence")
+        ok(["daneel", "heraldo"] in st["shared_why"] or
+           ["heraldo", "daneel"] in st["shared_why"], "and it is listed for the banner")
+
+
+def test_the_sentence_is_chosen_by_who_reads_it_not_by_the_arrow():
+    one = {"from": "daneel", "to": "heraldo", "both": False,
+           "why": "ida", "why_back": "vuelta"}
+    two = dict(one, both=True)
+    eq(teams.why_for(one, "daneel"), "ida", "the agent that may write reads the outbound")
+    eq(teams.why_for(one, "heraldo"), "ida",
+       "a one-way link has ONE instruction, and it is not the return one")
+    eq(teams.why_for(two, "daneel"), "ida", "on a two-way link each end reads its own")
+    eq(teams.why_for(two, "heraldo"), "vuelta", "including the far end")
+    eq(teams.why_for(None, "daneel"), "", "and no link is no instruction")
+
+
+def test_a_one_way_link_ignores_the_return_sentence():
+    with Sandbox() as s:
+        teams.adopt(ROSTER, s.dir)
+        teams.set_link("daneel", "heraldo", both=False, why="ida",
+                       why_back="vuelta", install_dir=s.dir)
+        back = [a["slug"] for a in teams.neighbours("heraldo", ROSTER, install_dir=s.dir)]
+        ok("daneel" not in back,
+           "a sentence for a closed direction does not open it")
+
+
+def test_naming_the_pair_backwards_does_not_swap_the_instructions():
+    """The console, the per-agent panel and a proposal can each name the same pair in a
+    different order. The stored link keeps whichever order it was created in, so without
+    this each one would attach its sentences to the wrong agent."""
+    with Sandbox() as s:
+        teams.adopt(ROSTER, s.dir)
+        teams.set_link("daneel", "heraldo", both=True, why="D hacia H",
+                       why_back="H hacia D", install_dir=s.dir)
+        # Same pair, named the other way round, editing only the return direction.
+        teams.set_link("heraldo", "daneel", why="H hacia D, corregido",
+                       install_dir=s.dir)
+        d = {a["slug"]: a["why"]
+             for a in teams.neighbours("daneel", ROSTER, install_dir=s.dir)}
+        h = {a["slug"]: a["why"]
+             for a in teams.neighbours("heraldo", ROSTER, install_dir=s.dir)}
+        eq(d["heraldo"], "D hacia H", "the untouched direction is untouched")
+        eq(h["daneel"], "H hacia D, corregido",
+           "and the edit landed on the direction the caller named")
+
+
+def test_turning_the_arrow_round_turns_the_sentences_with_it():
+    with Sandbox() as s:
+        teams.adopt(ROSTER, s.dir)
+        teams.set_link("daneel", "heraldo", both=True, why="ida", why_back="vuelta",
+                       install_dir=s.dir)
+        teams.set_link("heraldo", "daneel", direction=True, install_dir=s.dir)
+        _, data = teams.read(s.dir)
+        ln = [x for x in data["links"] if {x["from"], x["to"]} == {"daneel", "heraldo"}][0]
+        eq(ln["from"], "heraldo", "the arrow was turned round")
+        eq(ln["why"], "vuelta", "and the sentence for that direction came with it")
+        eq(ln["why_back"], "ida", "as did the other one")
+
+
+def test_an_agent_nobody_linked_is_named_as_such():
+    with Sandbox() as s:
+        teams.adopt(ROSTER, s.dir)
+        for other in ("default", "daneel"):
+            teams.remove_link("heraldo", other, install_dir=s.dir)
+        st = teams.state(ROSTER, s.dir)
+        eq(st["isolated"], ["heraldo"],
+           "an agent with no link at all is reported, not left to be noticed as silence")
+        byslug = {a["slug"]: a for a in st["agents"]}
+        ok(byslug["heraldo"]["isolated"], "and flagged on its own row")
+        ok(not byslug["daneel"]["isolated"], "while a connected one is not")
+
+
+def test_being_reachable_counts_as_connected():
+    with Sandbox() as s:
+        teams.adopt(ROSTER, s.dir)
+        for other in ("default", "daneel"):
+            teams.remove_link("heraldo", other, install_dir=s.dir)
+        teams.set_link("daneel", "heraldo", both=False, install_dir=s.dir)
+        st = teams.state(ROSTER, s.dir)
+        eq(st["isolated"], [],
+           "an agent that can be asked is connected, even if it cannot ask")
+
+
+def test_a_card_reaches_the_agents_that_may_write_to_it():
+    with Sandbox() as s:
+        teams.adopt(ROSTER, s.dir)
+        teams.set_card("heraldo", role="Publica el boletin",
+                       description="Tiene el calendario editorial",
+                       never="nada que toque facturacion", roster=ROSTER,
+                       install_dir=s.dir)
+        sk = intercom.render_skill("daneel", install_dir=s.dir)
+        ok("Publica el boletin" in sk, "the role travels into the colleague's skill")
+        ok("Tiene el calendario editorial" in sk, "so does what it has to hand")
+        ok("nada que toque facturacion" in sk,
+           "and what not to ask it, which is the half that prevents the useless call")
+
+
+
 def main():
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

@@ -48,6 +48,24 @@ Adoption is therefore explicit and non-destructive: `adopt()` writes down the me
 true picture of her machine, and behaviour on the day of the update is byte-identical.
 Pruning is then something she does on purpose.
 
+A TWO-WAY LINK IS TWO INSTRUCTIONS, NOT ONE
+-------------------------------------------
+The first version of this file gave a link ONE sentence - "para qué sirve" - and a
+`both: true` flag. That reads fine in the console and is wrong in the skill, because the
+sentence is read by both ends as *their* reason to write. A real file on this machine said:
+
+    baco ⇄ forja — "Cuestiones relacionadas con código y detalles técnicos"
+
+Correct for Ábaco (finance) writing to Forja (the developer). But Forja read the same line
+as its trigger for calling the *finance* agent, so the only instruction the developer had
+was to ask the accountant about code.
+
+So a two-way link carries `why` (from -> to) and `why_back` (to -> from), and `why_for()`
+is the single place that picks. `why_back` empty falls back to `why`: files written before
+this existed keep behaving exactly as they did, and the console flags the pair rather than
+silently dropping a sentence the owner typed. Nothing here is a permission - both
+directions were already allowed by `both` - it is only *which* advice each agent is given.
+
 WIDENING IS NOT THE AGENT'S CALL
 --------------------------------
 An agent can be told "deja que Daneel le pregunte a Heraldo", so `tools/team_policy.py`
@@ -179,6 +197,7 @@ def _clean_link(ln):
         return None
     out = {"from": frm, "to": to, "both": bool(ln.get("both")),
            "why": _clip(ln.get("why"), MAX_WHY),
+           "why_back": _clip(ln.get("why_back"), MAX_WHY),
            "enabled": ln.get("enabled", True) is not False}
     for key in ("max_turns", "hourly_limit"):
         v = ln.get(key)
@@ -238,6 +257,31 @@ def link_between(data, frm, to):
         if ln["both"] and ln["from"] == to and ln["to"] == frm:
             return ln
     return None
+
+
+def why_for(ln, caller):
+    """The sentence THIS agent should read on this link.
+
+    One link, two possible readers. Getting this wrong is not a security hole - both
+    directions of a `both` link were already allowed - but it is the difference between an
+    agent that knows when to write and one that has been handed somebody else's job
+    description.
+    """
+    if not ln:
+        return ""
+    if ln.get("both") and _norm(caller) == ln["to"]:
+        return ln.get("why_back") or ln.get("why") or ""
+    return ln.get("why") or ""
+
+
+def shares_one_sentence(ln):
+    """A two-way link whose return direction has no sentence of its own.
+
+    Not an error - it is what every link written before `why_back` existed looks like, and
+    the fallback keeps those working. The console asks about them because the stored
+    sentence is almost never true in both directions.
+    """
+    return bool(ln and ln.get("both") and ln.get("why") and not ln.get("why_back"))
 
 
 def _within_hours(hours, now=None):
@@ -309,10 +353,12 @@ def neighbours(slug, roster=None, install_dir=None):
         for ln in data.get("links") or []:
             if not ln["enabled"]:
                 continue
+            # why_for(), not ln["why"]: on a two-way link the agent at the far end gets
+            # the sentence written for IT, which is the whole point of why_back.
             if ln["from"] == slug:
-                targets.append((ln["to"], ln["why"], ln["hours"]))
+                targets.append((ln["to"], why_for(ln, slug), ln["hours"]))
             elif ln["both"] and ln["to"] == slug:
-                targets.append((ln["from"], ln["why"], ln["hours"]))
+                targets.append((ln["from"], why_for(ln, slug), ln["hours"]))
     seen = set()
     for target, why, hours in targets:
         if target in seen:
@@ -321,7 +367,10 @@ def neighbours(slug, roster=None, install_dir=None):
         card = (data.get("cards") or {}).get(target) or {}
         a = names.get(target) or {}
         out.append({"slug": target, "name": a.get("name") or target,
-                    "role": card.get("role", ""), "why": why, "hours": hours,
+                    "role": card.get("role", ""),
+                    "description": card.get("description", ""),
+                    "never": card.get("never", ""),
+                    "why": why, "hours": hours,
                     "known": bool(a)})
     out.sort(key=lambda x: x["name"].lower())
     return out
@@ -396,9 +445,17 @@ def set_card(slug, role=None, description=None, never=None, roster=None,
     return dict(save(data, install_dir), adopted=adopted)
 
 
-def set_link(frm, to, why=None, both=None, max_turns=None, hourly_limit=None,
-             hours=None, enabled=None, direction=False, install_dir=None):
-    """Create or edit a link. The caller decides whether this is owner-authorised."""
+def set_link(frm, to, why=None, why_back=None, both=None, max_turns=None,
+             hourly_limit=None, hours=None, enabled=None, direction=False,
+             install_dir=None):
+    """Create or edit a link. The caller decides whether this is owner-authorised.
+
+    The contract is fixed and orientation-free: `why` always means "frm -> to" and
+    `why_back` always means "to -> frm", as the CALLER spelled the pair. A link is stored
+    once, in whichever direction it was first written, so a caller naming the same pair the
+    other way round would otherwise attach each sentence to the wrong agent - the exact
+    mix-up why_back exists to end.
+    """
     status, data = _require_configured(install_dir)
     if status == LEGACY:
         raise ValueError("Este equipo todavía no tiene mapa. Adóptalo primero.")
@@ -408,6 +465,7 @@ def set_link(frm, to, why=None, both=None, max_turns=None, hourly_limit=None,
     if not SLUG_RE.match(frm) or not SLUG_RE.match(to):
         raise ValueError("Agente no válido.")
     existing = None
+    swap_incoming = False
     for ln in data["links"]:
         if ln["from"] == frm and ln["to"] == to:
             existing = ln
@@ -417,18 +475,25 @@ def set_link(frm, to, why=None, both=None, max_turns=None, hourly_limit=None,
             if direction:
                 # The owner turned the arrow round in the console. Without this the stored
                 # orientation won, the form came back showing the old direction, and a
-                # one-way link could only be reversed by deleting it.
+                # one-way link could only be reversed by deleting it. The two sentences
+                # travel with their directions, so they swap with the arrow.
                 ln["from"], ln["to"] = frm, to
+                ln["why"], ln["why_back"] = ln.get("why_back", ""), ln.get("why", "")
             else:
                 frm, to = ln["from"], ln["to"]  # keep the stored orientation
+                swap_incoming = True
             break
     if existing is None:
         if len(data["links"]) >= MAX_LINKS:
             raise ValueError("Demasiados enlaces (%d)." % MAX_LINKS)
         existing = _clean_link({"from": frm, "to": to, "both": False, "why": ""})
         data["links"].append(existing)
+    if swap_incoming:
+        why, why_back = why_back, why
     if why is not None:
         existing["why"] = _clip(why, MAX_WHY)
+    if why_back is not None:
+        existing["why_back"] = _clip(why_back, MAX_WHY)
     if both is not None:
         existing["both"] = bool(both)
     if enabled is not None:
@@ -518,20 +583,40 @@ def state(roster=None, install_dir=None):
     links = []
     for ln in data.get("links") or []:
         links.append(dict(ln, from_name=label(ln["from"]), to_name=label(ln["to"]),
+                          shared_why=shares_one_sentence(ln),
                           stale=not (ln["from"] in names and ln["to"] in names)))
     pending = [dict(p, from_name=label(p["from"]), to_name=label(p["to"]))
                for p in (data.get("pending") or [])]
 
+    # Agents nobody linked. The complaint this answers: an agent created after the map was
+    # drawn joins the machine with no links at all and simply never hears from anyone -
+    # silently, because an isolated agent and a deliberately-solitary one look identical.
+    # On a mapped machine the console names them; in legacy mode everyone reaches everyone,
+    # so nobody is isolated.
+    linked = set()
+    for ln in data.get("links") or []:
+        # Both ends count, including a one-way link's target: being reachable is a
+        # connection even when you cannot start the conversation yourself.
+        linked.add(ln["from"])
+        linked.add(ln["to"])
+
     agents = []
+    isolated = []
     for a in (roster or []):
         card = (data.get("cards") or {}).get(a["slug"]) or {}
+        alone = status == OK and a["slug"] not in linked
+        if alone:
+            isolated.append(a["slug"])
         agents.append({"slug": a["slug"], "name": a.get("name") or a["slug"],
                        "profile": a.get("profile") or a["slug"],
                        "role": card.get("role", ""),
                        "description": card.get("description", ""),
                        "never": card.get("never", ""),
+                       "isolated": alone,
                        "reachable": a.get("reachable", True)})
     return {"ok": status != BROKEN, "status": status, "configured": status == OK,
             "broken": status == BROKEN, "error": data.get("error", ""),
             "agents": agents, "links": links, "pending": pending,
+            "isolated": isolated,
+            "shared_why": [[ln["from"], ln["to"]] for ln in links if ln["shared_why"]],
             "possible": max(0, len(agents) * (len(agents) - 1) // 2)}

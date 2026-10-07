@@ -89,8 +89,15 @@ def show(args):
                 flags.append("alguno ya no está")
             tail = ("   [%s]" % ", ".join(flags)) if flags else ""
             print("  %s %s %s%s" % (ln["from"], arrow, ln["to"], tail))
+            # Each direction's own sentence, named by direction. One line labelled "why"
+            # under a two-way arrow is how an agent ends up reading the other one's job.
             if ln["why"]:
-                print("        %s" % ln["why"])
+                print("        %s -> %s: %s" % (ln["from"], ln["to"], ln["why"]))
+            if ln["both"] and ln.get("why_back"):
+                print("        %s -> %s: %s" % (ln["to"], ln["from"], ln["why_back"]))
+            elif ln.get("shared_why"):
+                print("        (el sentido de vuelta usa esa misma frase; tu dueño "
+                      "todavía no ha escrito una propia)")
         if st["pending"]:
             print()
             print("Peticiones esperando a tu dueño:")

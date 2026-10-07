@@ -628,3 +628,31 @@ li.bad .boot-tick{background:var(--warn); border-color:var(--warn); color:#fff;
 .tmlk.implied{cursor:default}
 .tmlk.implied .tmwire{stroke-dasharray:3 5; opacity:.3}
 .tmlk.implied:hover .tmwire{stroke:var(--muted); opacity:.3; stroke-width:2}
+
+/* ── joining two agents by hand ─────────────────────────────────────────────── */
+/* The node you double-clicked, waiting for the second one. It has to read as "armed and
+   waiting" rather than "selected", or the next click looks like it will open a panel. */
+.tmnd.arm rect{stroke:var(--accent); stroke-width:3; fill:var(--panel-2)}
+.tmnd.arm{cursor:crosshair}
+/* An agent nobody linked. Same failure as a dead end in a corridor: invisible until you
+   walk it, so it gets a mark. */
+.tmnd.lone rect{stroke-dasharray:6 4}
+.teamsvg{cursor:default; -webkit-user-select:none; user-select:none}
+
+/* One instruction per direction. The closed one stays on screen - hiding it loses the
+   sentence the owner wrote when she reopens that direction - but stops looking live. */
+.tmdir.shut{opacity:.5}
+.tmdir.shut input{background:var(--panel-2)}
+
+/* A proposal waiting to be ticked. Rows, not a wall of prose: every line is one decision
+   and the checkbox is the decision. */
+.tmprop{display:flex; gap:10px; align-items:flex-start; padding:9px 2px;
+  border-bottom:1px solid var(--line); cursor:pointer}
+.tmprop:last-of-type{border-bottom:0}
+.tmprop input{margin-top:3px}
+
+/* Picking the new agent's colleagues while it is being created. */
+.connpicks{display:flex; flex-direction:column; gap:2px; margin-top:4px}
+.connpick{display:flex; gap:10px; align-items:center; padding:9px 2px; cursor:pointer;
+  border-bottom:1px solid var(--line)}
+.connpick:last-child{border-bottom:0}

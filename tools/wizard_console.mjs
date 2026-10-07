@@ -253,7 +253,7 @@ const HOOK = "\n  globalThis.__ol = { CONSOLE: CONSOLE, S: S, META: META, STEPS:
   " targetProfile: targetProfile, render: render, enterSetup: enterSetup," +
   " SOS: SOS, openSos: openSos, sendTurn: sendTurn, paintMsgs: paintMsgs," +
   " showQr: showQr, TALK: TALK, sendTalk: sendTalk, loadConn: loadConn," +
-  " startLogin: startLogin, loadDash: loadDash, DASH: DASH, BOOT: BOOT, paintTeam: paintTeam, teamSvg: teamSvg, TEAM: TEAM, secTeam: secTeam," +
+  " startLogin: startLogin, loadDash: loadDash, DASH: DASH, BOOT: BOOT, paintTeam: paintTeam, teamSvg: teamSvg, TEAM: TEAM, secTeam: secTeam, paintAgentTeam: paintAgentTeam, AGT: AGT, paintProposal: paintProposal, rAgent: rAgent, rFinished: rFinished, agentConnectCard: agentConnectCard," +
   " get LIVE(){ return LIVE } };\n";
 const hooked = src.slice(0, cut) + HOOK + src.slice(cut);
 
@@ -878,6 +878,31 @@ global.fetch = realFetch;
 // wrong: an arrow pointing the way traffic cannot go.
 console.log("\n=== the team map ===");
 
+// One fixture, used twice below. It was two copies, which is a trap: the links grew a
+// second instruction (why_back) and only one copy would have been updated.
+function teamFixture() {
+  return {
+    ok: true, status: "ok", configured: true, broken: false, error: "",
+    agents: [
+      { slug: "default", name: "Principal", role: "Coordina", description: "",
+        never: "", reachable: true, isolated: false },
+      { slug: "daneel", name: "Daneel", role: "Atiende la clinica", description: "",
+        never: "", reachable: true, isolated: false },
+      { slug: "heraldo", name: "HERALDO", role: "", description: "", never: "",
+        reachable: true, isolated: false }],
+    links: [
+      { from: "default", to: "daneel", from_name: "Principal", to_name: "Daneel",
+        both: true, why: "para cosas de la clinica", why_back: "para avisar de una urgencia",
+        shared_why: false, enabled: true, stale: false,
+        max_turns: null, hourly_limit: null, hours: null },
+      { from: "daneel", to: "heraldo", from_name: "Daneel", to_name: "HERALDO",
+        both: false, why: "para preguntar precios", why_back: "",
+        shared_why: false, enabled: true, stale: false,
+        max_turns: 4, hourly_limit: null, hours: { from: 9, to: 18 } }],
+    pending: [], isolated: [], shared_why: [],
+  };
+}
+
 function teamState(over) {
   const out = Object.assign({
     ok: true, enabled: true, max_turns: 8, hourly_limit: 30,
@@ -886,47 +911,13 @@ function teamState(over) {
              { slug: "daneel", name: "Daneel", reachable: true },
              { slug: "heraldo", name: "HERALDO", reachable: true }],
     threads: [],
-    team: Object.assign({
-      ok: true, status: "ok", configured: true, broken: false, error: "",
-      agents: [
-        { slug: "default", name: "Principal", role: "Coordina", description: "",
-          never: "", reachable: true },
-        { slug: "daneel", name: "Daneel", role: "Atiende la clinica", description: "",
-          never: "", reachable: true },
-        { slug: "heraldo", name: "HERALDO", role: "", description: "", never: "",
-          reachable: true }],
-      links: [
-        { from: "default", to: "daneel", from_name: "Principal", to_name: "Daneel",
-          both: true, why: "para cosas de la clinica", enabled: true, stale: false,
-          max_turns: null, hourly_limit: null, hours: null },
-        { from: "daneel", to: "heraldo", from_name: "Daneel", to_name: "HERALDO",
-          both: false, why: "para preguntar precios", enabled: true, stale: false,
-          max_turns: 4, hourly_limit: null, hours: { from: 9, to: 18 } }],
-      pending: [],
-    }, (over && over.team) || {}),
+    team: Object.assign(teamFixture(), (over && over.team) || {}),
   }, over || {});
   // The outer assign above copies `over` wholesale, which puts the RAW partial back over
   // the team we just merged - so every override that touched `team` silently became a
   // team with no agents, and eight assertions failed for a reason that had nothing to do
   // with the page. Put the merged one back, last.
-  out.team = Object.assign({
-    ok: true, status: "ok", configured: true, broken: false, error: "",
-    agents: [
-      { slug: "default", name: "Principal", role: "Coordina", description: "",
-        never: "", reachable: true },
-      { slug: "daneel", name: "Daneel", role: "Atiende la clinica", description: "",
-        never: "", reachable: true },
-      { slug: "heraldo", name: "HERALDO", role: "", description: "", never: "",
-        reachable: true }],
-    links: [
-      { from: "default", to: "daneel", from_name: "Principal", to_name: "Daneel",
-        both: true, why: "para cosas de la clinica", enabled: true, stale: false,
-        max_turns: null, hourly_limit: null, hours: null },
-      { from: "daneel", to: "heraldo", from_name: "Daneel", to_name: "HERALDO",
-        both: false, why: "para preguntar precios", enabled: true, stale: false,
-        max_turns: 4, hourly_limit: null, hours: { from: 9, to: 18 } }],
-    pending: [],
-  }, (over && over.team) || {});
+  out.team = Object.assign(teamFixture(), (over && over.team) || {});
   return out;
 }
 
@@ -1087,6 +1078,239 @@ ok("the wizard's welcome step still renders", !err2, err2 && err2.stack);
 ok("the stepper is back", getEl("stepper").hidden === false && getEl("navTree").hidden === true);
 ok("and it does not offer 'go to my agents' when there are none",
    getEl("navNext").textContent !== "Ir a mis agentes \u2192", getEl("navNext").textContent);
+
+// Everything below needs agents again: the block above deliberately emptied the roster to
+// prove the first-run stepper still works.
+OL.META.agents = AGENTS;
+OL.S.view = "console";
+
+// ── two lanes, two instructions ────────────────────────────────────────────────
+// The map used to carry ONE sentence per link and show it under a "two-way" arrow. On the
+// owner's machine that sentence was "cuestiones de codigo", written for the accountant
+// asking the developer - and read by the developer as its reason to call the accountant.
+console.log("\n=== a two-way link is two instructions ===");
+OL.S.view = "console"; OL.S.sec = "entre-agentes";
+OL.render();
+OL.paintTeam(teamState());
+{
+  const list = htmlOf("teamLinks");
+  ok("each direction is printed under the name of the agent that reads it",
+     list.includes("Principal \u2192 Daneel: para cosas de la clinica") &&
+     list.includes("Daneel \u2192 Principal: para avisar de una urgencia"), list.slice(0, 500));
+}
+OL.paintTeam(teamState({ team: { shared_why: [["default", "daneel"]], links: [
+  { from: "default", to: "daneel", from_name: "Principal", to_name: "Daneel", both: true,
+    why: "cuestiones de codigo", why_back: "", shared_why: true, enabled: true,
+    stale: false, max_turns: null, hourly_limit: null, hours: null }] } }));
+ok("a two-way link with one sentence is flagged in the list",
+   htmlOf("teamLinks").includes('tmtag">misma frase en los dos sentidos'),
+   htmlOf("teamLinks").slice(0, 400));
+ok("and says which agent is reading somebody else's instructions",
+   htmlOf("teamLinks").includes("escrita para el otro sentido"));
+ok("the owner is warned about it above the map",
+   htmlOf("teamWarn").includes("1 enlace de dos sentidos usa una sola frase"),
+   htmlOf("teamWarn").slice(0, 400));
+ok("with a one-click way to have them written",
+   htmlOf("teamWarn").includes('id="tmFixWhy"'));
+{
+  OL.TEAM.edit = 0;
+  OL.paintTeam(teamState({ team: { links: [
+    { from: "default", to: "daneel", from_name: "Principal", to_name: "Daneel", both: true,
+      why: "ida", why_back: "", shared_why: true, enabled: true, stale: false,
+      max_turns: null, hourly_limit: null, hours: null }] } }));
+  const f = htmlOf("teamLinks");
+  ok("the editor has a box per direction", f.includes('id="lkWhy"') && f.includes('id="lkWhyB"'));
+  ok("each box names who reads it", f.includes("Cuando <b>Principal</b> le escribe a <b>Daneel</b>") &&
+     f.includes("Cuando <b>Daneel</b> le escribe a <b>Principal</b>"), f.slice(0, 900));
+  ok("and the shared sentence is offered back, not silently dropped",
+     (f.match(/value="ida"/g) || []).length === 2, f.slice(0, 900));
+  OL.TEAM.edit = null;
+}
+
+// A real team is seven agents and seventeen links; every one of them printing its
+// sentence in the middle of the diagram is unreadable, which is what the owner's own map
+// looked like the first time it was drawn.
+{
+  const many = [];
+  for (let i = 0; i < 9; i++) {
+    many.push({ from: "default", to: "daneel", from_name: "Principal", to_name: "Daneel",
+                both: true, why: "una frase larguisima numero " + i, why_back: "",
+                shared_why: false, enabled: true, stale: false, max_turns: null,
+                hourly_limit: null, hours: null });
+  }
+  OL.TEAM.edit = null;
+  OL.paintTeam(teamState({ team: { links: many } }));
+  ok("a dense map does not print a sentence on every line",
+     (htmlOf("teamMap").match(/class="tmwhy"/g) || []).length === 0,
+     htmlOf("teamMap").slice(0, 200));
+  ok("but every line still carries both of them in its tooltip",
+     htmlOf("teamMap").includes("Principal → Daneel: una frase larguisima numero 0"),
+     htmlOf("teamMap").slice(0, 400));
+  OL.TEAM.edit = 2;
+  OL.paintTeam(teamState({ team: { links: many } }));
+  ok("and the one being edited keeps its label, so you can see what you clicked",
+     (htmlOf("teamMap").match(/class="tmwhy"/g) || []).length === 1);
+  OL.TEAM.edit = null;
+  OL.paintTeam(teamState());
+  ok("a small map still labels its links",
+     (htmlOf("teamMap").match(/class="tmwhy"/g) || []).length === 2,
+     htmlOf("teamMap").slice(0, 200));
+}
+
+// ── an agent nobody linked ─────────────────────────────────────────────────────
+console.log("\n=== an agent nobody connected is said out loud ===");
+OL.paintTeam(teamState({ team: { isolated: ["heraldo"], agents: [
+  { slug: "default", name: "Principal", role: "Coordina", reachable: true, isolated: false },
+  { slug: "daneel", name: "Daneel", role: "Atiende", reachable: true, isolated: false },
+  { slug: "heraldo", name: "HERALDO", role: "", reachable: true, isolated: true }] } }));
+ok("the banner names the agent nobody can reach",
+   htmlOf("teamWarn").includes("HERALDO") && htmlOf("teamWarn").includes("no est\u00e1 conectado"),
+   htmlOf("teamWarn").slice(0, 400));
+ok("and it is marked in the picture too", htmlOf("teamMap").includes("tmnd lone") ||
+   htmlOf("teamMap").includes(" lone"), htmlOf("teamMap").slice(0, 300));
+
+// ── joining two agents with the mouse ──────────────────────────────────────────
+console.log("\n=== dragging one agent onto another connects them ===");
+OL.paintTeam(teamState());
+OL.TEAM.linkFrom = "heraldo";
+OL.paintTeam(teamState());
+ok("an armed agent is shown as armed", htmlOf("teamMap").includes("arm"));
+ok("and the legend says what to do next",
+   htmlOf("teamMap").includes("Ahora pulsa el agente"), htmlOf("teamMap").slice(-400));
+OL.TEAM.linkFrom = "";
+OL.paintTeam(teamState());
+ok("otherwise it explains both gestures",
+   htmlOf("teamMap").includes("Arrastra un agente sobre otro") &&
+   htmlOf("teamMap").includes("doble clic"), htmlOf("teamMap").slice(-400));
+OL.TEAM.openPair("default", "heraldo");
+{
+  const f = htmlOf("teamLinks");
+  ok("dropping on an unconnected agent opens the connect form", f.includes('id="adSave"'));
+  ok("prefilled with the pair you dragged",
+     f.includes('value="default" selected') && f.includes('value="heraldo" selected'), f.slice(0, 700));
+  ok("and it offers a second instruction for the way back", f.includes('id="adWhyB"'));
+}
+OL.TEAM.adding = false;
+OL.TEAM.openPair("daneel", "heraldo");
+ok("dropping on an agent that is already connected opens THAT link instead of a duplicate",
+   OL.TEAM.edit === 1 && OL.TEAM.adding === false, OL.TEAM.edit + "/" + OL.TEAM.adding);
+OL.TEAM.edit = null;
+
+// ── Olivaw's proposal ──────────────────────────────────────────────────────────
+console.log("\n=== Olivaw proposes, the owner ticks ===");
+OL.S.sec = "entre-agentes"; OL.render(); OL.paintTeam(teamState());
+ok("the page offers it", htmlOf("panel").includes('id="tmSuggest"'));
+OL.paintProposal({ ok: true, note: "Propuesta", cards: [{ slug: "heraldo", role: "Publica" }],
+  links: [{ from: "default", to: "heraldo", both: true, why: "ida", why_back: "vuelta" }] });
+{
+  const box = htmlOf("tmPropBox");
+  ok("each proposed link is a row with a checkbox", box.includes('class="pLk"'));
+  ok("showing both instructions", box.includes("ida") && box.includes("vuelta"));
+  ok("each proposed card too", box.includes('class="pCd"'));
+  ok("and nothing is applied by asking", box.includes('id="tmPropApply"'));
+  ok("removing the rest is opt-in, not the default", box.includes('id="tmPropRepl"'));
+}
+OL.paintProposal({ ok: false, detail: "No contesto a tiempo." });
+ok("a failed proposal says so and offers nothing to apply",
+   htmlOf("tmPropBox").includes("No contesto") && !htmlOf("tmPropBox").includes('id="tmPropApply"'));
+
+// ── one agent's own connections ────────────────────────────────────────────────
+console.log("\n=== the per-agent connections panel ===");
+OL.goSec("conexiones", "daneel");
+OL.paintAgentTeam(teamState());
+{
+  const box = htmlOf("agtBox");
+  ok("it renders for the selected agent", box.length > 100, box.slice(0, 200));
+  ok("it lists the other agents, not itself",
+     box.includes("Principal") && box.includes("HERALDO") &&
+     !/<b>Daneel<\/b> <span class="tmtag">sin conexi/.test(box), box.slice(0, 600));
+  ok("it says which way each connection goes",
+     box.includes("sin conexi\u00f3n") || box.includes("los dos"), box.slice(0, 900));
+  ok("it offers the agent's own name", box.includes('id="agName"'));
+  ok("and its card", box.includes('id="agCard"') || box.includes('id="agRole"'));
+}
+// The expensive mistake this whole console was redesigned to prevent: a panel that edits
+// somebody else's agent. Here it would hand one agent's links to another.
+OL.AGT.edit = "heraldo";
+OL.paintAgentTeam(teamState());
+ok("opening a row shows one instruction per direction",
+   htmlOf("agtBox").includes('id="agWhyOut"') && htmlOf("agtBox").includes('id="agWhyIn"'));
+CALLS.length = 0;
+getEl("agWhyOut").value = "yo le escribo";
+getEl("agWhyIn").value = "el me escribe";
+getEl("agDir").value = "both";
+getEl("agSave").onclick.call(getEl("agSave"));
+await settle(4);
+{
+  const call = CALLS.filter((c) => c.route === "teams/link").pop();
+  ok("saving writes a link", !!call, JSON.stringify(CALLS.map((c) => c.route)));
+  ok("from the agent in the sidebar, not from anyone else",
+     call && call.body.from === "daneel", call && JSON.stringify(call.body));
+  ok("to the row that was opened", call && call.body.to === "heraldo");
+  ok("with each sentence on its own direction",
+     call && call.body.why === "yo le escribo" && call.body.why_back === "el me escribe",
+     call && JSON.stringify(call.body));
+}
+// Reading a link stored the other way round: the panel must relabel it, or it shows one
+// agent's instructions under the other's name.
+OL.AGT.edit = "";
+OL.goSec("conexiones", "daneel");
+OL.paintAgentTeam(teamState({ team: { links: [
+  { from: "default", to: "daneel", from_name: "Principal", to_name: "Daneel", both: true,
+    why: "lo que escribe Principal", why_back: "lo que escribe Daneel", shared_why: false,
+    enabled: true, stale: false, max_turns: null, hourly_limit: null, hours: null }] } }));
+{
+  const box = htmlOf("agtBox");
+  ok("a link stored the other way round is shown from this agent's point of view",
+     box.includes("Daneel \u2192 Principal: lo que escribe Daneel") &&
+     box.includes("Principal \u2192 Daneel: lo que escribe Principal"), box.slice(0, 1600));
+}
+CALLS.length = 0;
+getEl("agName").value = "Chalenus";
+getEl("agNameSave").onclick.call(getEl("agNameSave"));
+await settle(4);
+{
+  const call = CALLS.filter((c) => c.route === "teams/name").pop();
+  ok("the owner can say what the others should call it", !!call, JSON.stringify(CALLS));
+  ok("for the agent on screen", call && call.body.slug === "daneel" &&
+     call.body.name === "Chalenus", call && JSON.stringify(call.body));
+}
+
+// ── connecting it while it is being created ────────────────────────────────────
+console.log("\n=== a new agent is connected while it is created ===");
+OL.S.view = "setup"; OL.S.agent = { mode: "new" }; OL.S.team = null;
+{
+  const card = OL.agentConnectCard();
+  ok("the creation step asks who it will talk to", card.includes("\u00bfCon qui\u00e9n podr\u00e1 hablar?"), card.slice(0, 200));
+  ok("listing the agents already on the machine",
+     card.includes("Agente principal") && card.includes("Daneel"), card.slice(0, 600));
+  ok("with the main agent ticked by default",
+     OL.S.team && OL.S.team.connect.indexOf("default") >= 0, JSON.stringify(OL.S.team));
+  ok("and the answer is recorded as having been asked", OL.S.team && OL.S.team.asked === true);
+  ok("it says the other agents are left alone", card.includes("se quedan exactamente como est\u00e1n"));
+}
+OL.S.agent = { mode: "reconfigure", slug: "daneel" };
+ok("an agent that already exists is not asked again here", OL.agentConnectCard() === "");
+OL.S.agent = { mode: "new" };
+OL.S.team = { asked: true, connect: ["default"] };
+{
+  const done = OL.rFinished({ ok: true, written: [], warnings: [],
+                              agent: { slug: "nuevo", name: "Nuevo", profile: "nuevo", port: 8799 },
+                              team: { ok: true, linked: ["default"], adopted: true } });
+  ok("the finished screen says who it was connected to",
+     done.includes("Agente principal"), done.slice(0, 400));
+  ok("and that the rest of the map was written down as it was",
+     done.includes("tal cual estaban"));
+  ok("and points at the half that is still missing",
+     done.includes("cu\u00e1ndo") && done.includes('id="fnTeam"'));
+  const alone = OL.rFinished({ ok: true, written: [], warnings: [],
+                               agent: { slug: "n2", name: "N2" },
+                               team: { ok: true, linked: [] } });
+  ok("choosing nobody is reported as a choice, not as silence",
+     alone.includes("Trabajar\u00e1 por su cuenta"), alone.slice(0, 300));
+}
+OL.S.view = "console"; OL.S.team = null;
+
 
 report();
 

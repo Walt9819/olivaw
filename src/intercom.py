@@ -79,7 +79,7 @@ DEPTH_ENV = "OLIVAW_CALL_DEPTH"
 MAX_DEPTH = 2
 DONE = "FIN"
 SKILL_NAME = "hablar-con-otro-agente"
-SKILL_VERSION = "1.1.0"
+SKILL_VERSION = "1.2.0"
 
 
 # ── where things live ────────────────────────────────────────────────────────
@@ -646,8 +646,12 @@ def _listing_for(who, install_dir=None):
         line = "- **%s** — slug `%s`" % (a["name"], a["slug"])
         if a["role"]:
             line += "\n  - Se encarga de: %s" % a["role"]
+        if a.get("description"):
+            line += "\n  - Qué tiene a mano: %s" % a["description"]
         if a["why"]:
             line += "\n  - **Cuándo escribirle:** %s" % a["why"]
+        if a.get("never"):
+            line += "\n  - No le pidas: %s" % a["never"]
         if a["hours"]:
             line += ("\n  - Sólo de %02d:00 a %02d:00; fuera de esa franja no pasa el mensaje."
                      % (a["hours"]["from"], a["hours"]["to"]))

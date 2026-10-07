@@ -251,6 +251,16 @@
       title: "Lo que este agente sabe hacer",
       lead: "Navegar por internet, generar imágenes y conectarse a herramientas externas.",
       render: function () { return secBrowser() + secImages() + secMcp(); } },
+    // The same map as "El equipo", seen from one agent. Here because that is where the
+    // owner is standing when the question comes up - she has just created an agent and is
+    // looking at its page wondering why nobody talks to it.
+    { id: "conexiones", scope: "agent", icon: "🤝", label: "Con quién habla",
+      blurb: "Sus conexiones con los demás",
+      title: "Con quién habla este agente",
+      lead: "Qué otros agentes puede consultar, cuáles pueden consultarle a él, y " +
+            "<b>qué le dice a cada uno cuándo escribir</b>. Cada sentido lleva su propia " +
+            "instrucción: son dos encargos distintos, no uno repetido.",
+      render: secAgentTeam, wire: eAgentTeam },
 
     { id: "entre-agentes", scope: "team", icon: "🗺️", label: "El equipo",
       title: "El equipo: quién habla con quién",
@@ -664,7 +674,12 @@
   }
 
   // ── shared test-button helper ────────────────────────────────────────────
+  // btn/pill are optional: some actions are started by a gesture on the map rather than by
+  // a button, and an action with nowhere to show a spinner should still run.
   function runTest(btn, pill, fn, loading) {
+    var sink = { disabled: false, className: "", textContent: "", innerHTML: "",
+                 style: {} };
+    btn = btn || sink; pill = pill || sink;
     btn.disabled = true;
     pill.className = "pill load";
     pill.innerHTML = '<span class="spinner"></span>' + (loading || "Probando…");
@@ -765,6 +780,7 @@
     S.usecases = [];
     S.token = ""; S.owner_id = ""; S.chat_id = ""; S.owner_username = ""; S.bot_username = "";
     S.applied = false; S.applyResult = null;
+    S.team = null;        // the next agent gets asked again, not the last one's answer
   }
 
   function refreshAgents() {
@@ -996,6 +1012,8 @@
       '<button class="btn btn-ghost btn-sm" id="wsDefault">Usar la recomendada</button>' +
       '</div><div id="wsInfo" style="margin-top:10px"></div></div>' +
 
+      agentConnectCard() +
+
       '<h2>¿En qué lo usarás? <span class="muted small">(elige una o varias)</span></h2>' +
       '<div class="chips" id="ucChips">' + chips + '</div>' +
       '<div class="card" style="margin-top:16px"><div class="row">' +
@@ -1003,6 +1021,41 @@
       '<span class="muted small">Verás el archivo que guía a tu agente.</span></div>' +
       '<div id="previewWrap" style="display:none;margin-top:12px"><pre id="previewMd"></pre></div></div>';
   }
+  // ── who the new agent will be able to ask ─────────────────────────────────
+  // Asked here, while the agent is being created, because the alternative is what actually
+  // happened on this machine: two agents arrived, were connected to nothing, and the owner
+  // found out from the silence. Only shown when there is somebody to connect to, and only
+  // when creating - an agent that already exists has its own panel, which knows its real
+  // links instead of guessing them from here.
+  function agentConnectCard() {
+    if (!(S.agent && S.agent.mode === "new")) return "";
+    var list = allAgents();
+    if (!list.length) return "";
+    if (!S.team || !S.team.asked) {
+      S.team = { asked: true, connect: list.filter(function (a) { return a.is_default; })
+                                           .map(function (a) { return a.slug; }) };
+      save();
+    }
+    var picked = S.team.connect || [];
+    var rows = list.map(function (a) {
+      var on = picked.indexOf(a.slug) >= 0;
+      return '<label class="connpick"><input type="checkbox" data-conn="' + esc(a.slug) +
+        '"' + (on ? " checked" : "") + '><span class="grow"><b>' + esc(agentLabel(a)) +
+        "</b>" + (a.is_default ? ' <span class="badge">principal</span>' : "") +
+        "</span></label>";
+    }).join("");
+    return '<h2>¿Con quién podrá hablar?</h2>' +
+      '<div class="card pad">' +
+      '<p class="small muted" style="margin-top:0">Tus agentes pueden preguntarse cosas ' +
+      'entre ellos cuando el que recibe la pregunta no es el que tiene la respuesta. ' +
+      'Marca con quién quieres que <b>este</b> pueda hablar — en los dos sentidos. ' +
+      'Podrás cambiarlo cuando quieras, y luego decirle a cada uno <i>cuándo</i> ' +
+      'escribir.</p>' +
+      '<div class="connpicks">' + rows + "</div>" +
+      '<p class="small muted" style="margin:10px 0 0">Si no marcas ninguno, trabajará por ' +
+      'su cuenta. Los demás agentes se quedan exactamente como están.</p></div>';
+  }
+
   function field(key, lab, ph, val, area) {
     var input = area
       ? '<textarea data-k="' + key + '" placeholder="' + esc(ph) + '">' + esc(val) + '</textarea>'
@@ -1013,6 +1066,18 @@
     Array.prototype.forEach.call(document.querySelectorAll("#panel [data-k]"), function (inp) {
       inp.oninput = function () { S.identity[inp.getAttribute("data-k")] = inp.value; save(); renderStepper(); };
     });
+    Array.prototype.forEach.call(document.querySelectorAll("#panel [data-conn]"),
+      function (c) {
+        c.onchange = function () {
+          var slug = c.getAttribute("data-conn");
+          if (!S.team) S.team = { asked: true, connect: [] };
+          var list = S.team.connect || (S.team.connect = []);
+          var i = list.indexOf(slug);
+          if (c.checked && i < 0) list.push(slug);
+          if (!c.checked && i >= 0) list.splice(i, 1);
+          save();
+        };
+      });
     Array.prototype.forEach.call(document.querySelectorAll("#ucChips .chip"), function (c) {
       c.onclick = function () {
         var uid = c.getAttribute("data-uid"), i = S.usecases.indexOf(uid);
@@ -1322,6 +1387,30 @@
         esc(res.agent.profile || res.agent.slug) + '</code> y puerto <code>' +
         esc(res.agent.port) + '</code>, con su propia memoria y bot. No comparte nada con los demás.</div>';
     }
+    // What the "¿con quién podrá hablar?" answer actually did. Said here rather than left
+    // for her to discover, and with the half that is still missing named out loud: the
+    // links exist, the reasons do not, and an agent with a link and no reason knows it may
+    // write without knowing when.
+    var teamNote = "";
+    var tm = res.team || {};
+    if ((tm.linked || []).length) {
+      var who = tm.linked.map(function (s) {
+        var a = agentBySlug(s);
+        return a ? agentLabel(a) : s;
+      });
+      teamNote = '<div class="callout"><b>Conectado con el equipo 🤝</b> — puede hablar ' +
+        'con <b>' + esc(who.join(", ")) + '</b>, en los dos sentidos.' +
+        (tm.adopted ? " He anotado además las conexiones que ya existían entre tus otros " +
+          "agentes, tal cual estaban." : "") +
+        '<br>Falta lo importante: <b>cuándo</b> debe escribirle a cada uno. Eso es lo que ' +
+        'hace que pregunte en el momento justo en vez de no preguntar nunca.' +
+        '<div class="row" style="margin-top:10px">' +
+        '<button class="btn btn-soft btn-sm" id="fnTeam">Escribirlo ahora</button>' +
+        "</div></div>";
+    } else if (tm.ok && tm.linked && !tm.linked.length) {
+      teamNote = '<div class="callout"><b>Trabajará por su cuenta.</b> No lo conecté con ' +
+        'ningún otro agente. Puedes cambiarlo cuando quieras en «Con quién habla».</div>';
+    }
     // Isolated Claude account: needs a one-time login into ITS config dir.
     var isoNote = "";
     var cdir = res.agent && res.agent.claude_config_dir;
@@ -1342,7 +1431,7 @@
       // The verdict goes FIRST: "your agent is alive" is a lie if Telegram never connected,
       // and this is the screen where that lie used to be told.
       tgBox +
-      newNote + isoNote +
+      newNote + teamNote + isoNote +
       (botLink ? '<div class="card pad" style="text-align:center"><b>Habla con tu agente ahora</b>' +
         '<p class="muted small">Abre tu bot en Telegram y salúdalo.</p>' +
         '<a class="btn btn-primary" href="' + botLink + '" target="_blank" rel="noopener noreferrer">Abrir ' +
@@ -1364,6 +1453,10 @@
     // The finished screen renders through here too (rFinish returns rFinished when applied),
     // so the verdict's buttons get wired on both passes.
     wireTelegramVerdict();
+    if (el("fnTeam")) el("fnTeam").onclick = function () {
+      var r = S.applyResult || {};
+      goSec("conexiones", (r.agent && r.agent.slug) || S.sel);
+    };
     var btn = el("btnApply"); if (!btn) return;
     var pill = el("pillApply");
     btn.onclick = function () {
@@ -1375,7 +1468,10 @@
         chat_id: S.chat_id, maintainer_id: S.maintainer_id, lang: "es",
         identity: S.identity, usecase_ids: S.usecases, tavily_key: S.tavily_key,
         hermes_config: S.hermes_config,
-        agent: S.agent, bot_username: S.bot_username
+        agent: S.agent, bot_username: S.bot_username,
+        // Only sent when the question was actually on screen: the server does nothing at
+        // all without `asked`, so an older page or a one-agent machine changes no map.
+        team: (S.team && S.team.asked) ? S.team : {}
       };
       runTest(btn, pill, function () {
         return api("apply", payload).then(function (r) {
@@ -1558,7 +1654,8 @@
   // picture of permissions the gate had already stopped agreeing with - the one kind of
   // stale a page like this must never be. Every edit answers with the WHOLE state and
   // repaints from it, so what is drawn is always what is enforced.
-  var TEAM = { st: null, edit: null, adding: false, card: "", note: "" };
+  var TEAM = { st: null, edit: null, adding: false, card: "", note: "",
+               linkFrom: "", drag: null, prop: null, _tap: 0 };
 
   function tmShort(s, n) {
     s = String(s || "");
@@ -1596,6 +1693,11 @@
       var t = Math.min(tx, ty);
       return [p.x + dx * t, p.y + dy * t];
     }
+    // Six agents and seventeen links is a real team, and every link drawing its sentence
+    // turns the middle of the diagram into overlapping grey text. Past that point the
+    // sentences live in the list below and in each link's tooltip; the one being edited
+    // keeps its label, so clicking a line still tells you which one you picked.
+    var dense = (st.links || []).length > 6;
     var wires = (st.links || []).map(function (ln, i) {
       var A = at[ln.from], B = at[ln.to];
       if (!A || !B) return "";              // a link to an agent that is gone
@@ -1604,9 +1706,14 @@
       var mx = (p1[0] + p2[0]) / 2, my = (p1[1] + p2[1]) / 2;
       var cls = "tmlk" + (ln.enabled ? "" : " off") + (TEAM.edit === i ? " sel" : "") +
                 (ln.implied ? " implied" : "");
+      // Both lanes in the tooltip, named by reader. On a dense map this is where the
+      // sentences are, so it has to carry the pair and not a single ambiguous line.
       var tip = ln.from_name + "  " + tmArrow(ln) + "  " + ln.to_name +
-        (ln.why ? "  ·  " + ln.why : "") + (ln.enabled ? "" : "  ·  en pausa") +
-        (ln.hours ? "  ·  " + tmHours(ln.hours) : "");
+        (ln.why ? "\n" + ln.from_name + " → " + ln.to_name + ": " + ln.why : "") +
+        (ln.both && ln.why_back
+          ? "\n" + ln.to_name + " → " + ln.from_name + ": " + ln.why_back : "") +
+        (ln.enabled ? "" : "\n(en pausa)") +
+        (ln.hours ? "\n" + tmHours(ln.hours) : "");
       var xy = ' x1="' + p1[0].toFixed(1) + '" y1="' + p1[1].toFixed(1) +
                '" x2="' + p2[0].toFixed(1) + '" y2="' + p2[1].toFixed(1) + '"';
       // An implied link is not a row anyone can edit, so it gets no index, no tab stop and
@@ -1619,17 +1726,21 @@
         '<line class="tmhit"' + xy + '/>' +
         '<line class="tmwire"' + xy + ' marker-end="url(#tmEnd)"' +
           (ln.both ? ' marker-start="url(#tmStart)"' : '') + '/>' +
-        (ln.why ? '<text class="tmwhy" x="' + mx.toFixed(1) + '" y="' +
-                  (my - 7).toFixed(1) + '">' + esc(tmShort(ln.why, 22)) + '</text>' : '') +
+        (ln.why && (!dense || TEAM.edit === i)
+          ? '<text class="tmwhy" x="' + mx.toFixed(1) + '" y="' +
+            (my - 7).toFixed(1) + '">' + esc(tmShort(ln.why, 22)) + '</text>' : '') +
         '</g>';
     }).join("");
     var boxes = order.map(function (slug) {
       var p = at[slug], a = p.a;
       var cls = "tmnd" + (TEAM.card === a.slug ? " sel" : "") +
+                (TEAM.linkFrom === a.slug ? " arm" : "") +
+                (a.isolated ? " lone" : "") +
                 (a.reachable === false ? " dim" : "");
       return '<g class="' + cls + '" data-ag="' + esc(a.slug) + '" tabindex="0" ' +
         'role="button"><title>' + esc(a.name + " — " +
           (a.role || "sin ficha") +
+          (a.isolated ? " (sin conexiones)" : "") +
           (a.reachable === false ? " (no se le puede llamar desde aquí)" : "")) +
         '</title>' +
         '<rect x="' + (p.x - NW / 2) + '" y="' + (p.y - NH / 2) + '" width="' + NW +
@@ -1650,6 +1761,12 @@
       '</defs>' + wires + boxes + '</svg>';
   }
 
+  function tmName(t, slug) {
+    var ags = (t && t.agents) || [];
+    for (var i = 0; i < ags.length; i++) if (ags[i].slug === slug) return ags[i].name;
+    return slug;
+  }
+
   function tmOptions(ags, cur) {
     return ags.map(function (a) {
       return '<option value="' + esc(a.slug) + '"' +
@@ -1657,16 +1774,50 @@
     }).join("");
   }
 
+  // The two instructions of one link. Which agent reads which is the whole point: a link
+  // is a road with two lanes, and the sentence that tells the accountant when to ask the
+  // developer about code is not the sentence that tells the developer when to ask the
+  // accountant about money. One box for both is how this machine ended up telling Forja
+  // that its reason to write to the finance agent was "cuestiones de código".
+  function tmWhyPair(ln, dirNow) {
+    var fwd = dirNow !== "rev", rev = dirNow !== "fwd";
+    // Written out twice rather than through a helper that concatenates the id: the markup
+    // check greps app.js for literal id="..." attributes, and an id assembled at runtime
+    // reads to it as a handler bound to an element nothing renders.
+    function lab(from, to) {
+      return '<span class="lab">Cuando <b>' + esc(from) + '</b> le escribe a <b>' +
+        esc(to) + '</b>, ¿por qué?</span>';
+    }
+    function note(from, on) {
+      return on ? "Esto lo lee " + esc(from) + " en sus instrucciones."
+                : "Este sentido está cerrado ahora mismo.";
+    }
+    var ph = '" placeholder="Ej: para preguntar precios antes de confirmar una cita">';
+    return (ln.shared_why
+        ? '<div class="callout warn small"><b>Los dos sentidos usan la misma frase.</b> ' +
+          'Casi nunca es lo que quieres: <b>' + esc(ln.to_name) + '</b> está leyendo, ' +
+          'como motivo para escribirle a <b>' + esc(ln.from_name) + '</b>, una frase ' +
+          'escrita para el camino contrario. Escribe abajo la de vuelta, o pide que ' +
+          'Olivaw las proponga.</div>'
+        : "") +
+      '<label class="field tmdir' + (fwd ? "" : " shut") + '" id="lkWhyBox">' +
+      lab(ln.from_name, ln.to_name) +
+      '<input type="text" id="lkWhy" maxlength="300" value="' + esc(ln.why || "") + ph +
+      '</label><p class="small muted tmdirnote" id="lkWhyNote" ' +
+      'style="margin:-6px 0 10px">' + note(ln.from_name, fwd) + "</p>" +
+      '<label class="field tmdir' + (rev ? "" : " shut") + '" id="lkWhyBBox">' +
+      lab(ln.to_name, ln.from_name) +
+      '<input type="text" id="lkWhyB" maxlength="300" value="' +
+      esc(ln.why_back || (ln.shared_why ? ln.why : "")) + ph +
+      '</label><p class="small muted tmdirnote" id="lkWhyBNote" ' +
+      'style="margin:-6px 0 10px">' + note(ln.to_name, rev) + "</p>";
+  }
+
   // One open editor at a time, so these ids are unique by construction.
   function tmLinkForm(ln, ags) {
     var h = ln.hours || { from: 9, to: 18 };
     return '<div class="tmform">' +
-      '<label class="field"><span class="lab">¿Para qué sirve este enlace?</span>' +
-      '<input type="text" id="lkWhy" maxlength="300" value="' + esc(ln.why || "") +
-      '" placeholder="Ej: para preguntar precios y disponibilidad"></label>' +
-      '<p class="small muted" style="margin:-4px 0 10px">Esta frase se la lee ' +
-      '<b>' + esc(ln.from_name) + '</b> en sus instrucciones: es lo que le dice ' +
-      '<i>cuándo</i> escribir. Si la dejas vacía, sabrá que puede, pero no cuándo.</p>' +
+      tmWhyPair(ln, ln.both ? "both" : "fwd") +
       '<label class="field"><span class="lab">Sentido</span><select id="lkDir">' +
       '<option value="fwd"' + (ln.both ? "" : " selected") + ">" +
         esc(ln.from_name + " → " + ln.to_name) + " (sólo en un sentido)</option>" +
@@ -1701,19 +1852,38 @@
       'Quitar este enlace</button></div></div>';
   }
 
-  function tmAddForm(ags) {
+  // `pre` is where a drag landed, or the pair picked by double-clicking two agents. The
+  // selects stay: dragging is the quick way in, not the only one, and a <select> is what
+  // works with a keyboard and a screen reader.
+  function tmAddForm(ags, pre) {
+    pre = pre && pre.from ? pre : null;
+    var a = pre ? pre.from : ags[0].slug;
+    var b = pre ? pre.to : ags[1].slug;
+    function nameOf(s) {
+      for (var i = 0; i < ags.length; i++) if (ags[i].slug === s) return ags[i].name;
+      return s;
+    }
     return '<div class="tmform">' +
+      (pre ? '<p class="small" style="margin:0 0 10px">Vas a conectar <b>' +
+        esc(nameOf(a)) + '</b> con <b>' + esc(nameOf(b)) + '</b>.</p>' : "") +
       '<div class="row" style="gap:10px;align-items:end;flex-wrap:wrap">' +
       '<label class="field" style="flex:1;min-width:150px"><span class="lab">Quién ' +
-      'pregunta</span><select id="adFrom">' + tmOptions(ags, ags[0].slug) +
+      'pregunta</span><select id="adFrom">' + tmOptions(ags, a) +
       '</select></label>' +
       '<label class="field" style="flex:1;min-width:150px"><span class="lab">A quién</span>' +
-      '<select id="adTo">' + tmOptions(ags, ags[1].slug) + '</select></label></div>' +
-      '<label class="field"><span class="lab">¿Para qué?</span>' +
+      '<select id="adTo">' + tmOptions(ags, b) + '</select></label></div>' +
+      '<label class="field"><span class="lab">¿Cuándo debería escribirle?</span>' +
       '<input type="text" id="adWhy" maxlength="300" ' +
       'placeholder="Ej: para preguntar precios y disponibilidad"></label>' +
       '<label class="small"><input type="checkbox" id="adBoth"> Que puedan los dos ' +
       'sentidos</label>' +
+      '<div id="adBackWrap" style="display:none;margin-top:10px">' +
+      '<label class="field"><span class="lab">Y al revés, ¿cuándo debería escribirle el ' +
+      'otro?</span><input type="text" id="adWhyB" maxlength="300" ' +
+      'placeholder="Otra razón, no la misma al revés"></label></div>' +
+      '<p class="small muted" style="margin:6px 0 0">¿No sabes qué poner? Déjalo en ' +
+      'blanco y pulsa <b>«Que Olivaw lo proponga»</b> más abajo: lee lo que hace cada ' +
+      'agente y escribe las dos frases.</p>' +
       '<div class="row" style="margin-top:12px">' +
       '<button class="btn btn-primary btn-sm" id="adSave">Conectar</button>' +
       '<button class="btn btn-soft btn-sm" id="adCancel">Cancelar</button></div></div>';
@@ -1739,6 +1909,124 @@
       '<button class="btn btn-soft btn-sm" id="cdCancel">Cancelar</button></div></div>';
   }
 
+  // ── asking the main agent to draft the whole thing ────────────────────────
+  // Twelve sentences is the real reason the map on this machine had one sentence copied
+  // into seven links. The agent that already knows this team can write them; the owner
+  // then reads them and ticks the ones she agrees with. Nothing is applied by asking.
+  function secSuggest(focus) {
+    var who = focus ? " de este agente" : "";
+    return '<h2>Que lo proponga Olivaw</h2>' +
+      '<div class="card pad">' +
+      '<p class="small muted" style="margin-top:0">El agente principal lee lo que hace ' +
+      'cada uno — su propósito, su contexto, lo que tiene a mano — y propone las ' +
+      'conexiones' + who + ' con <b>una instrucción para cada sentido</b>. Tú las ' +
+      'revisas y marcas las que quieras. <b>Mientras no apliques, no cambia nada.</b></p>' +
+      '<div class="row" style="align-items:center;gap:10px">' +
+      '<button class="btn btn-primary btn-sm" id="tmSuggest" data-focus="' +
+      esc(focus || "") + '">✨ Que Olivaw lo proponga</button>' +
+      '<span class="muted small">Es un turno completo suyo: puede tardar un par de ' +
+      'minutos.</span></div>' +
+      '<div id="tmPropBox" style="margin-top:12px"></div></div>';
+  }
+
+  function tmPropLink(ln, i, t) {
+    var cur = null;
+    (t.links || []).forEach(function (p) {
+      if ((p.from === ln.from && p.to === ln.to) || (p.from === ln.to && p.to === ln.from))
+        cur = p;
+    });
+    var tag = cur ? "cambia" : "nueva";
+    return '<label class="tmprop"><input type="checkbox" class="pLk" data-i="' + i +
+      '" checked><span class="grow"><b>' + esc(tmName(t, ln.from)) + "</b> " +
+      '<span class="tmar">' + (ln.both ? "⇄" : "→") + "</span> <b>" +
+      esc(tmName(t, ln.to)) + '</b> <span class="tmtag">' + tag + "</span>" +
+      '<div class="small muted">' + esc(tmName(t, ln.from)) + " → " +
+      esc(tmName(t, ln.to)) + ": " + esc(ln.why || "(sin frase)") + "</div>" +
+      (ln.both ? '<div class="small muted">' + esc(tmName(t, ln.to)) + " → " +
+        esc(tmName(t, ln.from)) + ": " + esc(ln.why_back || "(sin frase)") + "</div>" : "") +
+      "</span></label>";
+  }
+
+  function paintProposal(r) {
+    var box = el("tmPropBox");
+    if (!box) return;
+    TEAM.prop = (r && r.ok) ? r : null;
+    if (!r || !r.ok) {
+      box.innerHTML = '<div class="callout warn small">' +
+        esc((r && r.detail) || "No pude pedir la propuesta.") + "</div>";
+      return;
+    }
+    var t = (TEAM.st && TEAM.st.team) || { agents: [], links: [] };
+    box.innerHTML =
+      (r.note ? '<div class="callout small">' + esc(r.note) + "</div>" : "") +
+      ((r.links || []).length
+        ? "<h3>Conexiones</h3>" + r.links.map(function (ln, i) {
+            return tmPropLink(ln, i, t);
+          }).join("")
+        : '<p class="small muted">No propuso conexiones nuevas.</p>') +
+      ((r.cards || []).length
+        ? "<h3>Fichas</h3>" + r.cards.map(function (c, i) {
+            return '<label class="tmprop"><input type="checkbox" class="pCd" data-i="' + i +
+              '" checked><span class="grow"><b>' + esc(tmName(t, c.slug)) + "</b>" +
+              '<div class="small muted">' + esc(c.role || "") +
+              (c.description ? "<br>" + esc(c.description) : "") +
+              (c.never ? "<br><b>No le pidas:</b> " + esc(c.never) : "") +
+              "</div></span></label>";
+          }).join("")
+        : "") +
+      '<div class="row" style="margin-top:12px;align-items:center;gap:12px">' +
+      '<button class="btn btn-primary btn-sm" id="tmPropApply">Aplicar lo marcado</button>' +
+      '<button class="btn btn-soft btn-sm" id="tmPropDrop">Descartar</button>' +
+      '<label class="small"><input type="checkbox" id="tmPropRepl"> Quitar también los ' +
+      'enlaces que no marqué</label></div>';
+    wireProposal();
+  }
+
+  function wireProposal() {
+    if (el("tmPropDrop")) el("tmPropDrop").onclick = function () {
+      TEAM.prop = null;
+      if (el("tmPropBox")) el("tmPropBox").innerHTML = "";
+    };
+    if (!el("tmPropApply")) return;
+    el("tmPropApply").onclick = function () {
+      var p = TEAM.prop || {};
+      function picked(sel, src) {
+        var out = [];
+        Array.prototype.forEach.call(document.querySelectorAll(sel), function (c) {
+          if (c.checked) {
+            var item = (src || [])[parseInt(c.getAttribute("data-i"), 10)];
+            if (item) out.push(item);
+          }
+        });
+        return out;
+      }
+      var body = { links: picked(".pLk", p.links), cards: picked(".pCd", p.cards),
+                   replace: !!(el("tmPropRepl") && el("tmPropRepl").checked) };
+      if (!body.links.length && !body.cards.length) { toast("No marcaste nada."); return; }
+      teamSave(this, body, "teams/apply").then(function () {
+        if (el("tmPropBox")) el("tmPropBox").innerHTML = "";
+        TEAM.prop = null;
+      });
+    };
+  }
+
+  function wireSuggest() {
+    var b = el("tmSuggest");
+    if (!b) return;
+    b.onclick = function () {
+      var box = el("tmPropBox");
+      if (box) {
+        box.innerHTML = '<div class="callout small"><span class="spinner"></span> ' +
+          'Preguntándole al agente principal… Es un turno completo suyo, así que puede ' +
+          'tardar un par de minutos. Puedes seguir usando esta pantalla.</div>';
+      }
+      var pill = el("icPill");
+      runTest(b, pill, function () {
+        return api("teams/suggest", { focus: b.getAttribute("data-focus") || "" });
+      }, "Pensando…").then(paintProposal);
+    };
+  }
+
   function secTeam() {
     return '' +
       '<div id="teamWarn"></div>' +
@@ -1751,6 +2039,7 @@
       '<p class="small muted" style="margin-top:-6px">La ficha de cada agente. Los demás ' +
       'la leen antes de escribirle, así que cuanto más claro, menos preguntas tontas.</p>' +
       '<div class="card pad"><div id="teamWho" class="muted small">…</div></div>' +
+      secSuggest("") +
       '<h2>Límites y seguridad</h2>' +
       // The same panel the setup step shows, with its accordion taken off. Reused rather
       // than copied: these are the limits teams.py reads, and two sets of inputs writing
@@ -1822,6 +2111,43 @@
         esc((st.retaught || []).join(", ")) + '</b>. Cada uno lo verá en cuanto termine ' +
         'lo que esté haciendo.</div>';
     }
+    if (st && st.applied) {
+      var n = function (k, one, many) {
+        return "<b>" + k + "</b> " + (k === 1 ? one : many);
+      };
+      warn += '<div class="callout good">Aplicado: ' +
+        n(st.applied.links, "conexión", "conexiones") + " y " +
+        n(st.applied.cards, "ficha", "fichas") + "." +
+        (st.applied.removed
+          ? " Quité " + n(st.applied.removed, "enlace", "enlaces") + " que no marcaste."
+          : "") + "</div>";
+    }
+    // ── two things the picture cannot show you ──────────────────────────────
+    // An agent with no links looks the same as an agent meant to work alone, and a
+    // two-way link with one sentence looks the same as one with two. Both are the
+    // failures this page was redesigned around, so both get said out loud.
+    var lonely = ags.filter(function (a) { return a.isolated; });
+    if (lonely.length) {
+      warn += '<div class="callout warn"><b>' +
+        (lonely.length === 1
+          ? esc(lonely[0].name) + " no está conectado con nadie."
+          : lonely.length + " agentes no están conectados con nadie: <b>" +
+            esc(lonely.map(function (a) { return a.name; }).join(", ")) + "</b>.") +
+        '</b><br>Ni pueden preguntar ni les pueden preguntar. Si es a propósito, perfecto. ' +
+        'Si no, arrástralos sobre otro agente en el mapa — o deja que Olivaw lo proponga.' +
+        '</div>';
+    }
+    var shared = (t.shared_why || []).length;
+    if (shared) {
+      warn += '<div class="callout warn"><b>' + shared +
+        (shared === 1 ? " enlace de dos sentidos usa" : " enlaces de dos sentidos usan") +
+        ' una sola frase.</b><br>Los dos agentes están ' +
+        'leyendo la misma instrucción, y sólo puede estar escrita para uno de ellos. ' +
+        'Ábrelos y escribe la de vuelta, o pide la propuesta de Olivaw.' +
+        '<div class="row" style="margin-top:10px">' +
+        '<button class="btn btn-soft btn-sm" id="tmFixWhy">Que Olivaw las escriba' +
+        '</button></div></div>';
+    }
     el("teamWarn").innerHTML = warn;
 
     // ── an agent asking for a link it does not have ─────────────────────────
@@ -1864,13 +2190,19 @@
         }
         drawn = { agents: ags, links: lines };
       }
+      var hint;
+      if (implied) {
+        hint = 'Así está ahora mismo: <b>todos con todos</b>, por defecto. Dibuja el mapa ' +
+          'para decidirlo tú.';
+      } else if (TEAM.linkFrom) {
+        hint = '<b>Ahora pulsa el agente con el que quieres conectar a ' +
+          esc(tmName(t, TEAM.linkFrom)) + '.</b> (Pulsa otra vez sobre él para dejarlo.)';
+      } else {
+        hint = '<b>Arrastra un agente sobre otro</b> para conectarlos — o haz doble clic ' +
+          'en uno y luego pulsa el otro. Un clic abre su ficha; una flecha, ese enlace.';
+      }
       el("teamMap").innerHTML = teamSvg(drawn) +
-        '<div class="tmlegend small muted">' + (implied
-          ? 'Así está ahora mismo: <b>todos con todos</b>, por defecto. Dibuja el mapa ' +
-            'para decidirlo tú.'
-          : 'Pulsa un agente para escribir su ficha, o una flecha para cambiar ese ' +
-            'enlace. La punta de la flecha indica quién puede empezar la conversación.') +
-        "</div>";
+        '<div class="tmlegend small muted">' + hint + "</div>";
     }
 
     // ── the list: the same thing, but readable and editable ─────────────────
@@ -1890,16 +2222,29 @@
         if (ln.max_turns) tags.push(ln.max_turns + " turnos");
         if (ln.hourly_limit) tags.push(ln.hourly_limit + "/hora");
         if (ln.stale) tags.push("alguno ya no está");
+        if (ln.shared_why) tags.push("misma frase en los dos sentidos");
+        // Each lane on its own line, named by who reads it. The old single line under a
+        // "⇄" could not say which agent the sentence was for, which is exactly how the
+        // wrong one ended up being read by both.
+        var why = ln.why
+          ? '<div class="small muted">' + esc(ln.from_name) + " → " + esc(ln.to_name) +
+            ": " + esc(ln.why) + "</div>"
+          : '<div class="small muted"><i>sin explicación — ' + esc(ln.from_name) +
+            " sabe que puede, pero no cuándo</i></div>";
+        if (ln.both) {
+          why += ln.why_back
+            ? '<div class="small muted">' + esc(ln.to_name) + " → " + esc(ln.from_name) +
+              ": " + esc(ln.why_back) + "</div>"
+            : '<div class="small muted"><i>' + esc(ln.to_name) + ": " +
+              (ln.why ? "lee esa misma frase, escrita para el otro sentido"
+                      : "sabe que puede, pero no cuándo") + "</i></div>";
+        }
         return '<div class="tmrow' + (ln.enabled ? "" : " off") + '">' +
           '<div class="grow"><div><b>' + esc(ln.from_name) + "</b> " +
           '<span class="tmar">' + tmArrow(ln) + "</span> <b>" + esc(ln.to_name) +
           "</b>" + tags.map(function (x) {
             return ' <span class="tmtag">' + esc(x) + "</span>";
-          }).join("") + "</div>" +
-          '<div class="small muted">' +
-          (ln.why ? esc(ln.why)
-                  : "<i>sin explicación — sabe que puede, pero no cuándo</i>") +
-          "</div></div>" +
+          }).join("") + "</div>" + why + "</div>" +
           '<button class="btn btn-soft btn-sm tmEdit" data-i="' + i + '">Cambiar</button>' +
           "</div>" +
           (TEAM.edit === i ? tmLinkForm(ln, ags) : "");
@@ -1907,7 +2252,7 @@
     }
     if (t.configured && ags.length > 1) {
       lh += TEAM.adding
-        ? tmAddForm(ags)
+        ? tmAddForm(ags, TEAM.adding)
         : '<div class="row" style="margin-top:10px">' +
           '<button class="btn btn-soft btn-sm" id="tmAdd">+ Conectar dos agentes</button>' +
           "</div>";
@@ -1990,11 +2335,69 @@
         };
       });
     }
-    hook(document.querySelectorAll(".tmnd"), function () {
-      TEAM.card = this.getAttribute("data-ag"); TEAM.edit = null; TEAM.adding = false;
+    // ── joining two agents by hand ──────────────────────────────────────────
+    // Two gestures for one job, because neither covers everybody: dragging is what the
+    // owner reached for and asked for, and double-click-then-click is what works on a
+    // touchscreen and when a drag is fiddly. Both land in the same place - the connect
+    // form, prefilled - rather than writing a link outright: a connection with no sentence
+    // in it is half the problem this page exists to fix.
+    TEAM.openPair = function (a, b) {
+      TEAM.linkFrom = ""; TEAM.card = ""; TEAM.edit = null; TEAM.adding = false;
+      var links = t.links || [];
+      for (var i = 0; i < links.length; i++) {
+        var p = links[i];
+        if ((p.from === a && p.to === b) || (p.from === b && p.to === a)) {
+          // Already connected: open what is there instead of offering to create it twice.
+          TEAM.edit = i;
+          paintTeam(TEAM.st);
+          var le = el("teamLinks"); if (le) le.scrollIntoView({ block: "center" });
+          return;
+        }
+      }
+      if (!t.configured) {               // no map yet: adopt, then let her connect
+        teamSave(null, {}, "teams/adopt").then(function () {
+          TEAM.adding = { from: a, to: b };
+          paintTeam(TEAM.st);
+        });
+        return;
+      }
+      TEAM.adding = { from: a, to: b };
+      paintTeam(TEAM.st);
+      var box = el("teamLinks"); if (box) box.scrollIntoView({ block: "center" });
+    };
+
+    function openCard(slug) {
+      TEAM.card = slug; TEAM.edit = null; TEAM.adding = false; TEAM.linkFrom = "";
       paintTeam(TEAM.st);
       var box = el("teamWho"); if (box) box.scrollIntoView({ block: "center" });
+    }
+
+    hook(document.querySelectorAll(".tmnd"), function () {
+      var slug = this.getAttribute("data-ag");
+      if (TEAM.linkFrom && TEAM.linkFrom !== slug) { TEAM.openPair(TEAM.linkFrom, slug); return; }
+      if (TEAM.linkFrom === slug) { TEAM.linkFrom = ""; paintTeam(TEAM.st); return; }
+      // Deferred, so a double-click can cancel it: without the delay the first of the two
+      // clicks opens the ficha and the second one arms a connection underneath it.
+      clearTimeout(TEAM._tap);
+      TEAM._tap = setTimeout(function () { openCard(slug); }, 230);
     });
+    Array.prototype.forEach.call(document.querySelectorAll(".tmnd"), function (g) {
+      var slug = g.getAttribute("data-ag");
+      g.ondblclick = function () {
+        clearTimeout(TEAM._tap);
+        TEAM.linkFrom = slug; TEAM.card = ""; TEAM.edit = null; TEAM.adding = false;
+        paintTeam(TEAM.st);
+      };
+      // Mouse-down here, mouse-up there. No document-level listener: everything is on the
+      // nodes and on the box around them, so nothing survives a repaint and leaks.
+      g.onmousedown = function () { TEAM.drag = slug; };
+      g.onmouseup = function () {
+        var from = TEAM.drag;
+        TEAM.drag = null;
+        if (from && from !== slug) { clearTimeout(TEAM._tap); TEAM.openPair(from, slug); }
+      };
+    });
+    if (el("teamMap")) el("teamMap").onmouseup = function () { TEAM.drag = null; };
     hook(document.querySelectorAll(".tmlk"), function () {
       TEAM.edit = parseInt(this.getAttribute("data-lk"), 10);
       TEAM.card = ""; TEAM.adding = false;
@@ -2004,6 +2407,23 @@
 
     if (el("lkHOn")) el("lkHOn").onchange = function () {
       el("lkHWrap").style.display = this.checked ? "" : "none";
+    };
+    // Closing a direction has to show up on the box that direction belongs to. Without
+    // this the owner sets "sólo en un sentido" and is still looking at two live-looking
+    // inputs, one of which nobody will ever read.
+    if (el("lkDir")) el("lkDir").onchange = function () {
+      var ln = (t.links || [])[TEAM.edit] || {};
+      var dir = this.value;
+      [["lkWhy", dir !== "rev", ln.from_name], ["lkWhyB", dir !== "fwd", ln.to_name]]
+        .forEach(function (row) {
+          var box = el(row[0] + "Box"), note = el(row[0] + "Note");
+          if (box) box.className = "field tmdir" + (row[1] ? "" : " shut");
+          if (note) {
+            note.textContent = row[1]
+              ? "Esto lo lee " + (row[2] || "ese agente") + " en sus instrucciones."
+              : "Este sentido está cerrado ahora mismo.";
+          }
+        });
     };
     if (el("lkCancel")) el("lkCancel").onclick = function () {
       TEAM.edit = null; paintTeam(TEAM.st);
@@ -2019,12 +2439,17 @@
       var ln = (t.links || [])[TEAM.edit];
       if (!ln) return;
       var dir = el("lkDir").value;
-      var from = dir === "rev" ? ln.to : ln.from;
-      var to = dir === "rev" ? ln.from : ln.to;
+      var rev = dir === "rev";
+      var from = rev ? ln.to : ln.from;
+      var to = rev ? ln.from : ln.to;
+      // The two boxes are labelled by agent, not by "ida/vuelta", so they keep meaning the
+      // same thing when the arrow is turned round - and the pair sent to the server is
+      // relabelled to match, because `why` there always means "from -> to" as spelled here.
+      var w1 = el("lkWhy").value, w2 = el("lkWhyB") ? el("lkWhyB").value : "";
       var hOn = el("lkHOn").checked;
       teamSave(this, {
-        from: from, to: to, direction: dir === "rev",
-        why: el("lkWhy").value, both: dir === "both",
+        from: from, to: to, direction: rev,
+        why: rev ? w2 : w1, why_back: rev ? w1 : w2, both: dir === "both",
         enabled: el("lkOn").checked,
         max_turns: parseInt(el("lkTurns").value, 10) || 0,
         hourly_limit: parseInt(el("lkHour").value, 10) || 0,
@@ -2046,7 +2471,12 @@
         return;
       }
       teamSave(this, { from: from, to: to, why: el("adWhy").value,
+                       why_back: el("adBoth").checked && el("adWhyB")
+                         ? el("adWhyB").value : "",
                        both: el("adBoth").checked, enabled: true });
+    };
+    if (el("adBoth")) el("adBoth").onchange = function () {
+      if (el("adBackWrap")) el("adBackWrap").style.display = this.checked ? "" : "none";
     };
     if (el("cdSave")) el("cdSave").onclick = function () {
       teamSave(this, { slug: TEAM.card, role: el("cdRole").value,
@@ -2071,11 +2501,249 @@
                       accept: false }, "teams/decide");
       };
     });
+
+    wireSuggest();
+    // The banner's button and the panel's button do the same thing, so it is literally
+    // the same handler rather than a second copy that can drift from it.
+    if (el("tmFixWhy")) el("tmFixWhy").onclick = function () {
+      var s = el("tmSuggest");
+      if (s && s.onclick) {
+        s.onclick.call(s);
+        var box = el("tmPropBox");
+        if (box) box.scrollIntoView({ block: "center" });
+      }
+    };
   }
 
   function eTeam() {
     TEAM.edit = null; TEAM.adding = false; TEAM.card = "";
+    TEAM.linkFrom = ""; TEAM.drag = null; TEAM.prop = null;
     api("intercom/status", {}).then(paintTeam);
+  }
+
+  // ── one agent's own connections ───────────────────────────────────────────
+  // The team map answers "how is this machine wired". It does not answer "and what about
+  // THIS one", which is the question the owner has while she is looking at an agent she
+  // just made - and the moment she notices nobody can reach it. Same data, same routes,
+  // same gate; what changes is that every row here is about the agent in the sidebar.
+  var AGT = { edit: "", card: false };
+
+  function agtRel(me, o, t) {
+    var links = (t && t.links) || [];
+    for (var i = 0; i < links.length; i++) {
+      var ln = links[i];
+      if (ln.from === me && ln.to === o) return { ln: ln, out: true, back: !!ln.both };
+      if (ln.from === o && ln.to === me) return { ln: ln, out: !!ln.both, back: true };
+    }
+    return null;
+  }
+
+  // The sentence each direction carries, said from THIS agent's point of view. The stored
+  // link may be written either way round, so reading ln.why directly here would show the
+  // owner one agent's instructions under another agent's name.
+  function agtWhys(me, o, rel) {
+    if (!rel) return { out: "", in: "" };
+    var ln = rel.ln;
+    if (ln.from === me) return { out: ln.why || "", in: ln.why_back || "" };
+    return { out: ln.why_back || "", in: ln.why || "" };
+  }
+
+  function agtForm(me, o, rel) {
+    var w = agtWhys(me, o, rel);
+    var dir = !rel ? "both" : (rel.out && rel.back ? "both" : (rel.out ? "out" : "in"));
+    var mine = tmName(AGT.st && AGT.st.team, me), his = o.name;
+    return '<div class="tmform">' +
+      '<label class="field"><span class="lab">Sentido</span><select id="agDir">' +
+      '<option value="out"' + (dir === "out" ? " selected" : "") + ">" +
+        esc(mine + " → " + his) + "</option>" +
+      '<option value="in"' + (dir === "in" ? " selected" : "") + ">" +
+        esc(his + " → " + mine) + "</option>" +
+      '<option value="both"' + (dir === "both" ? " selected" : "") + ">" +
+        esc(mine + " ⇄ " + his) + "</option></select></label>" +
+      '<label class="field"><span class="lab">Cuando <b>' + esc(mine) +
+      '</b> le escribe a <b>' + esc(his) + '</b>, ¿por qué?</span>' +
+      '<input type="text" id="agWhyOut" maxlength="300" value="' + esc(w.out) +
+      '" placeholder="Ej: para pedirle los números antes de prometer un plazo"></label>' +
+      '<label class="field"><span class="lab">Cuando <b>' + esc(his) +
+      '</b> le escribe a <b>' + esc(mine) + '</b>, ¿por qué?</span>' +
+      '<input type="text" id="agWhyIn" maxlength="300" value="' + esc(w["in"]) +
+      '" placeholder="Otra razón distinta — no la misma al revés"></label>' +
+      '<div class="row" style="margin-top:4px">' +
+      '<button class="btn btn-primary btn-sm" id="agSave">' +
+      (rel ? "Guardar" : "Conectar") + "</button>" +
+      '<button class="btn btn-soft btn-sm" id="agCancel">Cancelar</button>' +
+      (rel ? '<button class="btn btn-soft btn-sm" id="agDel" style="margin-left:auto">' +
+        "Quitar la conexión</button>" : "") + "</div></div>";
+  }
+
+  function paintAgentTeam(st) {
+    if (!el("agtBox")) return;
+    AGT.st = st;
+    TEAM.st = st;                       // the proposal panel reads names from here
+    var a = curAgent();
+    var t = (st && st.team) || { agents: [], links: [] };
+    var me = a ? a.slug : "";
+    var mine = null, others = [];
+    (t.agents || []).forEach(function (x) {
+      if (x.slug === me) mine = x; else others.push(x);
+    });
+    if (!mine) {
+      el("agtBox").innerHTML = '<div class="callout small">Este agente todavía no ' +
+        'aparece en el equipo. Si acabas de crearlo, vuelve a entrar en un momento.</div>';
+      return;
+    }
+    var head = "";
+    if (t.broken) {
+      head = '<div class="callout bad"><b>No puedo leer el mapa del equipo.</b> ' +
+        esc(t.error || "") + " Mientras tanto ningún agente puede llamar a otro.</div>";
+    } else if (!t.configured) {
+      head = '<div class="callout"><b>Tu equipo todavía no tiene mapa.</b> Ahora mismo ' +
+        'todos pueden con todos. En cuanto conectes algo aquí, anoto las conexiones que ' +
+        'ya existían tal cual están y a partir de ahí decides tú.</div>';
+    } else if (mine.isolated) {
+      head = '<div class="callout warn"><b>' + esc(mine.name) + ' no está conectado con ' +
+        'nadie.</b> Ni pregunta ni le preguntan. Conéctalo abajo, o deja que Olivaw lo ' +
+        'proponga.</div>';
+    }
+
+    var rows = others.map(function (o) {
+      var rel = agtRel(me, o.slug, t);
+      var w = agtWhys(me, o.slug, rel);
+      var state;
+      if (!rel) state = '<span class="tmtag">sin conexión</span>';
+      else if (rel.out && rel.back) state = '<span class="tmar">⇄</span> los dos';
+      else if (rel.out) state = '<span class="tmar">→</span> sólo ' + esc(mine.name) +
+        " pregunta";
+      else state = '<span class="tmar">←</span> sólo ' + esc(o.name) + " pregunta";
+      var detail = "";
+      if (rel) {
+        detail += '<div class="small muted">' + esc(mine.name) + " → " + esc(o.name) +
+          ": " + (rel.out ? esc(w.out || "sin frase") : "<i>cerrado</i>") + "</div>";
+        detail += '<div class="small muted">' + esc(o.name) + " → " + esc(mine.name) +
+          ": " + (rel.back ? esc(w["in"] || "sin frase") : "<i>cerrado</i>") + "</div>";
+        if (rel.ln && !rel.ln.enabled) detail += '<div class="small">⏸️ en pausa</div>';
+      } else if (o.role) {
+        detail = '<div class="small muted">' + esc(o.role) + "</div>";
+      }
+      return '<div class="tmrow"><div class="grow"><div><b>' + esc(o.name) + "</b> " +
+        state + "</div>" + detail + "</div>" +
+        '<button class="btn btn-soft btn-sm agEdit" data-s="' + esc(o.slug) + '">' +
+        (rel ? "Cambiar" : "Conectar") + "</button></div>" +
+        (AGT.edit === o.slug ? agtForm(me, o, rel) : "");
+    }).join("");
+
+    el("agtBox").innerHTML = head +
+      '<div class="card pad"><div class="row" style="align-items:end;gap:10px;' +
+      'flex-wrap:wrap"><label class="field grow" style="margin:0;min-width:200px">' +
+      '<span class="lab">Cómo lo llaman los otros agentes</span>' +
+      '<input type="text" id="agName" maxlength="40" value="' + esc(mine.name) + '">' +
+      '</label><button class="btn btn-soft btn-sm" id="agNameSave">Guardar</button></div>' +
+      '<p class="small muted" style="margin:8px 0 0">Este es el nombre con el que aparece ' +
+      'en las instrucciones de los demás. Si tú lo llamas de una forma y ellos leen otra, ' +
+      'no sabrán a quién te refieres cuando se lo pidas por su nombre.</p></div>' +
+      '<h2>Su ficha</h2>' +
+      '<div class="card pad">' +
+      (AGT.card ? agtCardForm(mine)
+        : '<div class="row"><div class="grow"><div class="small muted">' +
+          (mine.role ? esc(mine.role) : "<i>sin ficha</i>") +
+          (mine.description ? "<br>" + esc(mine.description) : "") +
+          (mine.never ? "<br><b>No le pidan:</b> " + esc(mine.never) : "") +
+          '</div></div><button class="btn btn-soft btn-sm" id="agCard">' +
+          (mine.role ? "Cambiar" : "Describir") + "</button></div>") +
+      '<p class="small muted" style="margin:10px 0 0">Esto lo leen <b>los demás ' +
+      'agentes</b> antes de escribirle.</p></div>' +
+      '<h2>Sus conexiones</h2>' +
+      '<div class="card pad">' + (rows || '<p class="small muted" style="margin:0">Es el ' +
+      'único agente de este equipo: todavía no hay con quién conectarlo.</p>') +
+      '<span class="pill" id="agPill" style="display:none;margin-top:10px"></span></div>';
+    wireAgentTeam();
+  }
+
+  function agtCardForm(a) {
+    return '<label class="field"><span class="lab">¿De qué se encarga? (una línea)</span>' +
+      '<input type="text" id="agRole" maxlength="120" value="' + esc(a.role || "") +
+      '" placeholder="Ej: Lleva las cuentas y los precios"></label>' +
+      '<label class="field"><span class="lab">¿Qué sabe y qué tiene a mano? (opcional)' +
+      '</span><textarea id="agDesc" maxlength="600">' + esc(a.description || "") +
+      "</textarea></label>" +
+      '<label class="field"><span class="lab">¿Qué NO deben pedirle? (opcional)</span>' +
+      '<input type="text" id="agNever" maxlength="300" value="' + esc(a.never || "") +
+      '"></label>' +
+      '<div class="row"><button class="btn btn-primary btn-sm" id="agCardSave">Guardar' +
+      '</button><button class="btn btn-soft btn-sm" id="agCardCancel">Cancelar</button>' +
+      "</div>";
+  }
+
+  function agtSave(btn, body, route) {
+    var pill = el("agPill");
+    if (pill) pill.style.display = "inline-flex";
+    return runTest(btn, pill, function () {
+      return api(route || "teams/link", body);
+    }, "Guardando…").then(function (r) {
+      AGT.edit = ""; AGT.card = false;
+      paintAgentTeam(r);
+      return r;
+    });
+  }
+
+  function wireAgentTeam() {
+    var a = curAgent(), me = a ? a.slug : "";
+    Array.prototype.forEach.call(document.querySelectorAll(".agEdit"), function (b) {
+      b.onclick = function () {
+        var s = b.getAttribute("data-s");
+        AGT.edit = (AGT.edit === s) ? "" : s;
+        AGT.card = false;
+        paintAgentTeam(AGT.st);
+      };
+    });
+    if (el("agCard")) el("agCard").onclick = function () {
+      AGT.card = true; AGT.edit = ""; paintAgentTeam(AGT.st);
+    };
+    if (el("agCardCancel")) el("agCardCancel").onclick = function () {
+      AGT.card = false; paintAgentTeam(AGT.st);
+    };
+    if (el("agCardSave")) el("agCardSave").onclick = function () {
+      agtSave(this, { slug: me, role: el("agRole").value,
+                      description: el("agDesc").value, never: el("agNever").value },
+              "teams/card");
+    };
+    if (el("agNameSave")) el("agNameSave").onclick = function () {
+      agtSave(this, { slug: me, name: el("agName").value }, "teams/name")
+        .then(function () { refreshAgents(); });
+    };
+    if (el("agCancel")) el("agCancel").onclick = function () {
+      AGT.edit = ""; paintAgentTeam(AGT.st);
+    };
+    if (el("agSave")) el("agSave").onclick = function () {
+      var o = AGT.edit, dir = el("agDir").value;
+      var out = el("agWhyOut").value, inn = el("agWhyIn").value;
+      // Always written as this panel shows it (`direction: true`), so the stored link
+      // stops depending on who happened to create it first and the labels on screen keep
+      // meaning what they say.
+      if (dir === "in") {
+        agtSave(this, { from: o, to: me, direction: true, both: false,
+                        why: inn, why_back: out, enabled: true });
+      } else {
+        agtSave(this, { from: me, to: o, direction: true, both: dir === "both",
+                        why: out, why_back: inn, enabled: true });
+      }
+    };
+    if (el("agDel")) el("agDel").onclick = function () {
+      agtSave(this, { from: me, to: AGT.edit }, "teams/unlink");
+    };
+    wireSuggest();
+  }
+
+  function secAgentTeam() {
+    var a = curAgent();
+    if (!a) return '<p class="lead">Todavía no hay ningún agente.</p>';
+    return '<div id="agtBox" class="muted small">Cargando el equipo…</div>' +
+      secSuggest(a.slug);
+  }
+
+  function eAgentTeam() {
+    AGT.edit = ""; AGT.card = false; TEAM.prop = null;
+    api("intercom/status", {}).then(paintAgentTeam);
   }
 
   // Connectors (MCP)
