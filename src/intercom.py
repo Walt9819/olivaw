@@ -260,13 +260,37 @@ def _base(profile):
 
     So call the executable directly with the flag the wrapper itself uses. CreateProcess
     hands the prompt over as one argument and the newlines survive.
+
+    WHY THE MAIN AGENT ALSO GETS AN EXPLICIT -p
+    -------------------------------------------
+    This used to return a bare `[exe]` for the main agent, on the reasoning that `hermes`
+    with no flag means the main profile. It does not - not from inside another agent.
+
+    The caller here is an agent's own terminal, whose HERMES_HOME points at that agent's
+    profile directory, and the subprocess inherits it. Hermes then does this
+    (hermes_cli/main.py, "1.5 If HERMES_HOME is already set and no explicit flag was
+    given"):
+
+        if profile_name is None and hermes_home_env:
+            if Path(hermes_home_env).parent.name == "profiles":
+                return          # trust HERMES_HOME - stay in THAT profile
+
+    So a bare `hermes -z` launched by Ábaco ran *as Ábaco*. Every call any agent made to
+    the main agent was a self-call wearing the main agent's name: the question went out,
+    a turn came back, and it was the sender's own brain answering. Nothing errored. It
+    only surfaced because two freshly made agents had no knowledge to fake it with and
+    said so - "este mensaje llegó al perfil «baco», o sea a tu propio cerebro".
+
+    `-p default` is checked in step 1, before HERMES_HOME is consulted and before the
+    sticky `active_profile` file in step 2 - which is the other way this can go wrong, and
+    the reason setting HERMES_HOME to the root is NOT the fix: anyone who runs
+    `hermes profile use heraldo` would silently redirect every call meant for the main
+    agent into heraldo. An explicit flag cannot be overridden by either.
     """
     exe = _hermes_exe()
     if not exe:
         return None
-    if not profile or profile == "default":
-        return [exe]
-    return [exe, "-p", profile]
+    return [exe, "-p", profile or "default"]
 
 
 # ── threads ──────────────────────────────────────────────────────────────────

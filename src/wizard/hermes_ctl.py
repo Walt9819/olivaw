@@ -43,10 +43,23 @@ def wrapper_path(profile):
 
 
 def _base(profile=None, hermes=None):
-    """Command prefix that targets the right profile (or None if unavailable)."""
+    """Command prefix that targets the right profile (or None if unavailable).
+
+    The main agent is named with `-p default` rather than left implicit. A bare `hermes`
+    is NOT reliably the main agent: with no flag, Hermes falls back to the sticky
+    `active_profile` file in its root (hermes_cli/main.py step 2), so after anyone runs
+    `hermes profile use heraldo` every call meant for the main agent would be answered,
+    and WRITTEN, by heraldo instead. The wizard uses this to read and set config, so that
+    would put the main agent's settings into another agent's profile.
+
+    `-p default` is resolved by get_profile_dir("default") to the root home itself and is
+    explicitly exempt from the "profile must exist" check, so it is also correct on a
+    fresh machine that has no profiles at all. The same fix, for the same reason, is in
+    intercom._base - where this bug was live rather than latent.
+    """
     if not profile or profile == "default":
         exe = hermes_path(hermes)
-        return [exe] if exe else None
+        return [exe, "-p", "default"] if exe else None
     wrap = wrapper_path(profile)
     if not os.path.exists(wrap):
         return None

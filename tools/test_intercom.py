@@ -141,6 +141,32 @@ def test_the_transport_never_goes_through_a_shell():
            "it uses the same -p flag the wrapper itself uses (%r)" % base)
 
 
+def test_every_target_is_named_explicitly_including_the_main_agent():
+    r"""A bare `hermes` does NOT mean the main agent when an agent is the one running it.
+
+    This shipped broken. `_base("default")` returned a bare `[exe]`, and the subprocess
+    inherits the caller's HERMES_HOME - which for an agent points at its own profile
+    directory. Hermes then keeps that profile (hermes_cli/main.py step 1.5: "If
+    HERMES_HOME is already set and no explicit flag was given, trust it"), so every call
+    an agent made to the main agent ran in the CALLER's profile: the sender's own brain
+    answered, wearing the main agent's name, and nothing errored.
+
+    The invariant that prevents it is not "default is special" but the opposite: no target
+    may ever be addressed implicitly, because implicit means "whoever the environment
+    happens to say", and the environment belongs to the caller.
+    """
+    for target in ("default", "", None, "daneel"):
+        base = REAL_BASE(target)
+        if not base:
+            continue                       # no hermes on this machine; nothing to check
+        want = target or "default"
+        ok("-p" in base, "target %r is addressed by an explicit flag (%r)" % (target, base))
+        if "-p" in base:
+            eq(base[base.index("-p") + 1], want,
+               "target %r names %r on the command line" % (target, want))
+        eq(len(base), 3, "and nothing else rides along for %r (%r)" % (target, base))
+
+
 def test_the_message_arrives_whole():
     """A multi-line envelope must reach the other agent as ONE argument, unbroken."""
     with Sandbox():
