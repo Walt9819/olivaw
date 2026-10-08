@@ -455,6 +455,14 @@ def set_link(frm, to, why=None, why_back=None, both=None, max_turns=None,
     once, in whichever direction it was first written, so a caller naming the same pair the
     other way round would otherwise attach each sentence to the wrong agent - the exact
     mix-up why_back exists to end.
+
+    One exception, and it is not cosmetic: a ONE-WAY link's arrow *is* its instruction. If
+    the stored link reads `analecta -> baco` and the caller asks for `baco -> analecta,
+    both=False`, keeping the stored orientation would leave a one-way link pointing the
+    opposite way from the one that was asked for, with the caller's sentence parked in a
+    field nobody reads. So `both=False` turns the arrow round exactly as `direction=True`
+    does. Only a two-way link, where both agents may write and the arrow is just how the
+    pair happens to be filed, keeps the orientation it was first written in.
     """
     status, data = _require_configured(install_dir)
     if status == LEGACY:
@@ -464,6 +472,9 @@ def set_link(frm, to, why=None, why_back=None, both=None, max_turns=None,
         raise ValueError("Un agente no se enlaza consigo mismo.")
     if not SLUG_RE.match(frm) or not SLUG_RE.match(to):
         raise ValueError("Agente no válido.")
+    # See the docstring: the owner asking for the arrow to be turned round, and a caller
+    # asking for a one-way link in the direction it spelled, are the same instruction.
+    turn = bool(direction) or (both is not None and not both)
     existing = None
     swap_incoming = False
     for ln in data["links"]:
@@ -472,11 +483,12 @@ def set_link(frm, to, why=None, why_back=None, both=None, max_turns=None,
             break
         if ln["from"] == to and ln["to"] == frm:
             existing = ln
-            if direction:
-                # The owner turned the arrow round in the console. Without this the stored
-                # orientation won, the form came back showing the old direction, and a
-                # one-way link could only be reversed by deleting it. The two sentences
-                # travel with their directions, so they swap with the arrow.
+            if turn:
+                # Without this the stored orientation won: the form came back showing
+                # the old direction, a one-way link could only be reversed by deleting
+                # it, and a proposal naming a one-way pair backwards silently inverted
+                # it. The two sentences travel with their directions, so they swap with
+                # the arrow.
                 ln["from"], ln["to"] = frm, to
                 ln["why"], ln["why_back"] = ln.get("why_back", ""), ln.get("why", "")
             else:

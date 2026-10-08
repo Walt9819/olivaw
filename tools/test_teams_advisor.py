@@ -332,6 +332,29 @@ def test_applying_on_a_mapless_machine_writes_down_what_was_already_running():
                "and %s -> %s still works, as it did before" % pair)
 
 
+def test_a_one_way_proposal_over_a_backwards_link_is_applied_the_way_it_reads():
+    """The end-to-end shape of the bug, through the button the owner actually presses."""
+    with Sandbox() as s:
+        teams.adopt(ROSTER, s.dir)
+        # adopt() files this pair as baco -> forja, so it has to be re-made the other way
+        # round for the proposal below to be the backwards one. Without this the test
+        # passes whether the bug is there or not.
+        teams.remove_link("baco", "forja", install_dir=s.dir)
+        teams.set_link("forja", "baco", both=True, why="lo que escribio ella",
+                       install_dir=s.dir)
+        adv.apply_proposal({"links": [{"from": "baco", "to": "forja", "both": False,
+                                       "why": "Para pedir costos de nube"}]},
+                           ROSTER, s.dir)
+        ok(teams.allows("baco", "forja", install_dir=s.dir)[0],
+           "the proposed direction is the one that ends up open")
+        ok(not teams.allows("forja", "baco", install_dir=s.dir)[0],
+           "and the one it did not propose is closed")
+        b = {a["slug"]: a["why"]
+             for a in teams.neighbours("baco", ROSTER, install_dir=s.dir)}
+        eq(b["forja"], "Para pedir costos de nube",
+           "with the proposed sentence where the agent will read it")
+
+
 def test_applying_cannot_name_an_agent_that_is_not_here():
     with Sandbox() as s:
         teams.adopt(ROSTER, s.dir)

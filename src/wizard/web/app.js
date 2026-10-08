@@ -2341,6 +2341,16 @@
     // touchscreen and when a drag is fiddly. Both land in the same place - the connect
     // form, prefilled - rather than writing a link outright: a connection with no sentence
     // in it is half the problem this page exists to fix.
+    // Where the eye has to go after a drag. The box holding the links is taller than the
+    // screen once a team has a dozen of them, so centring IT put the form the owner had
+    // just asked for 500px above the top of the window: she dragged two agents together
+    // and the page appeared to do nothing. Centre the form, and fall back to the box only
+    // when there is no form open.
+    function tmShowForm() {
+      var f = document.querySelector("#teamLinks .tmform") || el("teamLinks");
+      if (f) f.scrollIntoView({ block: "center" });
+    }
+
     TEAM.openPair = function (a, b) {
       TEAM.linkFrom = ""; TEAM.card = ""; TEAM.edit = null; TEAM.adding = false;
       var links = t.links || [];
@@ -2350,7 +2360,7 @@
           // Already connected: open what is there instead of offering to create it twice.
           TEAM.edit = i;
           paintTeam(TEAM.st);
-          var le = el("teamLinks"); if (le) le.scrollIntoView({ block: "center" });
+          tmShowForm();
           return;
         }
       }
@@ -2363,7 +2373,7 @@
       }
       TEAM.adding = { from: a, to: b };
       paintTeam(TEAM.st);
-      var box = el("teamLinks"); if (box) box.scrollIntoView({ block: "center" });
+      tmShowForm();
     };
 
     function openCard(slug) {
@@ -2402,7 +2412,7 @@
       TEAM.edit = parseInt(this.getAttribute("data-lk"), 10);
       TEAM.card = ""; TEAM.adding = false;
       paintTeam(TEAM.st);
-      var box = el("teamLinks"); if (box) box.scrollIntoView({ block: "center" });
+      tmShowForm();
     });
 
     if (el("lkHOn")) el("lkHOn").onchange = function () {

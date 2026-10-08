@@ -626,6 +626,34 @@ def test_turning_the_arrow_round_turns_the_sentences_with_it():
         eq(ln["why_back"], "ida", "as did the other one")
 
 
+def test_making_a_link_one_way_names_the_direction_the_caller_asked_for():
+    """A one-way arrow IS the instruction, so it follows the caller's spelling.
+
+    Olivaw proposes one-way links and nothing makes it name a pair in the order the file
+    happens to store it. On this owner's machine it proposed `baco -> analecta` one-way
+    over a link stored as `analecta -> baco`. Keeping the stored arrow left analecta able
+    to write to baco for no stated reason, baco unable to answer at all, and the proposed
+    sentence sitting in a field no agent ever reads - the inverse of what was approved."""
+    with Sandbox() as s:
+        teams.adopt(ROSTER, s.dir)
+        teams.set_link("daneel", "heraldo", both=True, why="D hacia H",
+                       why_back="H hacia D", install_dir=s.dir)
+        # Same pair, named the other way round, and narrowed to one direction.
+        teams.set_link("heraldo", "daneel", both=False, why="solo H hacia D",
+                       install_dir=s.dir)
+        ok(teams.allows("heraldo", "daneel", install_dir=s.dir)[0],
+           "the direction that was asked for is the one that works")
+        ok(not teams.allows("daneel", "heraldo", install_dir=s.dir)[0],
+           "and the closed one is the other, not the reverse of what was asked")
+        h = {a["slug"]: a["why"]
+             for a in teams.neighbours("heraldo", ROSTER, install_dir=s.dir)}
+        eq(h["daneel"], "solo H hacia D",
+           "with the sentence on the direction it was written for")
+        d = [a["slug"] for a in teams.neighbours("daneel", ROSTER, install_dir=s.dir)]
+        ok("heraldo" not in d,
+           "and the agent at the closed end is not told to write")
+
+
 def test_an_agent_nobody_linked_is_named_as_such():
     with Sandbox() as s:
         teams.adopt(ROSTER, s.dir)

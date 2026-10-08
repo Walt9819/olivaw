@@ -76,7 +76,7 @@ function mkEl(id) {
     insertBefore() {},
     remove() { e._removed = true; },
     focus() {},
-    scrollIntoView() {},
+    scrollIntoView() { global.SCROLLED.push(e.id); },
     querySelector: () => null,
     querySelectorAll: () => [],
     get innerHTML() { return e._html; },
@@ -102,12 +102,23 @@ function getEl(id) {
   if (!nodes.has(id)) nodes.set(id, mkEl(id));
   return nodes.get(id);
 }
+global.SCROLLED = [];
 const body = mkEl("body");
 global.document = {
   body,
   documentElement: mkEl("html"),
   getElementById: getEl,
-  querySelector: (sel) => (sel === ".panel-wrap" ? mkEl("panel-wrap") : null),
+  // Only two selectors are modelled, and the second one deliberately depends on what is
+  // rendered: "#teamLinks .tmform" answers only while a link form is actually open, which
+  // is what makes "the page scrolled to the form, not to the list" a real assertion.
+  querySelector: (sel) => {
+    if (sel === ".panel-wrap") return mkEl("panel-wrap");
+    if (sel === "#teamLinks .tmform") {
+      const box = getEl("teamLinks");
+      return (box && /class="tmform"/.test(box.innerHTML)) ? mkEl("the-form") : null;
+    }
+    return null;
+  },
   querySelectorAll: () => [],
   createElement: (t) => mkEl("new-" + t),
   addEventListener() {},
@@ -1189,6 +1200,12 @@ OL.TEAM.openPair("default", "heraldo");
   ok("prefilled with the pair you dragged",
      f.includes('value="default" selected') && f.includes('value="heraldo" selected'), f.slice(0, 700));
   ok("and it offers a second instruction for the way back", f.includes('id="adWhyB"'));
+  // The owner's own map has 13 links, which makes the box holding them taller than the
+  // screen. Centring the BOX left this form above the top of the window, so the drag
+  // looked like it had done nothing at all.
+  ok("and the page scrolls to the form, not to the middle of the list",
+     global.SCROLLED[global.SCROLLED.length - 1] === "the-form",
+     JSON.stringify(global.SCROLLED.slice(-3)));
 }
 OL.TEAM.adding = false;
 OL.TEAM.openPair("daneel", "heraldo");
