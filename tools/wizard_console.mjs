@@ -76,6 +76,10 @@ function mkEl(id) {
     insertBefore() {},
     remove() { e._removed = true; },
     focus() {},
+    click() { global.CLICKED.push(e.id); },
+    // The file input's own list. Empty unless a test fills it, which is what makes
+    // "picking a file reaches tkAdd" a real assertion rather than a stub answering itself.
+    files: [],
     scrollIntoView() { global.SCROLLED.push(e.id); },
     querySelector: () => null,
     querySelectorAll: () => [],
@@ -103,6 +107,19 @@ function getEl(id) {
   return nodes.get(id);
 }
 global.SCROLLED = [];
+global.CLICKED = [];
+global.CREATED = [];
+// Node has atob, Blob and URL.createObjectURL; it has no FileReader, and reading an
+// attachment is the first thing the chat does with one. The stub answers asynchronously
+// like the real one, so a test that forgets to await gets the same nothing a browser
+// would give it.
+global.FileReader = class {
+  readAsDataURL(file) {
+    const b64 = Buffer.from(file._bytes || "x").toString("base64");
+    this.result = "data:" + (file.type || "application/octet-stream") + ";base64," + b64;
+    setTimeout(() => this.onload && this.onload(), 0);
+  }
+};
 const body = mkEl("body");
 global.document = {
   body,
@@ -120,7 +137,9 @@ global.document = {
     return null;
   },
   querySelectorAll: () => [],
-  createElement: (t) => mkEl("new-" + t),
+  // Kept, because the only evidence that a download actually fired is the <a> it made:
+  // its download name and the click on it.
+  createElement: (t) => { const e = mkEl("new-" + t); global.CREATED.push(e); return e; },
   addEventListener() {},
 };
 global.window = global;
@@ -238,6 +257,12 @@ const CANNED = {
   "talk/status": { ok: true, enabled: true, ready: true, port: 8642,
                    detail: "Puedes escribirle desde aqui." },
   "talk/new": { ok: true, session_id: "sess-1" },
+  "talk/attach": { ok: true, folder: "C:/ws/main/adjuntos",
+                   file: { id: "up-1", name: "informe.pdf", size: 1234, kind: "file",
+                           path: "C:/ws/main/adjuntos/informe.pdf",
+                           mime: "application/pdf" } },
+  "talk/file": { ok: true, name: "informe.pdf", mime: "application/pdf", size: 2,
+                 data_b64: "aGk=" },
   "talk/send": { ok: true, reply: "Hola, soy tu agente.", session_id: "sess-1" },
   "numbers/add": { ok: true, number: { slug: "soporte", label: "Soporte", port: 3002 } },
   "channel/whatsapp-qr": { ok: true, connected: false,
@@ -264,6 +289,7 @@ const HOOK = "\n  globalThis.__ol = { CONSOLE: CONSOLE, S: S, META: META, STEPS:
   " targetProfile: targetProfile, render: render, enterSetup: enterSetup," +
   " SOS: SOS, openSos: openSos, sendTurn: sendTurn, paintMsgs: paintMsgs," +
   " showQr: showQr, TALK: TALK, sendTalk: sendTalk, loadConn: loadConn," +
+  " paintLog: paintLog, tkChips: tkChips, tkAdd: tkAdd, tkFileHtml: tkFileHtml," +
   " startLogin: startLogin, loadDash: loadDash, DASH: DASH, BOOT: BOOT, paintTeam: paintTeam, teamSvg: teamSvg, TEAM: TEAM, secTeam: secTeam, paintAgentTeam: paintAgentTeam, AGT: AGT, paintProposal: paintProposal, rAgent: rAgent, rFinished: rFinished, agentConnectCard: agentConnectCard," +
   " get LIVE(){ return LIVE } };\n";
 const hooked = src.slice(0, cut) + HOOK + src.slice(cut);
@@ -758,6 +784,131 @@ await new Promise((r) => setTimeout(r, 0));
   ok("and the answer arrives next to it", log.includes("Hola, soy tu agente"), log);
 }
 
+console.log("\n=== the chat carries files, both ways ===");
+{
+  const tk = getEl("panel")._html;
+  ok("there is a way to attach one", tk.includes('id="tkClip"') && tk.includes('id="tkPick"'));
+  ok("and the page says so in words, including that the agent can send them back",
+     /arrastra|Arr\u00e1strale/i.test(tk) && /mandarte archivos/i.test(tk), tk.slice(0, 200));
+
+  // What is attached but not yet sent: on screen, and removable.
+  OL.TALK.files = [{ name: "informe.pdf", size: 1234, human: "1.2 KB", kind: "file",
+                     data: "data:application/pdf;base64,aGk=" }];
+  OL.tkChips();
+  let chips = htmlOf("tkChips");
+  ok("an attached file is shown before it is sent", chips.includes("informe.pdf"), chips);
+  ok("and can be taken off again", chips.includes('id="tkx0"'), chips);
+  getEl("tkx0").onclick();
+  ok("taking it off really removes it", OL.TALK.files.length === 0 &&
+     !htmlOf("tkChips").includes("informe.pdf"));
+
+  // Picking a file reads it in the browser and stages it - nothing is uploaded yet.
+  CALLS.length = 0;
+  OL.tkAdd([{ name: "foto.png", size: 9, type: "image/png", _bytes: "abc" }]);
+  await new Promise((r) => setTimeout(r, 0));
+  ok("picking a file stages it without touching the server",
+     OL.TALK.files.length === 1 && !CALLS.length, JSON.stringify(CALLS));
+  ok("and it knows an image is an image", OL.TALK.files[0].kind === "image");
+
+  // Sending: the file is uploaded first, and the turn names the ID it got back.
+  CALLS.length = 0;
+  OL.TALK.sid = "sess-1";
+  OL.TALK.ready = true;
+  OL.TALK.busy = false;
+  getEl("tkInput").value = "mira esto";
+  OL.sendTalk();
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  const up = CALLS.find((c) => c.route === "talk/attach");
+  ok("the file is uploaded before the turn", !!up, JSON.stringify(CALLS.map((c) => c.route)));
+  // null IS the main agent here - targetProfile() returns it so the server runs `hermes`
+  // with no --profile. The real question is whether it FOLLOWS the sidebar, asked below.
+  ok("the main agent's chat uploads as the main agent", up && up.body.profile === null,
+     JSON.stringify(up && up.body.profile));
+  ok("with its name and its bytes", up && up.body.name === "foto.png" &&
+     /^data:image\/png;base64,/.test(up.body.data || ""), JSON.stringify(up && up.body.name));
+  const sent = CALLS.find((c) => c.route === "talk/send");
+  ok("and the turn carries the id, never a path",
+     sent && JSON.stringify(sent.body.files) === '["up-1"]' &&
+     !/[A-Za-z]:[\\/]/.test(JSON.stringify(sent.body.files)), JSON.stringify(sent && sent.body.files));
+  ok("the staged list is emptied so the next message does not resend it",
+     OL.TALK.files.length === 0);
+  ok("her own message shows the thumbnail straight away",
+     htmlOf("tkLog").includes('<img class="bubimg" src="data:image/png'), htmlOf("tkLog"));
+
+  // Coming back: an image is shown, a file is a button, a refused one is named.
+  CANNED["talk/send"] = { ok: true, session_id: "sess-1", reply: "Aqu\u00ed lo tienes.",
+    files: [{ kind: "image", name: "grafica.png", human: "12 KB",
+              data_url: "data:image/png;base64,AAAA" },
+            { kind: "file", name: "informe.pdf", human: "2 KB", id: "g1" },
+            { kind: "file", name: "enorme.zip", human: "60 MB", folder: "C:/ws/main" }] };
+  OL.TALK.busy = false;
+  getEl("tkInput").value = "p\u00e1samelo";
+  CALLS.length = 0;
+  OL.sendTalk();
+  await new Promise((r) => setTimeout(r, 0));
+  const log = htmlOf("tkLog");
+  ok("an image the agent sends is shown, not pasted as base64 text",
+     log.includes('<img class="bubimg" src="data:image/png;base64,AAAA"') &&
+     !log.includes("&lt;img"), log.slice(-300));
+  ok("a file the agent sends is a button", /class="bubfile" id="tkd\d+"/.test(log), log.slice(-400));
+  ok("one it will not hand over is still named, with where it is",
+     log.includes("enorme.zip") && log.includes("C:/ws/main"), log.slice(-400));
+  ok("the sentence survives next to them", log.includes("Aqu\u00ed lo tienes"), log.slice(-300));
+
+  // The button downloads.
+  const btn = (log.match(/id="(tkd\d+)"/) || [])[1];
+  CALLS.length = 0;
+  CREATED.length = 0;
+  CLICKED.length = 0;
+  getEl(btn).onclick();
+  await new Promise((r) => setTimeout(r, 0));
+  const grab = CALLS.find((c) => c.route === "talk/file");
+  ok("pressing it asks for that file by its id", grab && grab.body.id === "g1",
+     JSON.stringify(grab && grab.body));
+  ok("and the browser is handed something to save, under its own name",
+     CREATED.length && CREATED[CREATED.length - 1].download === "informe.pdf",
+     JSON.stringify(CREATED.map((c) => c.download)));
+  ok("by clicking it, which is what actually starts the download", CLICKED.length > 0);
+
+  CANNED["talk/send"] = { ok: true, reply: "Hola, soy tu agente.", session_id: "sess-1" };
+
+  // An attachment goes into the folder of the agent whose chat it is. Dropping a client's
+  // contract on Daneel's chat and having it land in the main agent's workspace would hand
+  // it to an agent the owner never showed it to.
+  OL.goSec("hablar", "daneel");
+  await new Promise((r) => setTimeout(r, 0));
+  OL.TALK.sid = "sess-1";
+  OL.TALK.ready = true;
+  OL.TALK.busy = false;
+  OL.TALK.files = [{ name: "contrato.pdf", size: 3, human: "3 B", kind: "file",
+                     data: "data:application/pdf;base64,aGk=" }];
+  CALLS.length = 0;
+  OL.sendTalk();
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  const up2 = CALLS.find((c) => c.route === "talk/attach");
+  ok("an attachment lands in the folder of the agent whose chat it is",
+     up2 && up2.body.profile === "daneel", JSON.stringify(up2 && up2.body.profile));
+  const sent2 = CALLS.find((c) => c.route === "talk/send");
+  ok("and so does the turn that mentions it", sent2 && sent2.body.profile === "daneel",
+     JSON.stringify(sent2 && sent2.body.profile));
+
+  // Pressing Enviar before a conversation exists opens one - it must not also throw away
+  // the file she just attached, which is all she would see happen.
+  OL.TALK.sid = "";
+  OL.TALK.busy = false;
+  OL.TALK.files = [{ name: "no me pierdas.pdf", size: 3, human: "3 B", kind: "file",
+                     data: "data:application/pdf;base64,aGk=" }];
+  OL.sendTalk();
+  await new Promise((r) => setTimeout(r, 0));
+  ok("opening a conversation keeps what was already attached",
+     OL.TALK.files.length === 1, JSON.stringify(OL.TALK.files));
+  // Starting over, on the other hand, is exactly the moment to drop it.
+  getEl("tkNew").onclick();
+  ok("but 'empezar de cero' does drop it", OL.TALK.files.length === 0);
+}
+
 console.log("\n=== the new panels have the styles they render against ===");
 {
   // A class the CSS does not define renders as an unstyled div - which for a status dot
@@ -765,7 +916,9 @@ console.log("\n=== the new panels have the styles they render against ===");
   // work exists to fix. So the classes the panels emit are checked against the stylesheet.
   for (const cls of ["cdot", "dot-ok", "dot-warn", "dot-off", "dot-wait", "connlist",
                      "walist", "cdet", "clink", "qrbox", "chatlog", "bub", "btn-xs",
-                     "dashgrid", "dashcard", "chchips", "chchip"]) {
+                     "dashgrid", "dashcard", "chchips", "chchip",
+                     "bubfiles", "bubimg", "bubfile", "tkchips", "tkchip", "tkx",
+                     "tkbar"]) {
     ok("." + cls + " is defined", CSS.includes("." + cls), "missing from app.css");
   }
   ok("the waiting dot animates, so 'checking' cannot be mistaken for 'off'",

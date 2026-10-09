@@ -446,6 +446,37 @@ carries this: loopback-only, and it refuses to start without a strong `API_SERVE
 (a guessable key there is remote code execution). The key stays in the profile `.env` and
 never reaches the page — the wizard proxies and adds the bearer header server-side.
 
+**And it carries files, both ways.** Every other channel could: on Telegram you send a photo
+and the agent sees it, it writes a report and Telegram delivers it. Here you could only type,
+and the agent — correctly — said it had no way to send you anything. Three reasons, each
+fixed in `talk.py`:
+
+* *It did not know where it was.* Hermes' `api_server` hint says "the rendering layer is
+  unknown — assume plain text", which is right for a generic API client and wrong for this
+  one. Each turn now carries a short `system_message` (Hermes appends it to the persona for
+  that turn and keeps it out of the trajectory) saying this screen shows images and delivers
+  files, and that `MEDIA:<absolute path>` is how to hand one over.
+* *Going in, images ride in the turn and everything else rides on disk.* Hermes takes
+  OpenAI's vision parts and rejects `file`/`input_file` outright, so a PDF cannot be inlined
+  — and does not need to be: the agent is on the same machine. Attachments are written into
+  its own workspace (`adjuntos/`) and named with their path, so it opens them with the tools
+  it already has; images go **both** ways at once, inline so it sees them and by path so it
+  can work on the file. Drag onto the chat, paste a screenshot, or use 📎.
+* *Coming back, the reply is read for files.* Hermes rewrites `MEDIA:` image tags into base64
+  markdown for API callers and leaves every other tag as the agent wrote it — which is why
+  the old chat showed either a megabyte of base64 or a bare `C:\` path as the answer. Both
+  are lifted out of the text and returned as structured files: images are shown, anything
+  else becomes a download button.
+
+The download rule is the part worth stating. **Only a path the agent itself wrote into a
+reply is downloadable**, and only through the opaque id minted at that moment — the browser
+can never ask the server for a path of its own choosing, in either direction (attaching
+returns an id, sending spends one). Every path is then re-checked at click time against a
+credential denylist: `.env`, keys and certificates, `.ssh`/`.aws`, token stores, Hermes' own
+pairing directory. That is the same ground Hermes' `validate_media_delivery_path` covers on
+every other channel, and it is what matters when a page the agent read tries to talk it into
+attaching a secret. Covered by `tools/test_talk_files.py`.
+
 #### Which brain, decided rather than assumed
 
 The help console used to offer Claude Code on a Codex install. Two separate detectors both

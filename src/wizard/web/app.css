@@ -496,6 +496,43 @@ body.sos-open{overflow:hidden}
 .bub.them{align-self:flex-start; background:var(--panel); border:1px solid var(--line);
   border-bottom-left-radius:5px}
 
+/* Files in the conversation, both the ones she attaches and the ones it sends back.
+   The bubble is white-space:pre-wrap, which would turn the newlines between these
+   elements into blank lines inside it - hence a block of its own around them. */
+.bubfiles{display:flex; flex-direction:column; gap:6px; margin-top:7px;
+  white-space:normal}
+.bubimg{display:block; max-width:100%; max-height:320px; width:auto; border-radius:10px;
+  border:1px solid var(--line-2)}
+.bubfile{display:block; text-align:left; width:100%; font:inherit; font-size:12.5px;
+  padding:7px 10px; border-radius:10px; border:1px solid var(--line);
+  background:var(--panel-2); color:inherit; cursor:pointer}
+.bubfile:hover:not(.off){border-color:var(--accent)}
+.bubfile:disabled{opacity:.55; cursor:default}
+/* No id behind it: this one names a file the server will not hand over, so it must not
+   look like a button that someone is meant to press. */
+.bubfile.off{cursor:default; background:transparent; border-style:dashed}
+
+/* The composer, which is a row that must not wrap. Every input in this stylesheet is
+   width:100%, which inside a .row makes its flex basis the whole row - so the textarea
+   claimed the full width and pushed first Enviar and then the paperclip onto lines of
+   their own. flex:1 1 0 makes it take what is LEFT instead of asking for everything. */
+.tkbar{display:flex; gap:8px; align-items:flex-end; flex-wrap:nowrap}
+.tkbar textarea{flex:1 1 0; width:auto; min-width:0; min-height:46px}
+.tkbar .btn{flex:0 0 auto}
+
+/* What is attached but not sent yet. It sits between the log and the box she is typing
+   in, because that is where she will look for it when she wonders what is going out. */
+.tkchips{display:flex; flex-wrap:wrap; gap:6px; margin-top:8px}
+.tkchip{display:inline-flex; align-items:center; gap:6px; font-size:12px;
+  background:var(--panel-2); border:1px solid var(--line); border-radius:999px;
+  padding:4px 6px 4px 10px; max-width:100%}
+.tkx{border:0; background:transparent; color:var(--muted); cursor:pointer; font-size:12px;
+  line-height:1; padding:3px 5px; border-radius:999px}
+.tkx:hover{background:var(--line); color:var(--ink)}
+/* Dragging a file over the log has to say something, or the only feedback for a drop
+   that missed is nothing happening at all. */
+.chatlog.drop{border-color:var(--accent); border-style:dashed}
+
 /* ── the dashboard ─────────────────────────────────────────────────────────────
    The machine before any one agent. Cards are clickable and keyboard-reachable,
    because this is the page people land on and it is the fastest route to an agent. */

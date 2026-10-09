@@ -80,6 +80,7 @@ TEST_PORT = 8788
 TEST_URL = "http://127.0.0.1:%d" % TEST_PORT
 
 TOKEN = secrets.token_urlsafe(24)
+MAX_BODY_BYTES = 40 * 1024 * 1024   # see do_POST: the chat's attachments set this floor
 _test_bridge = None  # Popen of the throwaway bridge used by "probar el cerebro"
 
 import re as _re
@@ -518,6 +519,14 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": False, "detail": "no autorizado"}, 403)
             return
         length = int(self.headers.get("Content-Length", 0) or 0)
+        # Until the chat could carry files every request here was a few hundred bytes, so
+        # nothing bounded this read: one Content-Length was one allocation of that size.
+        # An upload is the first body worth a limit, and 40MB leaves room for the biggest
+        # attachment talk.py accepts (25MB) once base64 has added its third.
+        if length > MAX_BODY_BYTES:
+            self._json({"ok": False,
+                        "detail": "Eso es demasiado grande para mandarlo de una vez."}, 413)
+            return
         raw = self.rfile.read(length) if length else b"{}"
         try:
             body = json.loads(raw.decode("utf-8") or "{}")
@@ -784,7 +793,19 @@ class Handler(BaseHTTPRequestHandler):
         if route == "talk/send":
             return talk.send(_target_profile(body), which("hermes"),
                              session_id=body.get("session_id", ""),
-                             text=body.get("text", ""))
+                             text=body.get("text", ""),
+                             files=body.get("files") or [])
+        # Attaching and downloading are two routes rather than fields on talk/send because
+        # they are two different moments: a file is uploaded while the owner is still
+        # writing, and downloaded long after the answer arrived. Neither takes a path -
+        # `attach` mints an id, `file` spends one. See wizard/talk.py.
+        if route == "talk/attach":
+            return talk.save_upload(name=body.get("name", ""),
+                                    data_b64=body.get("data", ""),
+                                    profile=_target_profile(body),
+                                    install_dir=INSTALL_DIR)
+        if route == "talk/file":
+            return talk.file_bytes(body.get("id", ""))
 
         # Several WhatsApp numbers on ONE agent - same persona, same instructions, several
         # business lines. See wizard/numbers.py for why this is a plugin-registered

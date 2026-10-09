@@ -92,14 +92,31 @@ def main():
     check("leaving it blank still sends a concrete path, not an empty string",
           "S.workspace || S.wsSuggested" in src)
 
+    print("\n=== the chat can carry a file, in and out ===")
+    # The paperclip and the file input are one control in two halves: the button is what
+    # the owner sees, the input is what actually opens the picker, and the button does
+    # nothing at all without it. Losing either leaves a chat that looks able to attach.
+    for wid in ("tkClip", "tkPick", "tkChips", "tkLog", "tkInput", "tkSend"):
+        check("%s is rendered" % wid, wid in rendered)
+    for wid in ("tkClip", "tkPick", "tkLog"):
+        check("%s is wired" % wid, ('el("%s")' % wid) in src)
+    check("the picker accepts more than one file at a time", 'id="tkPick" multiple' in src)
+    check("a reply's files are rendered, not escaped into the sentence",
+          'class="bubimg"' in src and 'class="bubfile"' in src)
+    check("a download is fetched by id and never by path",
+          'api("talk/file", { id: f.id })' in src)
+    check("an attachment is uploaded by name and bytes, and the turn carries the ids",
+          'api("talk/attach"' in src and "files: ids || []" in src)
+
     print("\n=== it talks to endpoints the server actually serves ===")
     server = io.open(os.path.join(ROOT, "src", "wizard", "wizard_server.py"),
                      encoding="utf-8").read()
     called = sorted(set(re.findall(r'api\("channel/([a-z0-9-]+)"', src)))
-    plain = sorted(set(re.findall(r'api\("((?:workspace|telegram|policy|browser|images)/[a-z-]+)"', src)))
+    plain = sorted(set(re.findall(
+        r'api\("((?:workspace|telegram|policy|browser|images|talk)/[a-z-]+)"', src)))
     routed = set(re.findall(r'route == "([a-z0-9/_-]+)"', server))
     missing_routes = [c for c in plain if c not in routed]
-    check("every workspace/telegram route the UI calls exists on the server",
+    check("every workspace/telegram/talk route the UI calls exists on the server",
           not missing_routes, "unrouted: " + ", ".join(missing_routes))
     handled = set(re.findall(r'sub == "([a-z0-9-]+)"', server))
     unknown = [c for c in called if c not in handled]

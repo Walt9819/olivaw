@@ -2940,16 +2940,26 @@
   // persona and no memory, and it exists for when everything else is broken. This talks to
   // the AGENT - same persona, same memory, same skills as on Telegram - through Hermes' own
   // api_server platform. See wizard/talk.py for why that distinction is worth the work.
-  var TALK = { sid: "", msgs: [], busy: false, ready: false };
+  // `files` is what the owner has attached but not sent yet - staged in the browser, not
+  // on disk, so removing a chip really does undo it. `seq` numbers the download buttons:
+  // the log is re-rendered as one string, so every button needs an id that survives it.
+  var TALK = { sid: "", msgs: [], busy: false, ready: false, files: [], seq: 0 };
+  var TK_MAX_FILES = 10;
 
   function secTalk() {
     return '' +
       '<div id="tkState" class="card pad"><span class="muted small">Comprobando…</span></div>' +
       '<div id="tkChat" style="display:none">' +
       '<div class="chatlog" id="tkLog"></div>' +
-      '<div class="row" style="margin-top:10px;align-items:flex-end">' +
+      '<div class="tkchips" id="tkChips" style="display:none"></div>' +
+      '<div class="tkbar" style="margin-top:10px">' +
+      '<button class="btn btn-soft btn-sm" id="tkClip" title="Adjuntar un archivo">📎</button>' +
+      '<input type="file" id="tkPick" multiple style="display:none">' +
       '<textarea id="tkInput" rows="2" class="grow" placeholder="Escríbele como le escribirías por WhatsApp…"></textarea>' +
       '<button class="btn btn-primary btn-sm" id="tkSend">Enviar</button></div>' +
+      '<div class="small muted" style="margin-top:6px">Arrástrale archivos al chat, pega ' +
+      'una captura con Ctrl+V o usa 📎. Él también puede mandarte archivos: aparecen aquí ' +
+      'para abrirlos o guardarlos.</div>' +
       '<div class="row" style="margin-top:6px">' +
       '<button class="btn btn-ghost btn-sm" id="tkNew">Empezar de cero</button>' +
       '<span class="muted small grow" id="tkHint"></span></div></div>';
@@ -3009,10 +3019,132 @@
       return;
     }
     log.innerHTML = TALK.msgs.map(function (m) {
-      return '<div class="bub ' + (m.role === "user" ? "me" : "them") + '">' +
-        (m.pending ? '<span class="muted">escribiendo…</span>' : esc(m.text)) + '</div>';
+      var body = m.pending ? '<span class="muted">escribiendo…</span>'
+        : (m.text ? esc(m.text) : "");
+      var files = (m.files || []).map(tkFileHtml).join("");
+      // An agent that answers with nothing but a picture said something. Only a turn with
+      // neither words nor files is actually empty.
+      if (!body && !files) body = '<span class="muted">(sin respuesta)</span>';
+      return '<div class="bub ' + (m.role === "user" ? "me" : "them") + '">' + body +
+        (files ? '<div class="bubfiles">' + files + '</div>' : "") + '</div>';
     }).join("");
+    tkWireFiles();
     log.scrollTop = log.scrollHeight;
+  }
+
+  // ── files in the conversation ───────────────────────────────────────────────
+  // Three shapes, because they are three different things: an image is shown, a file the
+  // agent offered is a button that downloads it, and a file with no id is one this server
+  // will not hand over - named, with where it is, rather than silently dropped.
+  function tkFileHtml(f) {
+    if (f.data_url && /^data:image\//.test(f.data_url)) {
+      return '<img class="bubimg" src="' + esc(f.data_url) + '" alt="' +
+        esc(f.name || "imagen") + '">';
+    }
+    var label = esc(f.name || "archivo") +
+      (f.human ? ' <span class="muted">' + esc(f.human) + '</span>' : "");
+    if (f.id && f.btn) {
+      return '<button class="bubfile" id="' + f.btn + '">⬇ ' + label + '</button>';
+    }
+    return '<div class="bubfile off">' + (f.kind === "image" ? "🖼 " : "📄 ") + label +
+      (f.folder ? '<div class="small muted">Está en ' + esc(f.folder) + '</div>' : "") +
+      '</div>';
+  }
+
+  function tkWireFiles() {
+    TALK.msgs.forEach(function (m) {
+      (m.files || []).forEach(function (f) {
+        if (!f.btn || !f.id) return;
+        var b = el(f.btn);
+        if (b) b.onclick = function () { tkGrab(f, b); };
+      });
+    });
+  }
+
+  // The bytes come back base64 over the same authenticated POST as everything else, so
+  // nothing new is exposed on GET and no token ever rides in a URL. The browser turns
+  // them into a Blob and saves it, which is also what makes "guardar como" work.
+  function tkGrab(f, btn) {
+    if (btn) btn.disabled = true;
+    api("talk/file", { id: f.id }).then(function (r) {
+      if (btn) btn.disabled = false;
+      if (!r || !r.ok) { toast((r && r.detail) || "No pude abrir ese archivo."); return; }
+      tkSave(r.data_b64, r.mime, r.name || f.name);
+    }).catch(function () {
+      if (btn) btn.disabled = false;
+      toast("Se cortó la conexión al descargar.");
+    });
+  }
+
+  function tkSave(b64, mime, name) {
+    var bin = atob(String(b64 || "")), n = bin.length, buf = new Uint8Array(n);
+    for (var i = 0; i < n; i++) buf[i] = bin.charCodeAt(i);
+    var url = URL.createObjectURL(new Blob([buf],
+      { type: mime || "application/octet-stream" }));
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = name || "archivo";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 2000);
+  }
+
+  function tkSize(n) {
+    var u = ["B", "KB", "MB", "GB"], i = 0, s = Number(n) || 0;
+    while (s >= 1024 && i < 3) { s /= 1024; i++; }
+    return (i ? s.toFixed(1) : Math.round(s)) + " " + u[i];
+  }
+
+  // Staged, not uploaded. Nothing is written into the agent's folder until Enviar, so a
+  // chip the owner removes never existed as a file.
+  function tkAdd(list) {
+    var arr = [].slice.call(list || []);
+    if (!arr.length) return;
+    arr.forEach(function (file) {
+      if (TALK.files.length >= TK_MAX_FILES) return;
+      var rd = new FileReader();
+      rd.onload = function () {
+        TALK.files.push({
+          name: file.name || "archivo", size: file.size || 0,
+          human: tkSize(file.size || 0),
+          kind: /^image\//.test(file.type || "") ? "image" : "file",
+          data: String(rd.result || "")
+        });
+        tkChips();
+      };
+      rd.readAsDataURL(file);
+    });
+  }
+
+  function tkChips() {
+    var box = el("tkChips");
+    if (!box) return;
+    box.style.display = TALK.files.length ? "" : "none";
+    box.innerHTML = TALK.files.map(function (f, i) {
+      return '<span class="tkchip">' + (f.kind === "image" ? "🖼" : "📄") + " " +
+        esc(f.name) + ' <span class="muted">' + esc(f.human) + '</span>' +
+        '<button class="tkx" id="tkx' + i + '" title="Quitar">✕</button></span>';
+    }).join("");
+    TALK.files.forEach(function (f, i) {
+      var b = el("tkx" + i);
+      if (b) b.onclick = function () { TALK.files.splice(i, 1); tkChips(); };
+    });
+  }
+
+  // One at a time on purpose: a handful of 20MB files in flight at once is a handful of
+  // copies of them in this page's memory and in the server's.
+  function tkUpload(list) {
+    return list.reduce(function (chain, f) {
+      return chain.then(function (ids) {
+        return api("talk/attach",
+                   { profile: targetProfile(), name: f.name, data: f.data })
+          .then(function (r) {
+            if (r && r.ok && r.file) ids.push(r.file.id);
+            else toast((r && r.detail) || ("No pude adjuntar " + f.name));
+            return ids;
+          });
+      });
+    }, Promise.resolve([]));
   }
 
   function newTalk() {
@@ -3024,22 +3156,48 @@
 
   function sendTalk() {
     var inp = el("tkInput");
-    if (!inp || !inp.value.trim() || TALK.busy || !TALK.ready) return;
+    var text = inp ? inp.value : "";
+    if (TALK.busy || !TALK.ready) return;
+    // An attachment on its own is a message. "Mira esto" is implied.
+    if (!text.trim() && !TALK.files.length) return;
     if (!TALK.sid) { newTalk(); return; }
-    var text = inp.value;
-    inp.value = "";
+    var pend = TALK.files.slice();
+    if (inp) inp.value = "";
+    TALK.files = [];
+    tkChips();
     TALK.busy = true;
-    TALK.msgs.push({ role: "user", text: text });
+    TALK.msgs.push({ role: "user", text: text, files: pend.map(function (f) {
+      // Her own copy, straight from the file she picked: the thumbnail is on screen
+      // before the upload has even started.
+      return { name: f.name, human: f.human, kind: f.kind,
+               data_url: f.kind === "image" ? f.data : "" };
+    }) });
     TALK.msgs.push({ role: "assistant", text: "", pending: true });
     paintLog();
     var hint = el("tkHint");
+    // A turn with nothing attached leaves on this tick, exactly as it always has - no
+    // promise in front of it, nothing to wait for.
+    if (!pend.length) { tkFire(text, []); return; }
+    if (hint) hint.textContent = "Guardando los archivos en la carpeta de tu agente…";
+    tkUpload(pend).then(function (ids) { tkFire(text, ids); })
+      .catch(function () { tkFire(text, []); });
+  }
+
+  function tkFire(text, ids) {
+    var hint = el("tkHint");
     if (hint) hint.textContent = "Un turno real puede tardar: está usando sus herramientas.";
-    api("talk/send", { profile: targetProfile(), session_id: TALK.sid, text: text })
+    api("talk/send", { profile: targetProfile(), session_id: TALK.sid, text: text,
+                       files: ids || [] })
       .then(function (r) {
         TALK.busy = false;
         TALK.msgs.pop();
-        if (r && r.ok) TALK.msgs.push({ role: "assistant", text: r.reply || "(sin respuesta)" });
-        else TALK.msgs.push({ role: "assistant", text: (r && r.detail) || "No pude enviarlo." });
+        if (r && r.ok) {
+          TALK.msgs.push({ role: "assistant", text: r.reply || "",
+                           files: tkIncoming(r.files) });
+        } else {
+          TALK.msgs.push({ role: "assistant",
+                           text: (r && r.detail) || "No pude enviarlo." });
+        }
         if (hint) hint.textContent = "";
         paintLog();
       })
@@ -3047,19 +3205,50 @@
         TALK.busy = false;
         TALK.msgs.pop();
         TALK.msgs.push({ role: "assistant", text: "Se cortó la conexión con el agente." });
+        if (hint) hint.textContent = "";
         paintLog();
       });
   }
 
+  function tkIncoming(files) {
+    return (files || []).map(function (f) {
+      f.btn = "tkd" + (++TALK.seq);
+      return f;
+    });
+  }
+
   function eTalk() {
     loadTalk();
-    var s = el("tkSend"), i = el("tkInput"), n = el("tkNew");
+    var s = el("tkSend"), i = el("tkInput"), n = el("tkNew"),
+      clip = el("tkClip"), pick = el("tkPick"), lg = el("tkLog");
     if (s) s.onclick = sendTalk;
-    if (n) n.onclick = function () { newTalk(); };
-    if (i) i.onkeydown = function (e) {
-      // Enter sends, Shift+Enter makes a new line - the convention every chat uses.
-      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendTalk(); }
-    };
+    if (n) n.onclick = function () { TALK.files = []; tkChips(); newTalk(); };
+    if (clip && pick) clip.onclick = function () { pick.click(); };
+    if (pick) pick.onchange = function () { tkAdd(pick.files); pick.value = ""; };
+    if (i) {
+      i.onkeydown = function (e) {
+        // Enter sends, Shift+Enter makes a new line - the convention every chat uses.
+        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendTalk(); }
+      };
+      // A screenshot is the commonest thing anyone wants to show an agent, and it is
+      // never a file on disk: it is in the clipboard, and nowhere else.
+      i.onpaste = function (e) {
+        var items = (e.clipboardData && e.clipboardData.items) || [], got = [], k, f;
+        for (k = 0; k < items.length; k++) {
+          if (items[k].kind === "file") { f = items[k].getAsFile(); if (f) got.push(f); }
+        }
+        if (got.length) { e.preventDefault(); tkAdd(got); }
+      };
+    }
+    if (lg) {
+      lg.ondragover = function (e) { e.preventDefault(); lg.classList.add("drop"); };
+      lg.ondragleave = function () { lg.classList.remove("drop"); };
+      lg.ondrop = function (e) {
+        e.preventDefault();
+        lg.classList.remove("drop");
+        tkAdd(e.dataTransfer && e.dataTransfer.files);
+      };
+    }
   }
 
   // ── WhatsApp, as a thing you MANAGE rather than a step you once did ──────────
