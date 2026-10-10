@@ -30,19 +30,20 @@ if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from wizard import updates as updates_mod
     from wizard import (agents_registry, browser_setup, channels, checks, config_writer,
-                        connections, context_policy, hermes_ctl, image_setup, numbers,
-                        obsidian, proposals, providers, rescue, selfcare,
-                        session_health, talk, telegram_health, telegram_setup,
-                        usecases)
+                        browser_label, connections, context_policy, cron_patch,
+                        cronjobs, hermes_ctl, image_setup, numbers, obsidian,
+                        proposals, providers, rescue, selfcare, session_health, talk,
+                        telegram_health, telegram_setup, usecases)
     from wizard import workspace as wsdir   # aliased: `workspace` is a local
                                             # variable name elsewhere in this file
     from wizard.procutil import http_json, which
 else:
     from . import updates as updates_mod
     from . import (agents_registry, browser_setup, channels, checks, config_writer,
-                   connections, context_policy, hermes_ctl, image_setup, numbers,
-                   obsidian, proposals, providers, rescue, selfcare, session_health,
-                   talk, telegram_health, telegram_setup, usecases)
+                   browser_label, connections, context_policy, cron_patch, cronjobs,
+                   hermes_ctl, image_setup, numbers, obsidian, proposals, providers,
+                   rescue, selfcare, session_health, talk, telegram_health,
+                   telegram_setup, usecases)
     from . import workspace as wsdir        # aliased: see above
     from .procutil import http_json, which
 
@@ -654,6 +655,31 @@ class Handler(BaseHTTPRequestHandler):
         if route == "selfcare/remove":
             return selfcare.remove(keys=body.get("keys") or ("daily", "weekly"))
 
+        # Every scheduled routine on the machine, and how loudly each one speaks. Read
+        # from Hermes' own jobs.json rather than from `hermes cron list`, because the
+        # printed form has nowhere to put an answer back.
+        if route == "cron/list":
+            return cronjobs.state(roster=intercom.roster(INSTALL_DIR),
+                                  hermes_exe=which("hermes"))
+
+        # Two booleans on one job. `_target_profile` decides WHICH agent's jobs.json is
+        # opened - a profile name straight from the page would be a path join into
+        # whatever the browser felt like naming.
+        if route == "cron/flags":
+            res = cronjobs.set_flags(_target_profile(body), body.get("id", ""),
+                                     clean=body.get("clean"),
+                                     only_on_error=body.get("only_on_error"))
+            # The switches are inert until Hermes' scheduler knows to read them, and the
+            # owner has just told us she wants one. Applying it here rather than waiting
+            # for the supervisor's next sweep is what makes the checkbox mean something
+            # before she looks away from the screen.
+            if res.get("ok"):
+                try:
+                    res["patch"] = cron_patch.ensure(hermes_exe=which("hermes"))
+                except Exception as e:  # noqa: BLE001
+                    res["patch"] = {"ok": False, "state": "error", "detail": str(e)}
+            return res
+
         # The long-term memory has to be readable by a person, not just writable by the agent.
         if route == "obsidian/status":
             return obsidian.status()
@@ -872,6 +898,15 @@ class Handler(BaseHTTPRequestHandler):
             return res
 
         if route == "browser/status":
+            # The panel shows each agent's window colour, and a colour is only decided
+            # when somebody asks for the whole roster at once. The supervisor does this
+            # on its first pass; doing it here too means a console opened before that
+            # still shows seven different colours instead of seven identical ones.
+            try:
+                browser_label.assign_all(
+                    [a["slug"] for a in intercom.roster(INSTALL_DIR)], INSTALL_DIR)
+            except Exception:  # noqa: BLE001
+                pass
             return browser_setup.status(_target_profile(body))
         if route == "browser/enable":
             # The name rides along so the window can say whose it is. With one window per
@@ -900,7 +935,8 @@ class Handler(BaseHTTPRequestHandler):
         # repaints from a single source instead of patching its own copy - the map is a
         # permission, and a stale picture of a permission is the one thing it must not be.
         if route in ("teams/adopt", "teams/link", "teams/unlink", "teams/card",
-                     "teams/decide", "teams/name", "teams/apply"):
+                     "teams/decide", "teams/name", "teams/apply",
+                     "teams/group", "teams/ungroup", "teams/assign"):
             return self._teams(route[len("teams/"):], body)
 
         # Asking the main agent for a proposal is the one team route that does NOT write,
@@ -973,6 +1009,26 @@ class Handler(BaseHTTPRequestHandler):
                        (None if hours is None else {})),
                 enabled=body.get("enabled"), direction=bool(body.get("direction")),
                 install_dir=INSTALL_DIR)
+        elif what == "group":
+            # Create or rename. `roster` travels so a legacy machine can adopt its live
+            # mesh in the same write - see teams.set_team for why that is not optional.
+            wrote = teams.set_team(body.get("id") or None, name=body.get("name", ""),
+                                   roster=roster, install_dir=INSTALL_DIR)
+            if wrote.get("adopted"):
+                extra["adopted"] = True
+            # NOT "team": that key already holds the entire map this reply repaints the
+            # page from, and overwriting it with a slug made the panel report one agent
+            # on a machine with five.
+            extra["team_id"] = wrote.get("id", "")
+        elif what == "ungroup":
+            wrote = teams.remove_team(body.get("id", ""), install_dir=INSTALL_DIR)
+        elif what == "assign":
+            # An empty team is "out of all of them", which is a real answer and not a
+            # missing one: an agent is allowed to belong nowhere.
+            wrote = teams.assign(body.get("slug", ""), body.get("team", ""),
+                                 roster=roster, install_dir=INSTALL_DIR)
+            if wrote.get("adopted"):
+                extra["adopted"] = True
         elif what == "name":
             # How the OTHER agents refer to this one. The main agent calls itself Chalenus
             # in its own memory while every skill on the machine called it "Agente

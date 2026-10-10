@@ -58,6 +58,12 @@ try:
 except Exception:  # noqa: BLE001
     _wa = None
 try:
+    from wizard import cron_patch as _cronpatch
+    from wizard import cronjobs as _cronjobs
+except Exception:  # noqa: BLE001
+    _cronpatch = None
+    _cronjobs = None
+try:
     from wizard import context_policy as _ctxpol
 except Exception:  # noqa: BLE001
     _ctxpol = None
@@ -65,6 +71,10 @@ try:
     from wizard import browser_setup as _browser
 except Exception:  # noqa: BLE001
     _browser = None
+try:
+    from wizard import browser_label as _blabel
+except Exception:  # noqa: BLE001
+    _blabel = None
 try:
     from wizard import display_policy as _display
 except Exception:  # noqa: BLE001
@@ -1195,6 +1205,38 @@ def _ensure_whatsapp():
         _skill_needs_reload(skill["profile"], "whatsapp")
 
 
+def _ensure_cron_patch():
+    """Keep the per-routine delivery switches working after Hermes updates itself.
+
+    Only on machines that use them. The patch is inert when no job carries a switch, and
+    `hermes update` has to stash and restore around any edit to its checkout - so an owner
+    who never opened the panel should not be paying that, however small it is.
+
+    The flip side is the one that matters: once she HAS asked for a routine to be quiet,
+    `hermes update` silently taking the patch back out would turn the switch off without
+    turning the checkbox off, and the next morning the digest arrives wearing its header
+    again with nothing to explain it.
+    """
+    if not _cronpatch or not _cronjobs:
+        return
+    try:
+        # The registry, not intercom.roster(): one less import that can fail, and a
+        # failure here would read as "nobody uses the switches" - which would let the
+        # next Hermes update put the header back on a routine the owner silenced.
+        roster = [{"slug": "default", "profile": "default"}] + _load_extra_agents()
+        if not _cronjobs.in_use(roster):
+            return
+        r = _cronpatch.ensure(log=log)
+    except Exception as e:  # noqa: BLE001
+        log(f"cron: delivery-switch patch check failed: {e}")
+        return
+    if r.get("changed"):
+        log(f"cron: re-applied the per-routine delivery patch to {r.get('path')}")
+    elif r.get("state") in ("anchors_moved", "conflicted"):
+        log("cron: Hermes' scheduler changed shape; the delivery patch needs review "
+            "- scheduled routines keep their old header until then")
+
+
 def _ensure_context_policy():
     """Give every agent a conversation that ends, once.
 
@@ -1382,6 +1424,38 @@ def _ensure_browser_skill():
             log(f"browser: could not teach {r['profile']}: {r.get('detail', '')}")
 
 
+def _ensure_browser_labels(stamp=True):
+    """Keep saying whose window is whose, for as long as the windows are open.
+
+    Two halves with different lifetimes, which is why this runs on a loop rather than once
+    at launch:
+
+      * the profile's name, avatar and frame colour are read by Chrome at startup, so
+        stamping them is cheap and only matters before the next launch;
+      * the window TITLE needs a live DevTools session, and that session dies whenever the
+        owner closes the window. Re-attaching here is what makes a browser she opened by
+        hand - or one that was already open before Olivaw started - get named too.
+
+    Never raises into the loop and never logs on the ordinary path: most passes find
+    nothing changed and nothing to attach to.
+    """
+    if not _blabel:
+        return
+    try:
+        rows = _blabel.ensure_all(agents=_load_extra_agents(),
+                                  hermes=shutil.which("hermes"),
+                                  log=log, install_dir=INSTALL_DIR, stamp=stamp)
+    except Exception as e:  # noqa: BLE001
+        log(f"browser labels: check failed: {e}")
+        return
+    for r in rows:
+        if r.get("started"):
+            log(f"browser labels: naming {r.get('name')}'s window on port {r.get('port')}")
+        elif r.get("changed"):
+            log(f"browser labels: {r.get('name')} window set to {r.get('hex')} "
+                f"(se ve al volver a abrirla)")
+
+
 def _ensure_image_skill():
     """Teach the free image route to every agent that has no image tool of its own.
 
@@ -1494,7 +1568,9 @@ def main():
     _ensure_numbers()
     _ensure_display_policy()
     _ensure_context_policy()
+    _ensure_cron_patch()
     _ensure_browser_skill()
+    _ensure_browser_labels()
     _ensure_image_skill()
     _ensure_intercom_skill()
     last_check = 0.0
@@ -1539,6 +1615,12 @@ def main():
             # an agent that changed its own conversation policy is waiting for us to make
             # it real; do it while it is not answering anyone
             _activate_pending_policy(cfg, state)
+            # Browser windows open and close all day; a window the owner opened herself
+            # should be wearing its agent's name within seconds, not after the next
+            # update poll. `stamp=False` keeps this pass to one socket probe per agent -
+            # the colour is read by Chrome at startup and does not need re-deciding four
+            # times a minute.
+            _ensure_browser_labels(stamp=False)
             # The owner pressed "update now" in the UI. Checked every loop, not on the
             # poll interval, so the button feels like a button (~15s) instead of like a
             # setting that might take three quarters of an hour to do anything.
@@ -1552,8 +1634,11 @@ def main():
                 _check_login(state)
                 maybe_update(cfg, state, forced=asked)
                 # after any update - ours or Hermes' - make sure WhatsApp can still
-                # prove a delivery.
+                # prove a delivery, and that a routine the owner asked to keep quiet
+                # still is.
                 _ensure_whatsapp()
+                _ensure_cron_patch()
+                _ensure_browser_labels(stamp=True)
         except Exception as e:
             log(f"supervisor loop error: {e}")
         time.sleep(15)

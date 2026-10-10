@@ -1669,8 +1669,26 @@
   // Deliberately drawn by hand instead of pulling in a graph library: this page ships
   // offline inside the kit, and a layout engine would be a dependency and a stylesheet
   // for a diagram that never has more than a handful of nodes.
-  function teamSvg(st) {
+  // Teammates next to each other on the ring. Without this the hull behind a team is a
+  // star across the middle of the diagram instead of an arc around one side of it, which
+  // is worse than drawing nothing.
+  function tmOrder(st) {
     var ags = st.agents || [];
+    var by = {}, out = [], seen = {};
+    ags.forEach(function (a) { by[a.slug] = a; });
+    (st.teams || []).forEach(function (g) {
+      (g.members || []).forEach(function (s) {
+        if (by[s] && !seen[s]) { seen[s] = 1; out.push(by[s]); }
+      });
+    });
+    // Everyone else, in roster order. An agent in no team is not left out of the picture
+    // - that is the whole bug: it would be the one agent you could never connect.
+    ags.forEach(function (a) { if (!seen[a.slug]) out.push(a); });
+    return out;
+  }
+
+  function teamSvg(st) {
+    var ags = tmOrder(st);
     if (ags.length < 2) return "";
     var W = 620, H = 330, cx = W / 2, cy = H / 2, NW = 152, NH = 48;
     var at = {}, order = [];
@@ -1731,15 +1749,24 @@
             (my - 7).toFixed(1) + '">' + esc(tmShort(ln.why, 22)) + '</text>' : '') +
         '</g>';
     }).join("");
+    // Which team's colour each box wears. The band alone is not enough: a team of ONE is
+    // a dot at the node's own centre, and the box sits on top of it - so the commonest
+    // shape of team (a product with a single agent on it) showed no colour anywhere.
+    var tint = {};
+    (st.teams || []).forEach(function (g, gi) {
+      (g.members || []).forEach(function (s) { tint[s] = gi % 6; });
+    });
     var boxes = order.map(function (slug) {
       var p = at[slug], a = p.a;
-      var cls = "tmnd" + (TEAM.card === a.slug ? " sel" : "") +
+      var cls = "tmnd" + (tint[slug] === undefined ? "" : " tc" + tint[slug]) +
+                (TEAM.card === a.slug ? " sel" : "") +
                 (TEAM.linkFrom === a.slug ? " arm" : "") +
                 (a.isolated ? " lone" : "") +
                 (a.reachable === false ? " dim" : "");
       return '<g class="' + cls + '" data-ag="' + esc(a.slug) + '" tabindex="0" ' +
         'role="button"><title>' + esc(a.name + " — " +
           (a.role || "sin ficha") +
+          (a.team_name ? " — equipo " + a.team_name : "") +
           (a.isolated ? " (sin conexiones)" : "") +
           (a.reachable === false ? " (no se le puede llamar desde aquí)" : "")) +
         '</title>' +
@@ -1750,6 +1777,21 @@
         '<text class="tmrl" x="' + p.x + '" y="' + (p.y + 13) + '">' +
           esc(a.role ? tmShort(a.role, 26) : "sin ficha") + '</text></g>';
     }).join("");
+    // One soft band per team, drawn UNDER everything: a fat round-capped polyline through
+    // its members' centres. Cheap, and with the ring ordered by team it reads as a hull
+    // around that side of the diagram. A team of one is a zero-length segment, which a
+    // round cap renders as a dot - so a lone agent still shows which team it is in.
+    var hulls = (st.teams || []).map(function (g, gi) {
+      var pts = (g.members || []).map(function (s) { return at[s]; })
+        .filter(function (p) { return p; });
+      if (!pts.length) return "";
+      var d = pts.map(function (p, i) {
+        return (i ? "L" : "M") + p.x.toFixed(1) + " " + p.y.toFixed(1);
+      }).join(" ");
+      if (pts.length === 1) d += " L" + pts[0].x.toFixed(1) + " " + pts[0].y.toFixed(1);
+      return '<path class="tmteam c' + (gi % 6) + '" d="' + d + '">' +
+        '<title>' + esc(g.name) + '</title></path>';
+    }).join("");
     // Two markers rather than one with orient="auto-start-reverse": the reversed form is
     // newer, and a wrong-way arrowhead on a two-way link is a lie about who may call whom.
     return '<svg class="teamsvg" viewBox="0 0 ' + W + ' ' + H + '" role="img" ' +
@@ -1758,7 +1800,97 @@
         'markerHeight="6.5" orient="auto"><path d="M0,0 L10,5 L0,10 z"/></marker>' +
       '<marker id="tmStart" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="6.5" ' +
         'markerHeight="6.5" orient="auto"><path d="M10,0 L0,5 L10,10 z"/></marker>' +
-      '</defs>' + wires + boxes + '</svg>';
+      '</defs>' + hulls + wires + boxes + '</svg>';
+  }
+
+  // ── the teams panel ───────────────────────────────────────────────────────
+  // Everything here only ever edits member lists and names. It cannot write a link, and
+  // it cannot remove one: grouping and permission are two different decisions, and a page
+  // that quietly made one while the owner was making the other is the failure this whole
+  // screen is built to avoid.
+  function tmTeamOpts(teams, cur) {
+    return '<option value=""' + (cur ? "" : " selected") + '>Sin equipo</option>' +
+      (teams || []).map(function (g) {
+        return '<option value="' + esc(g.id) + '"' + (g.id === cur ? " selected" : "") +
+          ">" + esc(g.name) + "</option>";
+      }).join("");
+  }
+
+  function tmMemberChips(list, by, teams) {
+    if (!list.length) {
+      return '<span class="muted small">— nadie todavía —</span>';
+    }
+    return list.map(function (s) {
+      var a = by[s];
+      if (!a) return "";
+      return '<span class="tmchip"><b>' + esc(a.name) + "</b>" +
+        '<select class="tmAsg" data-s="' + esc(a.slug) + '" ' +
+        'title="Mover a otro equipo">' + tmTeamOpts(teams, a.team || "") +
+        "</select></span>";
+    }).join("");
+  }
+
+  function tmGroupsHtml(t) {
+    var ags = t.agents || [];
+    if (ags.length < 2) {
+      return '<span class="muted small">Con un solo agente todavía no hay nada que ' +
+        "agrupar. En cuanto crees otro, aquí puedes repartirlos.</span>";
+    }
+    var teams = t.teams || [];
+    var by = {};
+    ags.forEach(function (a) { by[a.slug] = a; });
+    var loose = (t.unassigned || []).filter(function (s) { return by[s]; });
+
+    var rows = teams.map(function (g, gi) {
+      return '<div class="tmgrp"><div class="row" style="align-items:center;gap:8px">' +
+        '<span class="tmdot c' + (gi % 6) + '"></span>' +
+        '<input type="text" class="tmGName" data-g="' + esc(g.id) + '" maxlength="40" ' +
+        'value="' + esc(g.name) + '" aria-label="Nombre del equipo">' +
+        '<span class="muted small">' + g.count +
+        (g.count === 1 ? " agente" : " agentes") + "</span>" +
+        '<button class="btn btn-ghost btn-sm tmGDel" data-g="' + esc(g.id) +
+        '">Quitar</button></div>' +
+        '<div class="tmchips">' + tmMemberChips(g.members, by, teams) + "</div></div>";
+    }).join("");
+
+    // The bucket that keeps the map drawable. It is NOT an error state and is not styled
+    // as one: an agent that belongs nowhere is a perfectly ordinary agent, it is just not
+    // filed yet - and on a machine that had agents before it had teams, that is all of
+    // them.
+    var looseRow = loose.length
+      ? '<div class="tmgrp loose"><div class="row" style="align-items:center;gap:8px">' +
+        '<span class="tmdot off"></span><b>Sin equipo</b> ' +
+        '<span class="muted small">' + loose.length +
+        (loose.length === 1 ? " agente" : " agentes") + "</span></div>" +
+        '<div class="tmchips">' + tmMemberChips(loose, by, teams) + "</div></div>"
+      : "";
+
+    var empty = !teams.length
+      ? '<p class="muted small" style="margin:0 0 10px">Todavía no hay equipos: tus ' +
+        ags.length + ' agentes están juntos en <b>Sin equipo</b>. Se ven y se conectan ' +
+        'igual que siempre — crear uno sólo sirve para ordenarlos en el mapa.</p>'
+      : "";
+
+    return empty + rows + looseRow +
+      '<div class="row" style="margin-top:12px;gap:8px;align-items:center">' +
+      '<input type="text" id="tmGNew" maxlength="40" placeholder="Ej: iGalenus" ' +
+      'style="max-width:260px">' +
+      '<button class="btn btn-soft btn-sm" id="tmGAdd">+ Crear equipo</button></div>';
+  }
+
+  // The legend under the picture: which colour is which team. Put here rather than as a
+  // label on each node because a 48px box already carries a name and a role, and a third
+  // line turns the diagram into a wall of six-point text.
+  function tmLegend(t) {
+    var teams = (t.teams || []).filter(function (g) { return g.count; });
+    if (!teams.length) return "";
+    return '<div class="tmkeys">' + teams.map(function (g, gi) {
+      return '<span class="tmkey"><span class="tmdot c' + (gi % 6) + '"></span>' +
+        esc(g.name) + "</span>";
+    }).join("") +
+      ((t.unassigned || []).length
+        ? '<span class="tmkey"><span class="tmdot off"></span>Sin equipo</span>' : "") +
+      "</div>";
   }
 
   function tmName(t, slug) {
@@ -2031,6 +2163,12 @@
     return '' +
       '<div id="teamWarn"></div>' +
       '<div id="teamPend"></div>' +
+      '<h2 style="margin-top:0">Equipos</h2>' +
+      '<p class="small muted" style="margin-top:-6px">Si tienes varios frentes — un ' +
+      'producto, otro producto, tus cosas — agrúpalos y el mapa deja de ser una ' +
+      'maraña. Un equipo <b>ordena</b>, no corta: quien podía hablar con quien sigue ' +
+      'pudiendo, aunque estén en equipos distintos.</p>' +
+      '<div class="card pad"><div id="teamGroups" class="muted small">…</div></div>' +
       '<div class="card pad"><div id="teamMap" class="muted small">Cargando el ' +
       'equipo…</div></div>' +
       '<h2>Quién puede hablar con quién</h2>' +
@@ -2188,7 +2326,9 @@
                          hourly_limit: null, hours: null });
           }
         }
-        drawn = { agents: ags, links: lines };
+        // The groups still travel: a machine with no MAP can perfectly well have teams,
+        // and drawing it ungrouped would say the owner's filing had been lost.
+        drawn = { agents: ags, links: lines, teams: t.teams };
       }
       var hint;
       if (implied) {
@@ -2201,7 +2341,7 @@
         hint = '<b>Arrastra un agente sobre otro</b> para conectarlos — o haz doble clic ' +
           'en uno y luego pulsa el otro. Un clic abre su ficha; una flecha, ese enlace.';
       }
-      el("teamMap").innerHTML = teamSvg(drawn) +
+      el("teamMap").innerHTML = teamSvg(drawn) + tmLegend(t) +
         '<div class="tmlegend small muted">' + hint + "</div>";
     }
 
@@ -2259,6 +2399,9 @@
     }
     el("teamLinks").innerHTML = lh;
 
+    // ── the teams ───────────────────────────────────────────────────────────
+    if (el("teamGroups")) el("teamGroups").innerHTML = tmGroupsHtml(t);
+
     // ── who is who ──────────────────────────────────────────────────────────
     el("teamWho").innerHTML = ags.length
       ? '<div class="tmlist">' + ags.map(function (a) {
@@ -2307,6 +2450,33 @@
     if (el("tmAdd")) el("tmAdd").onclick = function () {
       TEAM.adding = true; TEAM.edit = null; TEAM.card = ""; paintTeam(TEAM.st);
     };
+
+    if (el("tmGAdd")) el("tmGAdd").onclick = function () {
+      var box = el("tmGNew");
+      var name = (box && box.value || "").trim();
+      if (!name) { toast("Ponle un nombre"); return; }
+      teamSave(this, { name: name }, "teams/group");
+    };
+    each(".tmGDel", function (b) {
+      b.onclick = function () {
+        // Deliberately not a confirm(): removing a team takes nothing away. The agents
+        // stay, every link stays, and they land in "Sin equipo" where they are still
+        // drawn and still connectable.
+        teamSave(b, { id: b.getAttribute("data-g") }, "teams/ungroup");
+      };
+    });
+    each(".tmGName", function (inp) {
+      inp.onchange = function () {
+        teamSave(null, { id: inp.getAttribute("data-g"), name: inp.value },
+                 "teams/group");
+      };
+    });
+    each(".tmAsg", function (sel) {
+      sel.onchange = function () {
+        teamSave(null, { slug: sel.getAttribute("data-s"), team: sel.value },
+                 "teams/assign");
+      };
+    });
 
     each(".tmEdit", function (b) {
       b.onclick = function () {
@@ -2647,10 +2817,19 @@
       'flex-wrap:wrap"><label class="field grow" style="margin:0;min-width:200px">' +
       '<span class="lab">Cómo lo llaman los otros agentes</span>' +
       '<input type="text" id="agName" maxlength="40" value="' + esc(mine.name) + '">' +
-      '</label><button class="btn btn-soft btn-sm" id="agNameSave">Guardar</button></div>' +
+      '</label><button class="btn btn-soft btn-sm" id="agNameSave">Guardar</button>' +
+      // The answer to "this agent is in no team". Changing it moves the agent and nothing
+      // else: it cannot create a connection and it cannot take one away.
+      '<label class="field" style="margin:0;min-width:170px"><span class="lab">Equipo' +
+      '</span><select id="agTeam">' + tmTeamOpts(t.teams, mine.team || "") +
+      '</select></label></div>' +
       '<p class="small muted" style="margin:8px 0 0">Este es el nombre con el que aparece ' +
       'en las instrucciones de los demás. Si tú lo llamas de una forma y ellos leen otra, ' +
-      'no sabrán a quién te refieres cuando se lo pidas por su nombre.</p></div>' +
+      'no sabrán a quién te refieres cuando se lo pidas por su nombre.</p>' +
+      ((t.teams || []).length ? ''
+        : '<p class="small muted" style="margin:6px 0 0">Todavía no hay equipos. ' +
+          'Puedes crearlos en <b>El equipo</b>; mientras tanto todos están juntos.</p>') +
+      '</div>' +
       '<h2>Su ficha</h2>' +
       '<div class="card pad">' +
       (AGT.card ? agtCardForm(mine)
@@ -2716,6 +2895,9 @@
       agtSave(this, { slug: me, role: el("agRole").value,
                       description: el("agDesc").value, never: el("agNever").value },
               "teams/card");
+    };
+    if (el("agTeam")) el("agTeam").onchange = function () {
+      agtSave(null, { slug: me, team: this.value }, "teams/assign");
     };
     if (el("agNameSave")) el("agNameSave").onclick = function () {
       agtSave(this, { slug: me, name: el("agName").value }, "teams/name")
@@ -3677,7 +3859,16 @@
       '<p class="muted small" style="margin-top:-6px">Igual que una persona: de madrugada repasa ' +
       'el día y guarda lo que importa; los domingos revisa su semana y se corrige.</p>' +
       '') +
-      '<div id="selfcareBox" class="card pad"><span class="muted small">Revisando…</span></div>';
+      '<div id="selfcareBox" class="card pad"><span class="muted small">Revisando…</span></div>' +
+      // Shown on the console page too, unlike the heading above it: this is a second
+      // panel on the same page, and an unlabelled card under "Rutinas automáticas"
+      // reads as more of the same routine rather than as every job on the machine.
+      '<h2 style="margin-top:26px">Todas las tareas programadas</h2>' +
+      '<p class="muted small" style="margin-top:-6px">Las que tú o tus agentes han ' +
+      'creado. Aquí decides cuánto ruido hace cada una: de serie llegan con tres ' +
+      'líneas de encabezado encima y una frase en inglés debajo, y un vigilante que ' +
+      'revisa cada seis horas te avisa también cuando todo está bien.</p>' +
+      '<div id="cronBox" class="card pad"><span class="muted small">Revisando…</span></div>';
   }
 
   // What came out of those routines and needs a yes or a no.
@@ -3915,6 +4106,164 @@
     return "los " + (days[p[4]] || p[4]) + " a las " + hhmm;
   }
 
+  // ── every scheduled routine on the machine ────────────────────────────────
+  // Read-only except for two checkboxes. Creating, pausing and deleting jobs stays with
+  // `hermes cron` and with the agent: that side owns the scheduling grammar, the
+  // injection scanner and the one-shot dispatch claim, and a second writer of jobs.json
+  // is how a paused job starts firing again.
+  var CRON = { st: null };
+
+  // What a schedule actually says, in Spanish, or the expression if we cannot say it
+  // honestly. `cronHuman` assumes ONE hour, ONE minute and ONE weekday - so `0 2,8,14,20
+  // * * *` became "las 2,8,14,20:00", which reads as a time and is not one, and
+  // `0 9 * * 2-6` became "los 2-6 a las 09:00", which is Walt's own morning digest.
+  //
+  // Weekday ranges and lists are not edge cases; they are what half a real crontab looks
+  // like. Everything else falls back to <code>, which tells the truth and lets the owner
+  // recognise the line she or her agent wrote.
+  var CJ_DAY = ["domingo", "lunes", "martes", "mi\u00e9rcoles", "jueves", "viernes",
+                "s\u00e1bado"];
+  var CJ_DAYS = ["domingos", "lunes", "martes", "mi\u00e9rcoles", "jueves", "viernes",
+                 "s\u00e1bados"];
+
+  function cjList(names) {
+    if (names.length === 1) return names[0];
+    return names.slice(0, -1).join(", ") + " y " + names[names.length - 1];
+  }
+
+  function cjWhen(spec) {
+    var raw = String(spec || "");
+    var code = raw ? '<code>' + esc(raw) + '</code>' : '<i>sin horario</i>';
+    var p = raw.split(/\s+/);
+    if (p.length < 5) return code;
+    var mi = p[0], hh = p[1], dom = p[2], mon = p[3], dow = p[4];
+    if (!/^\d{1,2}$/.test(mi) || !/^\d{1,2}$/.test(hh) || mon !== "*") return code;
+    if (+mi > 59 || +hh > 23) return code;
+    var at = "las " + ("0" + hh).slice(-2) + ":" + ("0" + mi).slice(-2);
+
+    if (dom === "*") {
+      if (dow === "*") return esc(at + " todos los d\u00edas");
+      if (/^[0-6]$/.test(dow)) return esc("los " + CJ_DAYS[+dow] + " a " + at);
+      var range = /^([0-6])-([0-6])$/.exec(dow);
+      if (range && +range[1] < +range[2]) {
+        return esc("de " + CJ_DAY[+range[1]] + " a " + CJ_DAY[+range[2]] + ", a " + at);
+      }
+      if (/^[0-6](,[0-6])+$/.test(dow)) {
+        var picked = dow.split(",").map(function (d) { return CJ_DAYS[+d]; });
+        return esc("los " + cjList(picked) + " a " + at);
+      }
+      return code;
+    }
+    // A day of the month, with no weekday: the monthly invoice reminder.
+    if (dow === "*" && /^\d{1,2}$/.test(dom) && +dom >= 1 && +dom <= 31) {
+      return esc("el d\u00eda " + dom + " de cada mes a " + at);
+    }
+    return code;
+  }
+
+  function cjSwitch(job, prof, field, label, title) {
+    var on = field === "clean" ? job.clean : job.only_on_error;
+    return '<label class="cjsw" title="' + esc(title) + '">' +
+      '<input type="checkbox" class="cjf" data-p="' + esc(prof) + '" data-i="' +
+      esc(job.id) + '" data-f="' + field + '"' + (on ? " checked" : "") + '> ' +
+      esc(label) + '</label>';
+  }
+
+  function cjRow(job, prof) {
+    var bits = [cjWhen(job.schedule)];
+    if (job.where) bits.push("por " + esc(job.where));
+    else if (job.deliver === "local") bits.push("sin aviso");
+    if (job.last_status) {
+      bits.push((job.last_status === "ok" ? "✅ " : "⚠️ ") + esc(job.last_status) +
+        (job.last_run ? " · " + esc(String(job.last_run).slice(0, 16).replace("T", " ")) : ""));
+    }
+    return '<div class="cjrow' + (job.enabled ? "" : " off") + '">' +
+      '<div class="grow"><div><b>' + esc(job.name) + '</b>' +
+      (job.enabled ? "" : ' <span class="tmtag">en pausa</span>') +
+      (job.script ? ' <span class="tmtag">script</span>' : "") + '</div>' +
+      '<div class="muted small">' + bits.join(" · ") + '</div>' +
+      (job.last_status && job.last_status !== "ok" && job.last_error
+        ? '<div class="small">' + esc(job.last_error) + '</div>' : "") +
+      '</div><div class="cjsws">' +
+      cjSwitch(job, prof, "clean", "Sin encabezado",
+        "Llega sólo el mensaje: sin «Cronjob Response», sin el identificador y sin la " +
+        "frase en inglés del final. Si la tarea falla, el encabezado vuelve, porque ahí " +
+        "lo que importa es saber cuál falló.") +
+      cjSwitch(job, prof, "only", "Sólo si falla",
+        "Cuando la tarea termina bien no te escribe nada. La ejecución y su salida se " +
+        "guardan igual: lo que se calla es el aviso.") +
+      '</div></div>';
+  }
+
+  function cronHtml(st) {
+    if (!st || !st.ok) {
+      return '<span class="muted small">No pude leer las tareas programadas.</span>';
+    }
+    var ags = (st.agents || []).filter(function (a) { return (a.jobs || []).length; });
+    var broken = (st.agents || []).filter(function (a) { return a.ok === false; });
+    var head = "";
+    // Only ever complain about the patch when something actually depends on it. On a
+    // machine where nobody has ticked a box it is absent on purpose, and a warning about
+    // a feature the owner is not using is just noise with a yellow border.
+    var wanted = false;
+    ags.forEach(function (a) {
+      (a.jobs || []).forEach(function (j) { if (j.clean || j.only_on_error) wanted = true; });
+    });
+    var p = st.patch || {};
+    if (wanted && !p.active) {
+      head += '<div class="callout warn small"><b>Guardé lo que marcaste, pero Hermes ' +
+        'todavía no lo está leyendo.</b> ' + esc(p.detail || "") +
+        ' Mientras tanto las tareas siguen avisando como antes.</div>';
+    }
+    broken.forEach(function (a) {
+      head += '<div class="callout warn small"><b>' + esc(a.name) + ':</b> ' +
+        esc(a.detail || "no pude leer sus tareas") + '</div>';
+    });
+    if (!ags.length) {
+      return head + '<span class="muted small">Todavía no hay ninguna tarea programada. ' +
+        'Las crea tu agente cuando le pides algo que se repite — «revísalo cada lunes», ' +
+        '«avísame si se cae el sitio» — y entonces aparecen aquí.</span>';
+    }
+    return head + ags.map(function (a) {
+      return '<div class="cjag"><b>' + esc(a.name) + '</b> <span class="muted small">· ' +
+        a.jobs.length + (a.jobs.length === 1 ? " tarea" : " tareas") + '</span></div>' +
+        a.jobs.map(function (j) { return cjRow(j, a.profile || a.slug); }).join("");
+    }).join("") +
+      '<p class="muted small" style="margin:12px 0 0">Crear, pausar o borrar una tarea se ' +
+      'lo pides a tu agente por su canal. Aquí sólo se decide cómo te avisa.</p>';
+  }
+
+  function paintCron() {
+    var box = el("cronBox");
+    if (!box) return;
+    api("cron/list", {}).then(function (st) {
+      box = el("cronBox");
+      if (!box) return;
+      CRON.st = st;
+      box.innerHTML = cronHtml(st);
+      wireCron();
+    });
+  }
+
+  function wireCron() {
+    var box = el("cronBox");
+    if (!box) return;
+    Array.prototype.forEach.call(box.querySelectorAll(".cjf"), function (c) {
+      c.onchange = function () {
+        var body = { profile: c.getAttribute("data-p"), id: c.getAttribute("data-i") };
+        body[c.getAttribute("data-f") === "clean" ? "clean" : "only_on_error"] = c.checked;
+        c.disabled = true;
+        api("cron/flags", body).then(function (r) {
+          c.disabled = false;
+          // Repaint from what came back, never from what we hoped we wrote: the answer
+          // carries the job as it now is on disk, and the patch state with it.
+          if (r && r.ok) { toast("Listo"); paintCron(); }
+          else { c.checked = !c.checked; toast((r && r.detail) || "No pude guardarlo"); }
+        });
+      };
+    });
+  }
+
   function paintSelfcare() {
     var box = el("selfcareBox");
     if (!box) return;
@@ -3979,6 +4328,7 @@
     // single-section page of the console, so anything that costs a request has to ask
     // whether its own markup is on screen. Everything below is already el()-guarded.
     if (el("selfcareBox")) paintSelfcare();
+    if (el("cronBox")) paintCron();
     if (el("obsBox")) paintObs();
     if (el("propBox")) paintProps();
     if (S.view !== "console" && !S.applied) return;
@@ -4121,6 +4471,22 @@
 
     // ── which browser the agent drives ─────────────────────────────────────
     var brwPill = el("brwPill");
+    // How to tell this agent's window from the other five on the taskbar. Worth saying
+    // out loud rather than leaving the owner to notice it: the colour is recognisable but
+    // not self-explanatory, and the name in the title is the part she can actually read.
+    function brwLook(st) {
+      var look = (st && st.look) || {};
+      if (!look.hex) return "";
+      return '<div class="brwlook"><span class="brwswatch" style="background:' +
+        esc(look.hex) + '"></span><span>Su ventana va <b>de este color</b>' +
+        (look.labelling
+          ? ' y el título empieza por <b>' + esc(targetName() || "su nombre") +
+            esc(look.separator || " · ") + '</b>, así que la reconoces en la barra de ' +
+            'tareas y al cambiar de ventana.'
+          : '. (El nombre en el título está desactivado en este equipo.)') +
+        '</span></div>';
+    }
+
     function paintBrw(st) {
       var box = el("brwBox");
       if (!box) return;
@@ -4137,6 +4503,7 @@
       } else if (st.mode === "cdp" && st.connected) {
         box.innerHTML = '✅ <b>Navegador real</b> — ' + esc(st.browser || "Chrome") +
           '. Esa ventana es suya y de nadie más; lo que abras ahí lo ve él.' +
+          brwLook(st) +
           '<br><span class="muted">Perfil: ' + esc(st.data_dir || "") +
           ' · puerto ' + esc(String(st.port || "")) + '</span>';
       } else if (st.mode === "cdp") {

@@ -109,6 +109,16 @@ def main():
     tmp = tempfile.mkdtemp(prefix="brw-")
     real_ctl, real_probe, real_find = bs.hermes_ctl, bs.probe, bs.find_browser
     real_home, real_free = bs.hermes_home, bs._port_free
+    # launch() labels the window it finds, and these tests fake `probe` into saying the
+    # endpoint is live - which on a developer's own machine means a REAL agent window on
+    # 9222. Without this the suite opens DevTools sessions against it and renames its
+    # tabs. Replaced for the whole run, like every other door out of this process.
+    import wizard.browser_label as bl
+    real_label = (bl.ensure, bl.stamp_profile)
+    labelled = []
+    bl.ensure = lambda port, name, log=None: (labelled.append((int(port), name))
+                                              or {"ok": True, "labelling": True})
+    bl.stamp_profile = lambda *a, **kw: {"ok": True, "changed": False, "pending": False}
     # Everything per-agent now hangs off hermes_home - the user-data directories, the
     # window cards, the config files the port scan reads. Sandbox it for the whole run so
     # a test can neither read this machine's agents nor write into their browser profiles.
@@ -304,9 +314,19 @@ def main():
             check("and not at the main agent's port, which is not this agent's",
                   ctl.sets[0][1] != "http://127.0.0.1:9222", ctl.sets)
             before = launched["n"]
-            bs.enable(profile="daneel")
+            del labelled[:]
+            bs.enable(profile="daneel", name="Daneel")
             check("a second enable does not open a second window",
                   launched["n"] == before, launched)
+            # ...but it DOES re-attach the labelling, and that is the path that matters
+            # most: the supervisor's pass almost never opens a window, it finds one that
+            # is already there - and a window the owner opened herself, or one that
+            # outlived the last supervisor, would otherwise stay anonymous forever.
+            # The port is whatever this agent was assigned by now, so the assertion is
+            # about the fact and the name, not about a number the sandbox decides.
+            check("but it does name the window that was already open",
+                  len(labelled) == 1 and labelled[0][1] == "Daneel"
+                  and labelled[0][0] == res["port"], labelled)
 
             section("the debug browser never uses the owner's everyday profile")
             args_seen = []
@@ -350,6 +370,7 @@ def main():
 
         bs.probe = port_probe
         bs.subprocess.Popen = open_popen
+        del labelled[:]
         try:
             main_a = bs.enable(profile=None, name="Agente principal")
             extra = bs.enable(profile="daneel", name="Daneel")
@@ -360,6 +381,13 @@ def main():
                   extra["port"] == 9223, extra)
             check("and the third another one still",
                   third["port"] == 9224, third)
+            # Opening a window and not naming it is how this machine ended up with four
+            # anonymous Chromes: the card tab says whose it is until the first navigation
+            # and then nothing does. Each agent's window has to be handed to the labeller
+            # with ITS OWN name, or the taskbar is a row of identical icons again.
+            check("every window that opens is handed to the labeller",
+                  sorted(labelled) == [(9222, "Agente principal"), (9223, "Daneel"),
+                                       (9224, "Giskard")], labelled)
             check("no two agents ever resolve to the same endpoint",
                   len({main_a["cdp_url"], extra["cdp_url"], third["cdp_url"]}) == 3,
                   [main_a["cdp_url"], extra["cdp_url"], third["cdp_url"]])
@@ -469,6 +497,7 @@ def main():
               bs.probe("http://127.0.0.1:1")["ok"] is False)
     finally:
         bs.hermes_ctl, bs.probe, bs.find_browser = real_ctl, real_probe, real_find
+        bl.ensure, bl.stamp_profile = real_label
         bs.hermes_home, bs._port_free = real_home, real_free
 
     section("the CLI the skill documents")

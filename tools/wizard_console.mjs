@@ -44,6 +44,168 @@ function idsIn(html) {
 const SHELL_IDS = new Set(idsIn(fs.readFileSync(SHELL, "utf8")));
 const nodes = new Map();
 
+// ── a querySelectorAll that answers ───────────────────────────────────────────
+// Panels wire their controls by class and by data-attribute (`.cjf`, `[data-scrun]`,
+// `.tmnd`), so a stub returning [] made every one of them untestable: the wiring ran,
+// matched nothing, and the only thing a test could assert was that a string contained a
+// class name. This parses the node's own innerHTML instead.
+//
+// Three properties make it worth having rather than merely present:
+//   * the SAME element object comes back on every query until the html is replaced, so
+//     "wire it, then fire the handler" works the way it does in a browser - a fresh stub
+//     per call would have silently dropped the handler under test;
+//   * attributes are read from the markup, so `data-i`/`data-f` are the ones the page
+//     actually wrote, not ones the test chose;
+//   * a selector shape it does not model returns [] and is RECORDED, not guessed at. A
+//     half-implemented engine that matched the wrong node would be worse than one that
+//     admits it; `UNMODELLED` below is asserted against a known list further down, so a
+//     new panel using an exotic selector shows up as a failing test rather than as a
+//     wiring call that quietly did nothing.
+const TAG_RE = /<([a-zA-Z][a-zA-Z0-9]*)\b([^>]*)>/g;
+const ATTR_RE = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?/g;
+global.UNMODELLED = new Set();
+
+function parseAttrs(blob) {
+  const at = {};
+  let m;
+  ATTR_RE.lastIndex = 0;
+  while ((m = ATTR_RE.exec(blob))) {
+    at[m[1].toLowerCase()] = m[2] !== undefined ? m[2]
+      : m[3] !== undefined ? m[3]
+      : m[4] !== undefined ? m[4] : "";
+  }
+  return at;
+}
+
+// One compound step: `div.cls[data-f="only"]:not(.done)`. No combinators here - those are
+// handled a level up, where the scope element can be looked up by id.
+function parseStep(s) {
+  const want = { tag: "", cls: [], not: [], attrs: [] };
+  const re = /^([a-zA-Z][a-zA-Z0-9]*)|^\.([-\w]+)|^#([-\w]+)|^:not\(\.([-\w]+)\)|^\[([-\w:.]+)(?:=(?:"([^"]*)"|'([^']*)'|([^\]]*)))?\]/;
+  let rest = String(s || "").trim();
+  if (!rest) return null;
+  while (rest) {
+    const m = re.exec(rest);
+    if (!m) return null;
+    if (m[1]) want.tag = m[1].toLowerCase();
+    else if (m[2]) want.cls.push(m[2]);
+    else if (m[3]) want.attrs.push(["id", m[3]]);
+    else if (m[4]) want.not.push(m[4]);
+    else want.attrs.push([m[5].toLowerCase(),
+                          m[6] !== undefined ? m[6]
+                          : m[7] !== undefined ? m[7]
+                          : m[8] !== undefined ? m[8] : null]);
+    rest = rest.slice(m[0].length);
+  }
+  return want;
+}
+
+function matches(tag, at, want) {
+  if (want.tag && want.tag !== tag) return false;
+  const cls = String(at["class"] || "").split(/\s+/);
+  for (const c of want.cls) if (cls.indexOf(c) < 0) return false;
+  for (const c of want.not) if (cls.indexOf(c) >= 0) return false;
+  for (const [k, v] of want.attrs) {
+    if (!(k in at)) return false;
+    if (v !== null && at[k] !== v) return false;
+  }
+  return true;
+}
+
+function mkFound(tag, at) {
+  const e = {
+    tagName: tag.toUpperCase(),
+    _at: at,
+    id: at.id || "",
+    className: at["class"] || "",
+    value: at.value || "",
+    textContent: "",
+    // `checked` in the markup is what the page decided this control's state is; a test
+    // that had to set it itself would be asserting against its own input.
+    checked: "checked" in at,
+    disabled: "disabled" in at,
+    hidden: false,
+    style: new Proxy({}, { get: () => "", set: () => true }),
+    dataset: {},
+    parentNode: null,
+    getAttribute: (n) => (String(n).toLowerCase() in at ? at[String(n).toLowerCase()] : null),
+    setAttribute(n, v) { at[String(n).toLowerCase()] = String(v); },
+    removeAttribute(n) { delete at[String(n).toLowerCase()]; },
+    addEventListener() {},
+    appendChild() {},
+    insertBefore() {},
+    remove() {},
+    closest: () => null,
+    classList: {
+      add(c) { e.className = (e.className + " " + c).trim(); },
+      remove(c) {
+        e.className = String(e.className).split(/\s+/).filter((x) => x !== c).join(" ");
+      },
+      contains: (c) => String(e.className).split(/\s+/).indexOf(c) >= 0,
+      toggle(c) { e.classList.contains(c) ? e.classList.remove(c) : e.classList.add(c); },
+    },
+    focus() {},
+    scrollIntoView() { global.SCROLLED.push(e.id || e.className); },
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    innerHTML: "",
+  };
+  for (const k of Object.keys(at)) {
+    if (k.indexOf("data-") === 0) e.dataset[k.slice(5)] = at[k];
+  }
+  e.click = function () {
+    global.CLICKED.push(e.id || e.className);
+    if (typeof e.onclick === "function") e.onclick.call(e);
+  };
+  return e;
+}
+
+function scanHtml(html, want, cache) {
+  const out = [];
+  let m;
+  let i = 0;
+  TAG_RE.lastIndex = 0;
+  while ((m = TAG_RE.exec(String(html || "")))) {
+    const tag = m[1].toLowerCase();
+    const at = parseAttrs(m[2] || "");
+    i++;
+    if (!matches(tag, at, want)) continue;
+    // Keyed by the tag's own text plus its position, so the handler bound on one query is
+    // still there on the next and two identical-looking rows stay two rows.
+    const key = m[0] + "#" + i;
+    if (!cache.has(key)) cache.set(key, mkFound(tag, at));
+    out.push(cache.get(key));
+  }
+  return out;
+}
+
+function queryAll(node, sel) {
+  if (!node._q) node._q = new Map();
+  const out = [];
+  for (const part of String(sel || "").split(",")) {
+    const steps = part.trim().split(/\s+/).filter(Boolean);
+    if (!steps.length) continue;
+    if (steps.length === 1) {
+      const want = parseStep(steps[0]);
+      if (!want) { global.UNMODELLED.add(part.trim()); continue; }
+      out.push(...scanHtml(node._html, want, node._q));
+      continue;
+    }
+    // `#scope rest` - the only combinator app.js uses, and the only one worth modelling:
+    // the scope is an element with an id, so it can be looked up exactly.
+    if (steps.length === 2 && /^#[-\w]+$/.test(steps[0])) {
+      const host = getEl(steps[0].slice(1));
+      const want = parseStep(steps[1]);
+      if (!host || !want) { if (!want) global.UNMODELLED.add(part.trim()); continue; }
+      if (!host._q) host._q = new Map();
+      out.push(...scanHtml(host._html, want, host._q));
+      continue;
+    }
+    global.UNMODELLED.add(part.trim());
+  }
+  return out;
+}
+
 function mkEl(id) {
   const e = {
     id,
@@ -81,10 +243,14 @@ function mkEl(id) {
     // "picking a file reaches tkAdd" a real assertion rather than a stub answering itself.
     files: [],
     scrollIntoView() { global.SCROLLED.push(e.id); },
-    querySelector: () => null,
-    querySelectorAll: () => [],
+    querySelector: (sel) => queryAll(e, sel)[0] || null,
+    querySelectorAll: (sel) => queryAll(e, sel),
+    _q: null,
     get innerHTML() { return e._html; },
-    set innerHTML(v) { e._html = String(v == null ? "" : v); },
+    // New markup means new controls: anything the page had wired is gone, exactly as in a
+    // browser. Keeping the old objects would let a test fire a handler on a button that
+    // had been repainted away.
+    set innerHTML(v) { e._html = String(v == null ? "" : v); e._q = null; },
   };
   return e;
 }
@@ -136,7 +302,14 @@ global.document = {
     }
     return null;
   },
-  querySelectorAll: () => [],
+  querySelectorAll: (sel) => {
+    // A scoped selector resolves itself inside queryAll; an unscoped one really does mean
+    // "anywhere on the page", so every node that has markup is searched.
+    if (/^#[-\w]+\s/.test(String(sel || "").trim())) return queryAll(body, sel);
+    const out = [];
+    for (const n of nodes.values()) if (n && n._html) out.push(...queryAll(n, sel));
+    return out;
+  },
   // Kept, because the only evidence that a download actually fired is the <a> it made:
   // its download name and the click on it.
   createElement: (t) => { const e = mkEl("new-" + t); global.CREATED.push(e); return e; },
@@ -264,6 +437,31 @@ const CANNED = {
   "talk/file": { ok: true, name: "informe.pdf", mime: "application/pdf", size: 2,
                  data_b64: "aGk=" },
   "talk/send": { ok: true, reply: "Hola, soy tu agente.", session_id: "sess-1" },
+  "cron/list": {
+    ok: true, total: 3,
+    patch: { state: "absent", ok: true, active: false, detail: "" },
+    agents: [
+      { slug: "default", name: "Agente principal", profile: "default", ok: true, jobs: [
+        { id: "aa11", name: "Digest diario 9am", schedule: "0 9 * * *", enabled: true,
+          state: "scheduled", last_run: "2026-10-09T09:01:11", next_run: "", script: false,
+          no_agent: false, last_status: "ok", last_error: "", deliver: "origin",
+          where: "telegram", clean: false, only_on_error: false, what: "Genera el digest" },
+        { id: "bb22", name: "Health check plataformas", schedule: "0 2,8,14,20 * * *",
+          enabled: true, state: "scheduled", last_run: "", next_run: "", script: true,
+          no_agent: true, last_status: "ok", last_error: "", deliver: "origin",
+          where: "telegram", clean: false, only_on_error: false, what: "igalenus_health.py" } ] },
+      { slug: "daneel", name: "Daneel", profile: "daneel", ok: true, jobs: [
+        { id: "cc33", name: "Repaso de marca", schedule: "0 8 * * 1", enabled: false,
+          state: "paused", last_run: "", next_run: "", script: false, no_agent: false,
+          last_status: "error", last_error: "provider timeout", deliver: "origin",
+          where: "telegram", clean: true, only_on_error: false, what: "" } ] },
+      { slug: "solo", name: "Trabaja Sola", profile: "solo", ok: true, jobs: [] },
+    ],
+  },
+  "cron/flags": { ok: true, job: { id: "aa11", name: "Digest diario 9am",
+                                   schedule: "0 9 * * *", enabled: true, script: false,
+                                   last_status: "ok", where: "telegram",
+                                   clean: true, only_on_error: false } },
   "numbers/add": { ok: true, number: { slug: "soporte", label: "Soporte", port: 3002 } },
   "channel/whatsapp-qr": { ok: true, connected: false,
                            qr: "████\n████\n████\n████\n████\n████\n████\n████\n████", detail: "escanea" },
@@ -290,6 +488,7 @@ const HOOK = "\n  globalThis.__ol = { CONSOLE: CONSOLE, S: S, META: META, STEPS:
   " SOS: SOS, openSos: openSos, sendTurn: sendTurn, paintMsgs: paintMsgs," +
   " showQr: showQr, TALK: TALK, sendTalk: sendTalk, loadConn: loadConn," +
   " paintLog: paintLog, tkChips: tkChips, tkAdd: tkAdd, tkFileHtml: tkFileHtml," +
+  " paintCron: paintCron, cronHtml: cronHtml, CRON: CRON, cjWhen: cjWhen," +
   " startLogin: startLogin, loadDash: loadDash, DASH: DASH, BOOT: BOOT, paintTeam: paintTeam, teamSvg: teamSvg, TEAM: TEAM, secTeam: secTeam, paintAgentTeam: paintAgentTeam, AGT: AGT, paintProposal: paintProposal, rAgent: rAgent, rFinished: rFinished, agentConnectCard: agentConnectCard," +
   " get LIVE(){ return LIVE } };\n";
 const hooked = src.slice(0, cut) + HOOK + src.slice(cut);
@@ -416,6 +615,130 @@ ok("and it does not fetch the panels it is not showing",
    !CALLS.some((c) => /escalation|whatsapp|policy|images|browser|intercom/.test(c.route)),
    CALLS.map((c) => c.route).join(", "));
 
+console.log("\n=== the scheduled routines can be told to be quiet ===");
+{
+  OL.goSec("rutinas", "default");
+  await new Promise((r) => setTimeout(r, 0));
+  ok("the panel is on the routines page", getEl("cronBox") !== null);
+  const html = getEl("cronBox").innerHTML;
+  ok("every agent that has routines is listed",
+     html.includes("Agente principal") && html.includes("Daneel"));
+  // An agent with no routines is not a problem to report - it is most agents.
+  ok("and one with none is not", !html.includes("Trabaja Sola"));
+  ok("all three jobs are shown",
+     html.includes("Digest diario 9am") && html.includes("Health check plataformas") &&
+     html.includes("Repaso de marca"));
+  // Every schedule on Walt's own machine, because the first version of this printed
+  // "los 2-6 a las 09:00" for his morning digest - cronHuman assumes ONE weekday, and a
+  // range or a list is what half a real crontab looks like. Anything it cannot say
+  // honestly falls back to the expression, which at least lets the owner recognise the
+  // line she or her agent wrote.
+  const WHEN = [
+    ["0 9 * * *", "las 09:00 todos los d\u00edas"],
+    ["30 4 * * *", "las 04:30 todos los d\u00edas"],
+    ["0 9 * * 1", "los lunes a las 09:00"],
+    ["0 17 * * 5", "los viernes a las 17:00"],
+    ["15 5 * * 0", "los domingos a las 05:15"],
+    ["0 9 * * 2-6", "de martes a s\u00e1bado, a las 09:00"],
+    ["0 9 * * 1,4", "los lunes y jueves a las 09:00"],
+    ["0 8 * * 1,3,5", "los lunes, mi\u00e9rcoles y viernes a las 08:00"],
+    ["0 9 1 * *", "el d\u00eda 1 de cada mes a las 09:00"],
+  ];
+  for (const [expr, want] of WHEN) {
+    ok("'" + expr + "' reads as '" + want + "'", OL.cjWhen(expr) === want, OL.cjWhen(expr));
+  }
+  for (const expr of ["0 2,8,14,20 * * *", "*/15 * * * *", "0 9 1 1,4,7,10 *",
+                      "61 9 * * *", "0 99 * * *", "nonsense"]) {
+    ok("'" + expr + "' is shown as written rather than mistranslated",
+       OL.cjWhen(expr) === '<code>' + expr + '</code>', OL.cjWhen(expr));
+  }
+  ok("a job with no schedule says so, and does not render empty",
+     OL.cjWhen("") === "<i>sin horario</i>", OL.cjWhen(""));
+  ok("a simple schedule is written out", html.includes("todos los d"));
+  ok("a compound one keeps its expression", html.includes("0 2,8,14,20 * * *"));
+  ok("a paused job says so", html.includes("en pausa"));
+  ok("a script job is marked", html.includes(">script<"));
+  ok("a failure shows what broke", html.includes("provider timeout"));
+
+  const boxes = getEl("cronBox").querySelectorAll(".cjf");
+  ok("every job has both switches", boxes.length === 6, String(boxes.length));
+  const already = boxes.filter((b) => b.getAttribute("data-i") === "cc33" &&
+                                      b.getAttribute("data-f") === "clean")[0];
+  ok("a switch already on comes back ticked", already && already.checked === true);
+
+  // The warning is about a patch, and nobody should read about a patch unless something
+  // they ticked depends on one. Here Daneel's job IS clean and the patch is absent.
+  ok("it says the switch is not being read yet", html.includes("todav"));
+  const quiet = OL.cronHtml({
+    ok: true, patch: { active: false, detail: "" },
+    agents: [{ slug: "default", name: "Principal", profile: "default", ok: true,
+               jobs: [{ id: "aa11", name: "Uno", schedule: "0 9 * * *", enabled: true,
+                        clean: false, only_on_error: false }] }],
+  });
+  ok("but stays silent when nothing depends on it", !quiet.includes("Hermes"));
+
+  // Toggling: the page sends the agent and the job id, and nothing else.
+  CALLS.length = 0;
+  const first = getEl("cronBox").querySelectorAll('.cjf[data-i="aa11"][data-f="clean"]')[0];
+  first.checked = true;
+  first.onchange();
+  await new Promise((r) => setTimeout(r, 0));
+  const sent = CALLS.find((c) => c.route === "cron/flags");
+  ok("a tick saves", !!sent);
+  ok("naming the agent and the job", sent && sent.body.profile === "default" &&
+     sent.body.id === "aa11", JSON.stringify(sent && sent.body));
+  ok("and the switch it changed", sent && sent.body.clean === true,
+     JSON.stringify(sent && sent.body));
+  ok("never a file path", sent && !("path" in sent.body) && !("file" in sent.body));
+  ok("and it re-reads the list rather than trusting the click",
+     CALLS.some((c) => c.route === "cron/list"));
+
+  // The other switch is a different field. One checkbox that sent both would make "stop
+  // shouting the header" also mean "stop telling me it ran".
+  CALLS.length = 0;
+  const second = getEl("cronBox").querySelectorAll('.cjf[data-i="bb22"][data-f="only"]')[0];
+  second.checked = true;
+  second.onchange();
+  await new Promise((r) => setTimeout(r, 0));
+  const sent2 = CALLS.find((c) => c.route === "cron/flags");
+  ok("the second switch sends only_on_error", sent2 && sent2.body.only_on_error === true &&
+     !("clean" in sent2.body), JSON.stringify(sent2 && sent2.body));
+  ok("for its own job", sent2 && sent2.body.id === "bb22");
+
+  // A refusal has to be visible. A box that stays ticked over a flag that was never
+  // written is the one failure the owner cannot see.
+  CANNED["cron/flags"] = { ok: false, detail: "No la encontre" };
+  const third = getEl("cronBox").querySelectorAll('.cjf[data-i="aa11"][data-f="clean"]')[0];
+  third.checked = true;
+  third.onchange();
+  await new Promise((r) => setTimeout(r, 0));
+  ok("a refused save unticks the box again", third.checked === false);
+  CANNED["cron/flags"] = { ok: true, job: { id: "aa11", name: "Digest diario 9am",
+                                            schedule: "0 9 * * *", enabled: true,
+                                            clean: true, only_on_error: false } };
+
+  // The panel reads and tunes. Creating, pausing and deleting a job belongs to
+  // `hermes cron`, which owns the scheduling grammar and the dispatch claim.
+  CALLS.length = 0;
+  OL.goSec("rutinas", "default");
+  await new Promise((r) => setTimeout(r, 0));
+  ok("it never writes a job it was not asked to",
+     !CALLS.some((c) => /cron\/(create|remove|pause|update)/.test(c.route)),
+     CALLS.map((c) => c.route).join(", "));
+}
+
+console.log("\n=== the harness knows which selectors it cannot model ===");
+// Returning [] for a selector shape we do not parse is safe; doing it silently is not -
+// the wiring runs, matches nothing, and the panel looks tested. This list is the whole
+// set app.js uses that this engine does not resolve, and it is asserted so a new panel
+// reaching for an exotic selector fails here instead of going quietly untested.
+{
+  const known = [".ask-general textarea"];
+  const extra = [...global.UNMODELLED].filter((s) => known.indexOf(s) < 0);
+  ok("no panel wires itself with a selector the harness ignores",
+     extra.length === 0, extra.join(" | "));
+}
+
 // ── the wizard's long page still contains everything ───────────────────────────
 console.log("\n=== the wizard's own last step still shows every section ===");
 OL.S.applied = true;
@@ -424,7 +747,7 @@ for (const pill of ["polPill", "brwPill", "histPill", "capPill", "icPill", "mcpP
                     "waPill", "escPill", "gwPill", "slackPill", "whPill", "smtpPill"]) {
   ok("the setup page still renders " + pill, all.includes('id="' + pill + '"'));
 }
-for (const box of ["obsBox", "selfcareBox", "propBox"]) {
+for (const box of ["obsBox", "selfcareBox", "cronBox", "propBox"]) {
   ok("the setup page still renders " + box, all.includes('id="' + box + '"'));
 }
 ok("and each section appears exactly once",
@@ -455,9 +778,33 @@ async function paintBrowser(reply) {
 }
 let brw = await paintBrowser({
   ok: true, mode: "cdp", connected: true, browser: "Chrome/152", port: 9223,
-  data_dir: "C:/h/profiles/daneel/chrome-debug", browser_found: true, shared_with: [] });
+  data_dir: "C:/h/profiles/daneel/chrome-debug", browser_found: true, shared_with: [],
+  look: { hex: "#1E9E6A", labelling: true, separator: " \u00b7 " } });
 ok("a private window reads as this agent's own", /suya y de nadie/.test(brw), brw);
 ok("and it names the port, so two windows can be told apart", brw.includes("9223"), brw);
+// The three marks a window wears. This renders the line rather than grepping app.js for
+// it: `brwLook` reaches outside its own closure for the agent's name, and a panel that
+// throws there is a panel that shows nothing at all.
+ok("it shows the colour the window wears", brw.includes("#1E9E6A"), brw);
+ok("as a swatch, not as a hex code to decode", brw.includes("brwswatch"), brw);
+ok("and says the title carries the agent's name", brw.includes("Daneel"), brw);
+ok("with the separator it will actually see", brw.includes("\u00b7"), brw);
+
+// An owner who turned the title half off must not be told it is on.
+const off = await paintBrowser({
+  ok: true, mode: "cdp", connected: true, browser: "Chrome/152", port: 9223,
+  data_dir: "C:/h/profiles/daneel/chrome-debug", browser_found: true, shared_with: [],
+  look: { hex: "#1E9E6A", labelling: false, separator: " \u00b7 " } });
+ok("with the title half off it still shows the colour", off.includes("#1E9E6A"), off);
+ok("but does not claim the name is in the title", !off.includes("barra de tareas"), off);
+ok("and says so plainly", off.includes("desactivado"), off);
+
+// An older server that does not send `look` must not break the panel.
+const none = await paintBrowser({
+  ok: true, mode: "cdp", connected: true, browser: "Chrome/152", port: 9223,
+  data_dir: "C:/h/profiles/daneel/chrome-debug", browser_found: true, shared_with: [] });
+ok("a reply with no look at all still paints", /suya y de nadie/.test(none), none);
+ok("and simply says nothing about colours", !none.includes("brwswatch"), none);
 
 brw = await paintBrowser({
   ok: true, mode: "cdp", connected: true, browser: "Chrome/152", port: 9222,
@@ -1049,11 +1396,15 @@ function teamFixture() {
     ok: true, status: "ok", configured: true, broken: false, error: "",
     agents: [
       { slug: "default", name: "Principal", role: "Coordina", description: "",
-        never: "", reachable: true, isolated: false },
+        never: "", reachable: true, isolated: false,
+        team: "igalenus", team_name: "iGalenus" },
       { slug: "daneel", name: "Daneel", role: "Atiende la clinica", description: "",
-        never: "", reachable: true, isolated: false },
+        never: "", reachable: true, isolated: false,
+        team: "igalenus", team_name: "iGalenus" },
+      // The agent that is in no team. Every machine has had one since before teams
+      // existed, and it has to stay drawable and connectable.
       { slug: "heraldo", name: "HERALDO", role: "", description: "", never: "",
-        reachable: true, isolated: false }],
+        reachable: true, isolated: false, team: "", team_name: "" }],
     links: [
       { from: "default", to: "daneel", from_name: "Principal", to_name: "Daneel",
         both: true, why: "para cosas de la clinica", why_back: "para avisar de una urgencia",
@@ -1064,6 +1415,11 @@ function teamFixture() {
         shared_why: false, enabled: true, stale: false,
         max_turns: 4, hourly_limit: null, hours: { from: 9, to: 18 } }],
     pending: [], isolated: [], shared_why: [],
+    // Two filed agents and one that is not, which is the shape every machine has the day
+    // teams arrive: nobody is in a team until somebody says so.
+    teams: [{ id: "igalenus", name: "iGalenus", members: ["default", "daneel"],
+              count: 2, stale: false }],
+    unassigned: ["heraldo"],
   };
 }
 
@@ -1322,6 +1678,184 @@ ok("with a one-click way to have them written",
 }
 
 // ── an agent nobody linked ─────────────────────────────────────────────────────
+console.log("\n=== agents can be grouped into named teams ===");
+{
+  // Every edit on this page repaints from what the server sent back - deliberately, so
+  // what is drawn is always what is enforced. The stubs therefore have to answer with a
+  // real state, or the repaint empties the panel the next assertion is about.
+  for (const r of ["teams/assign", "teams/group", "teams/ungroup"]) {
+    CANNED[r] = teamState({});
+  }
+  OL.paintTeam(teamState({}));
+  const panel = htmlOf("teamGroups");
+  ok("the teams panel is on the page", panel.length > 0);
+  ok("the team is named", panel.includes("iGalenus"));
+  ok("with its members", panel.includes("Principal") && panel.includes("Daneel"));
+  // The bucket that makes the map drawable. It is not an error state: on a machine that
+  // had agents before it had teams, it holds every one of them.
+  ok("and the agents in no team are a group of their own",
+     panel.includes("Sin equipo") && panel.includes("HERALDO"));
+
+  // Every agent carries a way to move it, including the unfiled one - that IS the ask.
+  const sels = getEl("teamGroups").querySelectorAll(".tmAsg");
+  ok("every agent can be moved from here", sels.length === 3, String(sels.length));
+  const loose = sels.filter((s) => s.getAttribute("data-s") === "heraldo")[0];
+  ok("including one that is in no team", !!loose);
+
+  // The picture draws the teams: one band per team, behind the wires.
+  const svg = htmlOf("teamMap");
+  ok("the map draws a band per team",
+     (svg.match(/class="tmteam/g) || []).length === 1, svg.slice(0, 60));
+  ok("behind the links, not over them",
+     svg.indexOf("tmteam") < svg.indexOf("tmwire"));
+  ok("and a legend says which colour is which",
+     svg.includes("tmkeys") && svg.includes("iGalenus"));
+  ok("the legend names the unfiled group too", svg.includes("Sin equipo"));
+  // Every member wears its team's colour, not just the ones the band reaches. A team of
+  // ONE is a dot at the node's own centre with a 152x48 box on top of it - so without
+  // this the commonest shape of team (one product, one agent) showed nothing at all.
+  ok("each filed node wears its team's colour",
+     (svg.match(/class="tmnd tc0/g) || []).length === 2, svg.slice(0, 0));
+  ok("and an unfiled one wears none", /class="tmnd(?! tc)/.test(svg));
+  const lone = OL.teamSvg({
+    agents: [{ slug: "a", name: "A", role: "", isolated: false, reachable: true },
+             { slug: "b", name: "B", role: "", isolated: false, reachable: true }],
+    links: [],
+    teams: [{ id: "solo", name: "Solo", members: ["b"], count: 1, stale: false }],
+  });
+  ok("a team of one still colours its member",
+     lone.includes('class="tmnd tc0'), lone.slice(0, 0));
+  ok("and still gets a band, even if the box covers most of it",
+     (lone.match(/class="tmteam/g) || []).length === 1);
+  ok("the tooltip says which team, so the colour is a hint and not the only answer",
+     svg.includes("equipo iGalenus"));
+  // Teammates adjacent on the ring, or the band is a star across the middle instead of
+  // an arc around one side. The team here is deliberately the FIRST and THIRD agents in
+  // roster order: with an already-adjacent pair this assertion would pass whether the
+  // ordering existed or not.
+  OL.paintTeam(teamState({ team: {
+    teams: [{ id: "g", name: "Separados", members: ["default", "heraldo"],
+              count: 2, stale: false }],
+    unassigned: ["daneel"],
+  } }));
+  const order = (htmlOf("teamMap").match(/data-ag="([a-z]+)"/g) || [])
+    .map((s) => s.slice(9, -1));
+  ok("teammates are next to each other on the ring",
+     order[0] === "default" && order[1] === "heraldo" && order[2] === "daneel",
+     order.join(","));
+  OL.paintTeam(teamState({}));
+
+  // Moving an agent sends the agent and the team, and nothing that could be a permission.
+  CALLS.length = 0;
+  loose.value = "igalenus";
+  loose.onchange();
+  await new Promise((r) => setTimeout(r, 0));
+  const moved = CALLS.find((c) => c.route === "teams/assign");
+  ok("moving an agent reaches the server", !!moved);
+  ok("naming the agent and the team",
+     moved && moved.body.slug === "heraldo" && moved.body.team === "igalenus",
+     JSON.stringify(moved && moved.body));
+  ok("and nothing that could change a permission",
+     moved && !("from" in moved.body) && !("to" in moved.body) &&
+     !("both" in moved.body) && !("why" in moved.body),
+     JSON.stringify(moved && moved.body));
+
+  // "Sin equipo" is a real answer, not a missing one.
+  CALLS.length = 0;
+  const filed = getEl("teamGroups").querySelectorAll('.tmAsg[data-s="daneel"]')[0];
+  filed.value = "";
+  filed.onchange();
+  await new Promise((r) => setTimeout(r, 0));
+  const out = CALLS.find((c) => c.route === "teams/assign");
+  ok("taking an agent out of every team is a request too",
+     out && out.body.slug === "daneel" && out.body.team === "",
+     JSON.stringify(out && out.body));
+
+  // Creating.
+  CALLS.length = 0;
+  getEl("tmGNew").value = "  Squadra  ";
+  getEl("tmGAdd").onclick.call(getEl("tmGAdd"));
+  await new Promise((r) => setTimeout(r, 0));
+  const made = CALLS.find((c) => c.route === "teams/group");
+  ok("a new team is created by name", made && made.body.name === "Squadra",
+     JSON.stringify(made && made.body));
+  ok("with no id, so the server mints one", made && !made.body.id);
+
+  CALLS.length = 0;
+  getEl("tmGNew").value = "   ";
+  getEl("tmGAdd").onclick.call(getEl("tmGAdd"));
+  await new Promise((r) => setTimeout(r, 0));
+  ok("an empty name is not sent", !CALLS.some((c) => c.route === "teams/group"));
+
+  // Renaming and removing.
+  CALLS.length = 0;
+  const nameBox = getEl("teamGroups").querySelectorAll(".tmGName")[0];
+  nameBox.value = "iGalenus Core";
+  nameBox.onchange();
+  await new Promise((r) => setTimeout(r, 0));
+  const renamed = CALLS.find((c) => c.route === "teams/group");
+  ok("renaming names the team it is renaming",
+     renamed && renamed.body.id === "igalenus" && renamed.body.name === "iGalenus Core",
+     JSON.stringify(renamed && renamed.body));
+
+  CALLS.length = 0;
+  const del = getEl("teamGroups").querySelectorAll(".tmGDel")[0];
+  del.onclick.call(del);
+  await new Promise((r) => setTimeout(r, 0));
+  const gone = CALLS.find((c) => c.route === "teams/ungroup");
+  ok("removing a team names it", gone && gone.body.id === "igalenus");
+  ok("and asks for nothing else", gone && Object.keys(gone.body).length === 1,
+     JSON.stringify(gone && gone.body));
+}
+
+console.log("\n=== a machine with no teams is invited to make one ===");
+{
+  OL.paintTeam(teamState({ team: { teams: [], unassigned: ["default", "daneel", "heraldo"] } }));
+  const panel = htmlOf("teamGroups");
+  ok("it says there are none yet", panel.includes("Todav"));
+  ok("and that everyone is together meanwhile", panel.includes("Sin equipo"));
+  // The sentence that stops this reading as a warning. Nothing is wrong with a machine
+  // that has no teams, and the owner should not be hunting for a problem.
+  ok("and that nothing is broken about that",
+     panel.includes("igual que siempre") || panel.includes("ordenarlos"));
+  ok("there is still a way to create one", panel.includes("tmGAdd"));
+  // The map must not go blank just because nobody is filed.
+  const svg = htmlOf("teamMap");
+  ok("every agent is still drawn", (svg.match(/data-ag=/g) || []).length === 3);
+  ok("and no band is drawn for a team that does not exist",
+     !svg.includes("tmteam"));
+  ok("nor a legend", !svg.includes("tmkeys"));
+}
+
+console.log("\n=== one agent's own page says which team it is in ===");
+{
+  OL.goSec("conexiones", "daneel");
+  OL.paintAgentTeam(teamState({}));
+  const box = htmlOf("agtBox");
+  ok("there is a team control", box.includes('id="agTeam"'));
+  ok("showing the team it is in",
+     /<option value="igalenus" selected>/.test(box), box.slice(0, 0));
+  ok("and the option of being in none", box.includes('value=""'));
+
+  CALLS.length = 0;
+  const sel = getEl("agTeam");
+  sel.value = "";
+  sel.onchange();
+  await new Promise((r) => setTimeout(r, 0));
+  const moved = CALLS.find((c) => c.route === "teams/assign");
+  ok("changing it moves THIS agent", moved && moved.body.slug === "daneel",
+     JSON.stringify(moved && moved.body));
+  ok("to the team that was picked", moved && moved.body.team === "");
+
+  OL.paintAgentTeam(teamState({ team: { teams: [], unassigned: ["default", "daneel", "heraldo"] } }));
+  ok("with no teams yet it says where to make one",
+     htmlOf("agtBox").includes("El equipo"));
+  // Back to the team page: the sections after this one paint into #teamMap, and a
+  // leftover per-agent page would fail them for a reason that is not theirs.
+  OL.S.view = "console"; OL.S.sec = "entre-agentes"; OL.S.agent = null;
+  OL.render();
+}
+
 console.log("\n=== an agent nobody connected is said out loud ===");
 OL.paintTeam(teamState({ team: { isolated: ["heraldo"], agents: [
   { slug: "default", name: "Principal", role: "Coordina", reachable: true, isolated: false },

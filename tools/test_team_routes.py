@@ -266,6 +266,71 @@ def test_an_unreadable_map_is_not_overwritten_by_a_new_agent():
            "and leaves the owner's file exactly as it was, to be recovered")
 
 
+# ── teams are groups, and the reply still carries the whole map ───────────────
+def test_every_team_route_answers_with_the_whole_map():
+    """The page repaints from the reply, so a route that returns anything less than the
+    full state blanks the panel.
+
+    This is the shape of bug the front-end tests cannot see: the harness answers with a
+    hand-written state, so a server that overwrote `team` with something else still looked
+    right there. It took a browser to find it once; it takes this to find it again.
+    """
+    with Sandbox() as s:
+        s.post("teams/adopt")
+        for route, body in (("teams/group", {"name": "iGalenus"}),
+                            ("teams/assign", {"slug": "daneel", "team": "igalenus"}),
+                            ("teams/group", {"id": "igalenus", "name": "iGalenus Core"}),
+                            ("teams/assign", {"slug": "daneel", "team": ""}),
+                            ("teams/ungroup", {"id": "igalenus"})):
+            st = s.post(route, body)
+            ok(st["ok"], "%s succeeds" % route)
+            ok(isinstance(st.get("team"), dict),
+               "%s answers with the map, not with a field of it" % route)
+            eq(len(st["team"].get("agents") or []), len(ROSTER) + 1,
+               "%s still names every agent" % route)
+            ok("teams" in st["team"] and "unassigned" in st["team"],
+               "%s carries the groups too" % route)
+
+
+def test_grouping_from_the_console_moves_nobody_out_of_reach():
+    with Sandbox() as s:
+        s.post("teams/adopt")
+        before = sorted((ln["from"], ln["to"]) for ln in s.links())
+
+        gid = s.post("teams/group", {"name": "Comercial"})["team_id"]
+        ok(gid, "the new team's id comes back under its own key")
+        s.post("teams/assign", {"slug": "daneel", "team": gid})
+        st = s.post("teams/assign", {"slug": "heraldo", "team": ""})
+
+        eq(sorted((ln["from"], ln["to"]) for ln in s.links()), before,
+           "filing agents changed no link at all")
+        groups = {g["id"]: g["members"] for g in st["team"]["teams"]}
+        eq(groups[gid], ["daneel"], "the filed agent is in its team")
+        ok("heraldo" in st["team"]["unassigned"],
+           "and the one taken out is in no team, not gone")
+
+        # An agent in no team is still a row the page can draw and connect.
+        by = {a["slug"]: a for a in st["team"]["agents"]}
+        eq(by["heraldo"]["team"], "", "an unfiled agent carries an empty team")
+        ok("heraldo" in by, "and is still on the map")
+
+
+def test_a_team_write_on_a_mapless_machine_adopts_first():
+    with Sandbox() as s:
+        # No teams.json at all: everything is allowed, and saving a groups-only file would
+        # read as "nobody may call anybody".
+        ok(not os.path.exists(os.path.join(s.dir, "teams.json")), "no map to start with")
+        st = s.post("teams/group", {"name": "Primero"})
+        ok(st["ok"], "the route still works")
+        ok(st.get("adopted"), "and says it wrote the existing connections down")
+        ok(len(s.links()) > 0, "which is why there are links on file now")
+        for a in ("daneel", "heraldo", "default"):
+            for b in ("daneel", "heraldo", "default"):
+                if a != b:
+                    ok(teams.allows(a, b, install_dir=s.dir)[0],
+                       "%s can still call %s" % (a, b))
+
+
 def main():
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

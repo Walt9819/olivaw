@@ -613,6 +613,13 @@ li.bad .boot-tick{background:var(--warn); border-color:var(--warn); color:#fff;
 
 /* nodes */
 .tmnd rect{fill:var(--panel); stroke:var(--line); stroke-width:1.5}
+/* Each node wears its team's colour. The band behind a team of ONE is a dot at the node's
+   own centre, which the box covers completely, so without this the commonest shape of
+   team shows no colour at all. Kept above the interaction rules below on purpose: same
+   specificity, so what you are doing right now has to win. */
+.tmnd.tc0 rect{stroke:var(--tm0)} .tmnd.tc1 rect{stroke:var(--tm1)}
+.tmnd.tc2 rect{stroke:var(--tm2)} .tmnd.tc3 rect{stroke:var(--tm3)}
+.tmnd.tc4 rect{stroke:var(--tm4)} .tmnd.tc5 rect{stroke:var(--tm5)}
 .tmnd{cursor:pointer}
 .tmnd:hover rect{stroke:var(--accent)}
 .tmnd:focus{outline:none}
@@ -693,3 +700,46 @@ li.bad .boot-tick{background:var(--warn); border-color:var(--warn); color:#fff;
 .connpick{display:flex; gap:10px; align-items:center; padding:9px 2px; cursor:pointer;
   border-bottom:1px solid var(--line)}
 .connpick:last-child{border-bottom:0}
+
+/* Scheduled routines: one row per job, its two switches on the right. The row wraps on a
+   narrow window instead of squeezing the labels into one character per line. */
+.cjag{margin:14px 0 6px;font-size:14px}
+.cjag:first-child{margin-top:0}
+.cjrow{display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;
+       padding:9px 0;border-top:1px solid var(--line)}
+.cjrow.off{opacity:.55}
+.cjsws{display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+.cjsw{display:flex;gap:6px;align-items:center;font-size:13px;white-space:nowrap;
+      cursor:pointer}
+.cjsw input{width:auto;margin:0}
+
+/* Teams. Six colours, cycled: enough for any real org chart, and each one has to stay
+   legible as a 16%-opacity band on both the light and the dark background. */
+:root{--tm0:#5b7cfa; --tm1:#1e9e6a; --tm2:#d2803a; --tm3:#b45ec9; --tm4:#cf5a72; --tm5:#2a9db5}
+.tmteam{fill:none; stroke-width:54; stroke-linecap:round; stroke-linejoin:round;
+        opacity:.15; pointer-events:none}
+.tmteam.c0{stroke:var(--tm0)} .tmteam.c1{stroke:var(--tm1)} .tmteam.c2{stroke:var(--tm2)}
+.tmteam.c3{stroke:var(--tm3)} .tmteam.c4{stroke:var(--tm4)} .tmteam.c5{stroke:var(--tm5)}
+.tmdot{width:10px; height:10px; border-radius:50%; display:inline-block; flex:none}
+.tmdot.c0{background:var(--tm0)} .tmdot.c1{background:var(--tm1)}
+.tmdot.c2{background:var(--tm2)} .tmdot.c3{background:var(--tm3)}
+.tmdot.c4{background:var(--tm4)} .tmdot.c5{background:var(--tm5)}
+.tmdot.off{background:var(--line); border:1px solid var(--muted)}
+.tmkeys{display:flex; gap:14px; flex-wrap:wrap; margin:8px 0 0}
+.tmkey{display:flex; gap:6px; align-items:center; font-size:13px; color:var(--muted)}
+.tmgrp{padding:10px 0; border-top:1px solid var(--line)}
+.tmgrp:first-child{border-top:0; padding-top:0}
+.tmgrp input.tmGName{width:auto; flex:1 1 160px; min-width:0; max-width:260px;
+                     font-weight:700}
+.tmchips{display:flex; gap:8px; flex-wrap:wrap; margin-top:8px}
+.tmchip{display:inline-flex; gap:6px; align-items:center; padding:4px 8px;
+        border:1px solid var(--line); border-radius:999px; background:var(--panel-2);
+        font-size:13px}
+.tmchip select{width:auto; min-width:0; padding:2px 4px; font-size:12px; border:0;
+               background:transparent; color:var(--muted)}
+
+/* "That window is his": a swatch of the agent's own Chrome frame colour, beside the
+   sentence that says the title carries his name too. */
+.brwlook{display:flex; gap:8px; align-items:flex-start; margin:8px 0 0; font-size:13px}
+.brwswatch{width:14px; height:14px; border-radius:4px; flex:none; margin-top:2px;
+           border:1px solid var(--line)}

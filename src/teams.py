@@ -77,6 +77,29 @@ grant itself a link. The split:
   * **widening becomes a pending request** the owner accepts in Olivaw. It changes nothing
     until she does.
 
+A TEAM IS A GROUP, NOT A WALL
+-----------------------------
+With six agents the map is readable; with a dozen it is a hairball, and the owner's real
+structure - iGalenus here, a different product there, her own personal assistant off to one
+side - is nowhere in the picture. So agents can be put into named teams.
+
+What a team is: a label, a place on the diagram, and a line in each agent's skill saying
+which colleagues are on its own side of the house.
+
+What a team is NOT, and this is load-bearing: a permission. `allows()` never reads a team.
+Creating one, renaming one, deleting one, moving an agent between them - none of it can
+change who may call whom. That is the same promise everything else here is built on: this
+module can only subtract, and only when the owner says so explicitly. A grouping feature
+that silently cut cross-team links would be the single worst thing we could ship into a
+machine that is already working, because the owner would be *organising* and the result
+would be agents that have gone quiet.
+
+The other half of the rule points the other way. An agent in no team is not out of the
+picture: it is in "Sin equipo", it is drawn, and it can be linked exactly like any other.
+An agent that existed before teams did has no team by definition, and if that had taken it
+off the diagram the owner could not have connected it to anything - the map would have been
+impossible to draw for precisely the agents that needed it most.
+
 The quota, the depth limit and the envelope in `intercom.py` are untouched and still apply
 underneath all of this. This module can only ever subtract.
 """
@@ -85,6 +108,7 @@ import json
 import os
 import re
 import time
+import unicodedata
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 INSTALL_DIR = os.path.dirname(HERE)
@@ -104,6 +128,8 @@ MAX_DESC = 600
 MAX_WHY = 300
 MAX_LINKS = 200
 MAX_PENDING = 20
+MAX_TEAMS = 24
+MAX_TEAM_NAME = 40
 
 
 def _norm(s):
@@ -145,7 +171,7 @@ def read(install_dir=None):
 
 
 def _blank():
-    return {"version": 1, "cards": {}, "links": [], "pending": []}
+    return {"version": 1, "teams": [], "cards": {}, "links": [], "pending": []}
 
 
 def _clean(data):
@@ -164,6 +190,32 @@ def _clean(data):
                 "description": _clip(c.get("description"), MAX_DESC),
                 "never": _clip(c.get("never"), MAX_WHY),
             }
+
+    groups = data.get("teams")
+    if isinstance(groups, list):
+        taken = set()
+        seen_ids = set()
+        for g in groups[:MAX_TEAMS]:
+            if not isinstance(g, dict):
+                continue
+            gid = _norm(g.get("id"))
+            if not SLUG_RE.match(gid) or gid in seen_ids:
+                continue
+            seen_ids.add(gid)
+            members = []
+            for slug in (g.get("members") or []):
+                slug = _norm(slug)
+                # One team per agent. Two teams both claiming the same agent is a
+                # hand-edit or a half-applied write; picking the first is arbitrary but
+                # stable, and leaving it in both would make "which team is it in?" a
+                # question with two answers everywhere downstream.
+                if not SLUG_RE.match(slug) or slug in taken:
+                    continue
+                taken.add(slug)
+                members.append(slug)
+            out["teams"].append({"id": gid,
+                                 "name": _clip(g.get("name"), MAX_TEAM_NAME) or gid,
+                                 "members": members})
 
     links = data.get("links")
     if isinstance(links, list):
@@ -245,6 +297,38 @@ def save(data, install_dir=None):
         return {"ok": True}
     except OSError as e:
         return {"ok": False, "detail": str(e)}
+
+
+# ── teams: grouping, and nothing else ────────────────────────────────────────
+def teams_of(data):
+    return [g for g in (data.get("teams") or []) if isinstance(g, dict)]
+
+
+def team_of(data, slug):
+    """The team an agent is in, or None. Never raises: callers use it to draw."""
+    slug = _norm(slug)
+    for g in teams_of(data):
+        if slug in (g.get("members") or []):
+            return g
+    return None
+
+
+def _team_slug(name, existing):
+    """A readable id from the owner's own words, with accents folded out.
+
+    The id is what lands in the file and in every member list, so it has to survive being
+    typed as "Investigación" and read back by a regex that only knows ASCII.
+    """
+    base = unicodedata.normalize("NFKD", name or "")
+    base = base.encode("ascii", "ignore").decode("ascii").lower()
+    base = re.sub(r"[^a-z0-9]+", "-", base).strip("-")[:38]
+    if not base or not SLUG_RE.match(base):
+        base = "equipo"
+    gid, n = base, 2
+    while gid in existing:
+        gid = "%s-%d" % (base[:34], n)
+        n += 1
+    return gid
 
 
 # ── the gate ─────────────────────────────────────────────────────────────────
@@ -366,18 +450,24 @@ def neighbours(slug, roster=None, install_dir=None):
         seen.add(target)
         card = (data.get("cards") or {}).get(target) or {}
         a = names.get(target) or {}
+        # The team is context, never permission: it tells the agent that the colleague it
+        # is about to write to is on its own side of the house or on another one, which
+        # changes how it frames the question and nothing about whether it may ask.
+        grp = team_of(data, target)
         out.append({"slug": target, "name": a.get("name") or target,
                     "role": card.get("role", ""),
                     "description": card.get("description", ""),
                     "never": card.get("never", ""),
                     "why": why, "hours": hours,
+                    "team": (grp or {}).get("id", ""),
+                    "team_name": (grp or {}).get("name", ""),
                     "known": bool(a)})
     out.sort(key=lambda x: x["name"].lower())
     return out
 
 
 # ── adoption: write down what is already running ─────────────────────────────
-def adopt(roster, install_dir=None, cards=None):
+def adopt(roster, install_dir=None, cards=None, groups=None):
     """Freeze today's all-to-all mesh into explicit links, changing no behaviour.
 
     Every ordered pair becomes one `both: true` link, which is exactly what the machine
@@ -388,6 +478,10 @@ def adopt(roster, install_dir=None, cards=None):
     slugs = [s for s in slugs if SLUG_RE.match(s)]
     data = _blank()
     data["cards"] = dict(cards or {})
+    # Adoption rewrites the LINKS, not the owner's filing. Dropping the groups here would
+    # make "draw the map" also mean "forget which agents belong together", which is a
+    # second decision nobody asked for.
+    data["teams"] = [dict(g) for g in (groups or [])]
     for i, a in enumerate(slugs):
         for b in slugs[i + 1:]:
             if len(data["links"]) >= MAX_LINKS:
@@ -429,7 +523,8 @@ def set_card(slug, role=None, description=None, never=None, roster=None,
     if status == LEGACY:
         if not roster:
             raise ValueError("Este equipo todavía no tiene mapa. Adóptalo primero.")
-        res = adopt(roster, install_dir, cards=data.get("cards"))
+        res = adopt(roster, install_dir, cards=data.get("cards"),
+                    groups=data.get("teams"))
         if not res.get("ok"):
             return dict(res, adopted=False)
         adopted = True
@@ -522,6 +617,98 @@ def set_link(frm, to, why=None, why_back=None, both=None, max_turns=None,
     data["pending"] = [p for p in data["pending"]
                        if not ((p["from"], p["to"]) in ((frm, to), (to, frm)))]
     return save(data, install_dir)
+
+
+def set_team(team_id=None, name="", roster=None, install_dir=None):
+    """Create a team, or rename one. Never touches a link.
+
+    The legacy case is the same trap `set_card` documents, and it has bitten once already:
+    on a machine with no teams.json, merely SAVING one ends legacy mode, and a file with
+    groups and no links reads as "nobody may call anybody". The owner would have typed a
+    team name and silenced her whole machine. So a write here adopts the live mesh in the
+    same breath and says so.
+    """
+    status, data = _require_configured(install_dir)
+    adopted = False
+    if status == LEGACY:
+        if not roster:
+            raise ValueError("Este equipo todavía no tiene mapa. Adóptalo primero.")
+        res = adopt(roster, install_dir, cards=data.get("cards"),
+                    groups=data.get("teams"))
+        if not res.get("ok"):
+            return dict(res, adopted=False)
+        adopted = True
+        _, data = _require_configured(install_dir)
+
+    name = _clip(name, MAX_TEAM_NAME)
+    team_id = _norm(team_id)
+    if team_id:
+        for g in data["teams"]:
+            if g["id"] == team_id:
+                if name:
+                    g["name"] = name
+                return dict(save(data, install_dir), id=team_id, adopted=adopted)
+        raise ValueError("No existe un equipo «%s»." % team_id)
+
+    if not name:
+        raise ValueError("Ponle un nombre al equipo.")
+    if len(data["teams"]) >= MAX_TEAMS:
+        raise ValueError("Ya hay %d equipos." % MAX_TEAMS)
+    new_id = _team_slug(name, set(g["id"] for g in data["teams"]))
+    data["teams"].append({"id": new_id, "name": name, "members": []})
+    return dict(save(data, install_dir), id=new_id, adopted=adopted)
+
+
+def remove_team(team_id, install_dir=None):
+    """Delete a team. Its members become unassigned - they are not deleted, and neither is
+    a single link. Removing a grouping cannot be a way to lose agents."""
+    status, data = _require_configured(install_dir)
+    if status == LEGACY:
+        raise ValueError("Este equipo todavía no tiene mapa.")
+    team_id = _norm(team_id)
+    before = len(data["teams"])
+    data["teams"] = [g for g in data["teams"] if g["id"] != team_id]
+    if len(data["teams"]) == before:
+        raise ValueError("No existe un equipo «%s»." % team_id)
+    return save(data, install_dir)
+
+
+def assign(slug, team_id="", roster=None, install_dir=None):
+    """Put an agent in a team, or take it out of all of them (team_id="").
+
+    Changes no permission, by construction: this function only ever edits member lists.
+    """
+    slug = _norm(slug)
+    if not SLUG_RE.match(slug):
+        raise ValueError("«%s» no es un agente válido." % slug)
+    status, data = _require_configured(install_dir)
+    adopted = False
+    if status == LEGACY:
+        if not roster:
+            raise ValueError("Este equipo todavía no tiene mapa. Adóptalo primero.")
+        res = adopt(roster, install_dir, cards=data.get("cards"),
+                    groups=data.get("teams"))
+        if not res.get("ok"):
+            return dict(res, adopted=False)
+        adopted = True
+        _, data = _require_configured(install_dir)
+
+    team_id = _norm(team_id)
+    target = None
+    if team_id:
+        for g in data["teams"]:
+            if g["id"] == team_id:
+                target = g
+                break
+        if target is None:
+            raise ValueError("No existe un equipo «%s»." % team_id)
+    # Out of whatever it was in first, so "one team per agent" holds even if the file was
+    # hand-edited into claiming otherwise.
+    for g in data["teams"]:
+        g["members"] = [m for m in g["members"] if m != slug]
+    if target is not None:
+        target["members"].append(slug)
+    return dict(save(data, install_dir), adopted=adopted)
 
 
 def remove_link(frm, to, install_dir=None):
@@ -619,16 +806,37 @@ def state(roster=None, install_dir=None):
         alone = status == OK and a["slug"] not in linked
         if alone:
             isolated.append(a["slug"])
+        grp = team_of(data, a["slug"])
         agents.append({"slug": a["slug"], "name": a.get("name") or a["slug"],
                        "profile": a.get("profile") or a["slug"],
                        "role": card.get("role", ""),
                        "description": card.get("description", ""),
                        "never": card.get("never", ""),
                        "isolated": alone,
+                       "team": (grp or {}).get("id", ""),
+                       "team_name": (grp or {}).get("name", ""),
                        "reachable": a.get("reachable", True)})
+
+    # Only agents this machine actually has. A member list can name an agent that was
+    # deleted, and a team whose roster is half ghosts would draw boxes for nobody.
+    here = set(a["slug"] for a in agents)
+    groups = []
+    for g in teams_of(data):
+        members = [m for m in g["members"] if m in here]
+        groups.append({"id": g["id"], "name": g["name"], "members": members,
+                       "count": len(members),
+                       "stale": len(members) != len(g["members"])})
+    # The bucket that makes the map drawable at all. An agent in no team - which is every
+    # agent on a machine that had agents before it had teams - belongs here, is drawn, and
+    # can be connected exactly like any other.
+    grouped = set()
+    for g in groups:
+        grouped.update(g["members"])
+    unassigned = [a["slug"] for a in agents if a["slug"] not in grouped]
     return {"ok": status != BROKEN, "status": status, "configured": status == OK,
             "broken": status == BROKEN, "error": data.get("error", ""),
             "agents": agents, "links": links, "pending": pending,
             "isolated": isolated,
+            "teams": groups, "unassigned": unassigned,
             "shared_why": [[ln["from"], ln["to"]] for ln in links if ln["shared_why"]],
             "possible": max(0, len(agents) * (len(agents) - 1) // 2)}

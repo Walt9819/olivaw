@@ -642,8 +642,14 @@ def _listing_for(who, install_dir=None):
         return ("- (tu dueño no te ha dado ningún enlace con otro agente, así que por ahora "
                 "resuelves tú o se lo preguntas a él)")
     out = []
+    # Which team each colleague is in, and which one this agent is in itself. Context, not
+    # permission: it is the difference between "a colleague on my own product" and
+    # "somebody who works on a different one", which changes how a question is framed and
+    # nothing at all about whether it may be asked. The gate is still the link.
     for a in people:
         line = "- **%s** — slug `%s`" % (a["name"], a["slug"])
+        if a.get("team_name"):
+            line += " — equipo *%s*" % a["team_name"]
         if a["role"]:
             line += "\n  - Se encarga de: %s" % a["role"]
         if a.get("description"):
@@ -658,6 +664,16 @@ def _listing_for(who, install_dir=None):
         if not a["known"]:
             line += "\n  - (ya no está en este equipo)"
         out.append(line)
+    try:
+        _st, _data = teams.read(install_dir)
+        grp = teams.team_of(_data, who) if _st == teams.OK else None
+        mine = (grp or {}).get("name", "")
+    except Exception:  # noqa: BLE001
+        mine = ""
+    if mine:
+        out.append("\nTú estás en el equipo **%s**. Es cómo está organizada la casa, no "
+                   "un permiso: puedes escribir a cualquiera de la lista de arriba, esté "
+                   "en tu equipo o en otro." % mine)
     return "\n".join(out)
 
 

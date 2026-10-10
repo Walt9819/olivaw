@@ -345,6 +345,13 @@ def launch(port=DEFAULT_PORT, browser_path=None, profile=None, name=""):
     """Start this agent's browser detached. Idempotent: a live endpoint is left alone."""
     live = probe(cdp_url(port))
     if live["ok"]:
+        # Already open - which is the common case, and exactly when the labelling has to
+        # be (re)attached rather than skipped along with the launch.
+        try:
+            from . import browser_label
+            browser_label.ensure(port, name)
+        except Exception:  # noqa: BLE001
+            pass
         return {"ok": True, "launched": False, "browser": live["browser"],
                 "detail": "Ya había un navegador escuchando."}
     label, path = (None, browser_path) if browser_path else find_browser()
@@ -352,6 +359,17 @@ def launch(port=DEFAULT_PORT, browser_path=None, profile=None, name=""):
         return {"ok": False, "launched": False, "detail":
                 "No encontré Chrome, Edge, Brave ni Chromium en este equipo."}
     udd = data_dir(profile)
+    # Name, avatar and frame colour, written into the profile before the process starts:
+    # Chrome reads them once at startup, so stamping afterwards would not show until the
+    # next launch. Never fatal - a window with no colour is still a window.
+    try:
+        from . import browser_label
+        card_url = card_path(profile)
+        browser_label.stamp_profile(
+            profile, name, (profile or "default"),
+            home_url=("file:///" + card_url.replace("\\", "/").lstrip("/")) if card_url else "")
+    except Exception:  # noqa: BLE001
+        pass
     # Offset each agent's window so they do not land in one stack. Chrome only honours
     # this on a profile with no saved geometry, which is exactly right: the first launch
     # spreads them out, and after that wherever the owner drags it is where it stays.
@@ -385,6 +403,13 @@ def launch(port=DEFAULT_PORT, browser_path=None, profile=None, name=""):
         time.sleep(0.5)
         live = probe(cdp_url(port))
         if live["ok"]:
+            # The title is the half of the labelling that needs a live connection: it
+            # names every tab, including the ones the agent opens later.
+            try:
+                from . import browser_label
+                browser_label.ensure(port, name)
+            except Exception:  # noqa: BLE001
+                pass
             return {"ok": True, "launched": True, "browser": live["browser"],
                     "label": label, "data_dir": udd, "port": int(port),
                     "detail": "Navegador abierto y escuchando."}
@@ -422,8 +447,27 @@ def status(profile=None, hermes=None):
         # Non-empty means this agent is still sharing a window with those agents, i.e. an
         # install from before the split. Pressing "enable" moves it to its own.
         "shared_with": sharing(profile) if configured else [],
+        # How to recognise this agent's window among six identical Chromes.
+        "look": _look(profile),
         "detail": live.get("detail", ""),
     }
+
+
+def _look(profile=None):
+    """The colour and the name this agent's window wears, for the console to show.
+
+    Read-only and never assigns a new one: merely LOOKING at the browser panel should not
+    hand out a colour slot to an agent, because a slot handed out is a slot taken, and the
+    agent that actually opens a window next would get a different one.
+    """
+    try:
+        from . import browser_label
+        slug = (profile or "default").lower()
+        look = browser_label.look_for(slug, assign=False)
+        return {"hex": look["hex"], "labelling": browser_label.labelling_on(),
+                "separator": browser_label.SEP}
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 def enable(profile=None, hermes=None, port=None, log=None, name=""):

@@ -693,6 +693,263 @@ def test_a_card_reaches_the_agents_that_may_write_to_it():
 
 
 
+# ── named teams: grouping that cannot become a wall ────────────────────────
+def test_a_team_never_changes_a_single_permission():
+    """The one that matters.
+
+    A grouping feature is the perfect disguise for an accidental narrowing: the owner is
+    *organising*, and if the act of filing an agent also cut its links she would have no
+    reason to connect the two. So every team operation is run against a machine with a
+    real map, and the set of allowed pairs is compared before and after. It must be
+    identical every single time.
+    """
+    with Sandbox() as sb:
+        teams.adopt(ROSTER, sb.dir)
+        teams.remove_link("daneel", "heraldo", install_dir=sb.dir)
+        before = sb.allowed()
+        ok(len(before) > 0, "the machine starts with real permissions")
+
+        res = teams.set_team(name="iGalenus", roster=ROSTER, install_dir=sb.dir)
+        gid = res["id"]
+        eq(sb.allowed(), before, "creating a team changes nothing")
+
+        teams.assign("default", gid, install_dir=sb.dir)
+        teams.assign("heraldo", gid, install_dir=sb.dir)
+        eq(sb.allowed(), before, "putting two agents in it changes nothing")
+
+        other = teams.set_team(name="Aparte", roster=ROSTER, install_dir=sb.dir)["id"]
+        teams.assign("daneel", other, install_dir=sb.dir)
+        # daneel -> heraldo is the pair that was REMOVED, and daneel <-> default is one
+        # that survives across two different teams. Both have to stay exactly as they are.
+        eq(sb.allowed(), before, "and splitting them across two teams changes nothing")
+        ok(teams.allows("daneel", "default", install_dir=sb.dir)[0],
+           "a link across two teams still works")
+        ok(not teams.allows("daneel", "heraldo", install_dir=sb.dir)[0],
+           "and one that was cut stays cut")
+
+        teams.set_team(other, name="Otro nombre", roster=ROSTER, install_dir=sb.dir)
+        eq(sb.allowed(), before, "renaming changes nothing")
+
+        teams.assign("daneel", "", install_dir=sb.dir)
+        eq(sb.allowed(), before, "taking an agent out of every team changes nothing")
+
+        teams.remove_team(gid, install_dir=sb.dir)
+        eq(sb.allowed(), before, "and deleting a team changes nothing")
+
+        _st, data = teams.read(sb.dir)
+        eq(len(data["links"]), 2, "every link is still on file")
+
+
+def test_creating_a_team_on_a_mapless_machine_does_not_cut_anything():
+    """The same trap `set_card` documents, and the reason both take a roster.
+
+    On a machine with no teams.json everything is allowed. Merely SAVING one ends legacy
+    mode, and a file with groups and no links reads as "nobody may call anybody" - so the
+    owner would have typed a team name and silenced her whole machine.
+    """
+    with Sandbox() as sb:
+        eq(sb.allowed(), set(PAIRS), "a map-less machine allows everything")
+        res = teams.set_team(name="Ventas", roster=ROSTER, install_dir=sb.dir)
+        ok(res["ok"], "creating the first team works")
+        ok(res["adopted"], "and says it wrote the existing connections down")
+        eq(sb.allowed(), set(PAIRS), "everything that worked still works")
+        ok(os.path.exists(sb.path("teams.json")), "the machine is now mapped")
+
+    with Sandbox() as sb:
+        # Same on the other door into this: assigning before any team exists.
+        res = teams.assign("daneel", "", roster=ROSTER, install_dir=sb.dir)
+        ok(res["ok"] and res["adopted"], "assigning on a map-less machine adopts first")
+        eq(sb.allowed(), set(PAIRS), "and cuts nothing")
+
+    with Sandbox() as sb:
+        # Without a roster there is nothing to adopt FROM, so refusing is the only safe
+        # answer - writing the file anyway is what would have cut every link.
+        try:
+            teams.set_team(name="Ventas", install_dir=sb.dir)
+            ok(False, "a team write with no roster is refused")
+        except ValueError:
+            ok(True, "a team write with no roster is refused")
+        ok(not os.path.exists(sb.path("teams.json")), "and nothing was written")
+
+
+def test_an_agent_belongs_to_one_team_at_a_time():
+    with Sandbox() as sb:
+        teams.adopt(ROSTER, sb.dir)
+        a = teams.set_team(name="Uno", roster=ROSTER, install_dir=sb.dir)["id"]
+        b = teams.set_team(name="Dos", roster=ROSTER, install_dir=sb.dir)["id"]
+
+        teams.assign("daneel", a, install_dir=sb.dir)
+        _st, data = teams.read(sb.dir)
+        eq(teams.team_of(data, "daneel")["id"], a, "it is in the first team")
+
+        teams.assign("daneel", b, install_dir=sb.dir)
+        _st, data = teams.read(sb.dir)
+        eq(teams.team_of(data, "daneel")["id"], b, "moving it puts it in the second")
+        groups = {g["id"]: g["members"] for g in data["teams"]}
+        eq(groups[a], [], "and takes it out of the first")
+
+        teams.assign("daneel", "", install_dir=sb.dir)
+        _st, data = teams.read(sb.dir)
+        eq(teams.team_of(data, "daneel"), None, "an empty team means no team")
+        eq({g["id"]: g["members"] for g in data["teams"]}[b], [],
+           "and it is out of that one too")
+
+        # A hand-edited file can claim an agent twice. Two answers to "which team is it
+        # in?" would be two answers everywhere downstream, so the first one wins and the
+        # rest is dropped on read.
+        with io.open(sb.path("teams.json"), encoding="utf-8") as fh:
+            raw = json.load(fh)
+        raw["teams"] = [{"id": "x", "name": "X", "members": ["daneel", "heraldo"]},
+                        {"id": "y", "name": "Y", "members": ["daneel"]}]
+        with io.open(sb.path("teams.json"), "w", encoding="utf-8") as fh:
+            json.dump(raw, fh)
+        _st, data = teams.read(sb.dir)
+        eq(teams.team_of(data, "daneel")["id"], "x", "a doubled agent lands in the first")
+        eq({g["id"]: g["members"] for g in data["teams"]}["y"], [],
+           "and is not left in the second as well")
+
+
+def test_deleting_a_team_loses_nothing():
+    with Sandbox() as sb:
+        teams.adopt(ROSTER, sb.dir)
+        gid = teams.set_team(name="Se va", roster=ROSTER, install_dir=sb.dir)["id"]
+        teams.assign("daneel", gid, install_dir=sb.dir)
+        teams.assign("heraldo", gid, install_dir=sb.dir)
+        before = sb.allowed()
+
+        teams.remove_team(gid, install_dir=sb.dir)
+        st = teams.state(ROSTER, install_dir=sb.dir)
+        eq(st["teams"], [], "the team is gone")
+        eq(sorted(st["unassigned"]), ["daneel", "default", "heraldo"],
+           "and every one of its agents is simply unfiled")
+        eq(len(st["agents"]), 3, "no agent was lost")
+        eq(sb.allowed(), before, "and no permission moved")
+
+        try:
+            teams.remove_team("no-existe", install_dir=sb.dir)
+            ok(False, "deleting a team that is not there is refused")
+        except ValueError:
+            ok(True, "deleting a team that is not there is refused")
+
+
+def test_an_agent_in_no_team_is_still_on_the_map():
+    """The bug this feature was asked for.
+
+    An agent that existed before teams did has no team by definition. If that took it off
+    the diagram, the owner could not connect it to anything - the map would have been
+    impossible to draw for exactly the agents that needed it.
+    """
+    with Sandbox() as sb:
+        teams.adopt(ROSTER, sb.dir)
+        gid = teams.set_team(name="Nuevos", roster=ROSTER, install_dir=sb.dir)["id"]
+        teams.assign("default", gid, install_dir=sb.dir)
+
+        st = teams.state(ROSTER, install_dir=sb.dir)
+        eq(len(st["agents"]), 3, "every agent is in the state, team or no team")
+        eq(sorted(st["unassigned"]), ["daneel", "heraldo"],
+           "the unfiled ones are named as a group of their own")
+        by = {a["slug"]: a for a in st["agents"]}
+        eq(by["default"]["team_name"], "Nuevos", "a filed agent carries its team")
+        eq(by["daneel"]["team"], "", "an unfiled one carries an empty team, not nothing")
+        ok("daneel" in [a["slug"] for a in st["agents"]],
+           "and is still a row the console can draw and connect")
+
+        # And it really can be connected, which is the half that was impossible.
+        teams.remove_link("daneel", "heraldo", install_dir=sb.dir)
+        teams.set_link("daneel", "heraldo", why="porque sí", both=True,
+                       install_dir=sb.dir)
+        ok(teams.allows("daneel", "heraldo", install_dir=sb.dir)[0],
+           "an agent with no team can still be given a link")
+
+
+def test_what_the_console_is_shown():
+    with Sandbox() as sb:
+        teams.adopt(ROSTER, sb.dir)
+        gid = teams.set_team(name="Investigación", roster=ROSTER,
+                             install_dir=sb.dir)["id"]
+        eq(gid, "investigacion", "the id is readable, with the accents folded out")
+        again = teams.set_team(name="Investigación", roster=ROSTER,
+                               install_dir=sb.dir)["id"]
+        ok(again != gid, "a second team with the same name gets its own id")
+
+        teams.assign("heraldo", gid, install_dir=sb.dir)
+        st = teams.state(ROSTER, install_dir=sb.dir)
+        g = [x for x in st["teams"] if x["id"] == gid][0]
+        eq(g["name"], "Investigación", "the name is the owner's own words")
+        eq(g["members"], ["heraldo"], "with its members")
+        eq(g["count"], 1, "counted")
+        ok(not g["stale"], "and nothing missing")
+
+        # A member list can name an agent that has been deleted since. Drawing a box for
+        # nobody is worse than quietly leaving it out - but the console is told, because
+        # a team whose roster is half ghosts is something the owner may want to tidy.
+        st2 = teams.state([a for a in ROSTER if a["slug"] != "heraldo"],
+                          install_dir=sb.dir)
+        g2 = [x for x in st2["teams"] if x["id"] == gid][0]
+        eq(g2["members"], [], "a departed agent is not drawn")
+        ok(g2["stale"], "but the team says it is missing somebody")
+
+        try:
+            teams.set_team("no-existe", name="X", roster=ROSTER, install_dir=sb.dir)
+            ok(False, "renaming a team that is not there is refused")
+        except ValueError:
+            ok(True, "renaming a team that is not there is refused")
+        try:
+            teams.set_team(name="   ", roster=ROSTER, install_dir=sb.dir)
+            ok(False, "a team with no name is refused")
+        except ValueError:
+            ok(True, "a team with no name is refused")
+
+
+def test_drawing_the_map_keeps_the_filing():
+    """`adopt()` rewrites the LINKS. Making it also forget the groups would be a second
+    decision nobody asked for."""
+    with Sandbox() as sb:
+        teams.adopt(ROSTER, sb.dir)
+        gid = teams.set_team(name="Queda", roster=ROSTER, install_dir=sb.dir)["id"]
+        teams.assign("daneel", gid, install_dir=sb.dir)
+        _st, data = teams.read(sb.dir)
+        teams.adopt(ROSTER, sb.dir, cards=data.get("cards"), groups=data.get("teams"))
+        _st, after = teams.read(sb.dir)
+        eq(teams.team_of(after, "daneel")["id"], gid, "the agent is still in its team")
+
+
+def test_the_skill_says_which_side_of_the_house_a_colleague_is_on():
+    with Sandbox() as sb:
+        teams.adopt(ROSTER, sb.dir)
+        gid = teams.set_team(name="Comercial", roster=ROSTER, install_dir=sb.dir)["id"]
+        teams.assign("heraldo", gid, install_dir=sb.dir)
+        teams.assign("default", gid, install_dir=sb.dir)
+
+        people = teams.neighbours("default", ROSTER, install_dir=sb.dir)
+        by = {p["slug"]: p for p in people}
+        eq(by["heraldo"]["team_name"], "Comercial", "a colleague carries its team")
+        eq(by["daneel"]["team_name"], "", "one with no team carries none")
+        ok("daneel" in by, "and is still listed as callable")
+
+        text = intercom._listing_for("default", install_dir=sb.dir)
+        ok("Comercial" in text, "the skill names the team")
+        # The sentence that keeps it from being read as a rule. An agent told "your team
+        # is X" with nothing else would reasonably infer that X is the limit.
+        ok("no un permiso" in text or "no es un permiso" in text,
+           "and says plainly that it is not a permission")
+        ok("daneel" in text, "a colleague outside the team is still in the list")
+
+
+def test_how_many_teams_is_too_many():
+    with Sandbox() as sb:
+        teams.adopt(ROSTER, sb.dir)
+        for i in range(teams.MAX_TEAMS):
+            teams.set_team(name="Equipo %d" % i, roster=ROSTER, install_dir=sb.dir)
+        try:
+            teams.set_team(name="Uno de más", roster=ROSTER, install_dir=sb.dir)
+            ok(False, "there is a cap on teams")
+        except ValueError:
+            ok(True, "there is a cap on teams")
+        _st, data = teams.read(sb.dir)
+        eq(len(data["teams"]), teams.MAX_TEAMS, "and it holds on read too")
+
+
 def main():
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

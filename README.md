@@ -529,6 +529,131 @@ Worth knowing: the Baileys bridge is an unofficial WhatsApp Web client, so sever
 numbers from one machine carries more ban exposure than one. The official Cloud API
 (`whatsapp_cloud`) is the ToS-clean alternative and can run alongside.
 
+#### Whose window is this?
+
+Each agent gets its own Chrome window, and until now the only thing that said which was
+which was a card page opened as the first tab. That works for about a minute: the moment
+the agent navigates — the entire point of giving it a browser — the window is an anonymous
+Chrome among six anonymous Chromes. Measured on the author's machine before this existed —
+six agent windows open, and half of them had already lost the thread:
+
+```
+Ventana de Analecta - Google Chrome          <- still identifiable
+Ventana de Ábaco - Google Chrome             <- still identifiable
+Ventana de Forja - Google Chrome             <- still identifiable
+Online C Compiler - online editor            <- whose?
+Examen Oftalmológico … - Google Gemini       <- whose?
+¿En dónde están tus aliados estratégicos?    <- whose?
+```
+
+`src/wizard/browser_label.py` gives every window three marks, because no single one covers
+every place you look:
+
+* **A colour.** The frame and tab strip are tinted per agent (`browser.theme.user_color`),
+  with the slot written down in `browser-labels.json` so nobody's colour moves the day a
+  new agent is added. This is the one that works in Alt-Tab thumbnails — you recognise it
+  without reading.
+* **A name and avatar on the profile** — what the profile chip, Chrome's own task manager
+  and the Windows jump list call this window.
+* **The window title**: `Daneel · Gmail` instead of `Gmail`. The only one of the three that
+  reaches taskbar hover text and Alt-Tab labels, and the one actually asked for: a name,
+  not a colour to decode.
+
+Two things were tried first and do not work, both verified rather than assumed. A
+`--load-extension` content script is the obvious answer and **Chrome 154 ignores the flag
+outright** — the extension never loads and nothing says so. Writing `Local State` from
+scratch is the other, and it makes Chrome **abort at startup**
+(`bad_optional_access`), so the stamp only ever edits the handful of keys it needs and
+leaves the rest of the file exactly as Chrome wrote it.
+
+A third rule had to be learned from the result rather than the docs: **a profile is only
+stamped while its Chrome is closed.** Chrome keeps both files in memory and rewrites them
+periodically and on exit, so an edit made underneath a live window is thrown away at the
+next flush — measured on a real machine, six running profiles stamped at once kept, between
+them, two colours, one name and nothing else. `launch()` is right by construction (it
+stamps just before starting the process, which is also the only moment Chrome reads them);
+the supervisor's pass probes first and reports `stamp_deferred` rather than writing into a
+file that is about to be overwritten.
+
+The title has no flag, so it comes from the page, over the DevTools port each window is
+already listening on for the agent.  `Page.addScriptToEvaluateOnNewDocument` is what
+survives a navigation and it is scoped to the CDP **session** — a connect-stamp-disconnect
+pass works once and then silently stops at the next navigation. So Olivaw holds one
+browser-level session per window with `Target.setAutoAttach`, which costs three commands
+per new tab and no polling. There is no WebSocket library on a machine that has never run
+`pip`, so the few hundred bytes of RFC 6455 a localhost client needs ship in that module,
+tested against a real socket — including the case that bit during development: **an idle
+read timing out is Chrome having nothing to say, not a dead connection.**
+
+The cost, stated plainly: `document.title` really is changed, so the agent sees
+`Daneel · Gmail` too, as would a page that reads its own title. That is the price of the
+only mechanism Chrome leaves open; `OLIVAW_BROWSER_LABEL=0` turns the title half off and
+keeps the colour and the name. Only profiles Olivaw owns are touched — the owner's
+everyday Chrome has no `--user-data-dir` of ours and is left alone.
+
+#### Teams: grouping that cannot become a wall
+
+Six agents fit on one diagram. A dozen is a hairball, and the owner's real structure — this
+product here, that product there, her own assistant off to one side — was nowhere in the
+picture. So agents can now be filed into named **teams** (`teams` in `teams.json`), created
+and renamed from **El equipo**, with a selector on every agent in the panel and on its own
+page.
+
+A team is a label, a band on the map, and a line in each agent's skill naming which
+colleagues are on its own side of the house. It is **not** a permission, and that is
+load-bearing: `allows()` never reads a team, so creating one, renaming one, deleting one or
+moving an agent between them cannot change who may call whom. A grouping feature that
+silently cut cross-team links would be the worst thing to ship into a machine that already
+works, because the owner would be *organising* and the result would be agents gone quiet.
+`test_a_team_never_changes_a_single_permission` compares the whole set of allowed pairs
+before and after every team operation.
+
+Two consequences follow, and both were bugs before this existed:
+
+- **An agent in no team is still on the map.** It sits in `unassigned` — "Sin equipo" — is
+  drawn, and can be connected like any other. An agent that existed before teams did has no
+  team *by definition*; if that had taken it off the diagram, the one agent you could never
+  connect would be the one most likely to need it.
+- **Creating the first team adopts the live mesh.** On a machine with no `teams.json`
+  everything is allowed, and merely *saving* one ends legacy mode — a file with groups and no
+  links reads as "nobody may call anybody". So `set_team` and `assign` take the roster and
+  write today's connections down in the same breath, exactly as `set_card` already did. The
+  console says so. Without a roster they refuse rather than write.
+
+Deleting a team deletes nothing: its members land in "Sin equipo", every link stays.
+
+#### Scheduled routines that speak when they have something to say
+
+Every cron delivery arrived wearing `Cronjob Response: <name>` / `(job_id: …)` / `-------` and
+a closing sentence in English, and a watchdog polling six platforms every six hours reported
+"all fine" four times a day. Hermes' only knob is `cron.wrap_response`, which is per profile
+and all-or-nothing — "quiet for the health check, labelled for the invoice reminder" is not
+expressible, and silence-on-success is not expressible at all.
+
+So the decision moved onto the job. **Rutinas automáticas** now lists every routine on the
+machine, per agent, each with two switches written into Hermes' own `jobs.json`:
+
+- `olivaw_clean` — deliver the body alone, no header and no footer;
+- `olivaw_only_on_error` — say nothing at all when the run went fine.
+
+**A failed run always gets its header back**, whatever `clean` says: when the message *is* the
+error, "which job was this" is the most useful line in it. That rule is what makes "quiet" safe
+to leave on.
+
+`src/wizard/cron_patch.py` is what makes Hermes read them — the same marker-delimited,
+exact-anchor, idempotent contract as `wa_patch.py`, plus one guard that file never needed: the
+result is **compiled before it is written**. `bridge.js` failing to parse stops WhatsApp;
+`cron/scheduler.py` failing to parse stops every scheduled job on the machine *and* is imported
+by the gateway at boot. The patch is applied only on machines that actually use a switch
+(`cronjobs.in_use`), re-applied by the supervisor after each update poll, and removal is
+byte-exact. When it is absent the two keys are simply inert — the old noisy message, not a
+broken job. Covered by `tools/test_cronjobs.py`, which lifts the injected blocks back out of
+the patched file and executes them, so the tests run the lines that ship.
+
+The panel reads and tunes; it never creates, pauses or deletes a job. That belongs to
+`hermes cron`, which owns the scheduling grammar, the injection scanner and the one-shot
+dispatch claim — a second writer of `jobs.json` is how a paused job starts firing again.
+
 #### A customer sees the answer, never the work
 
 Hermes files WhatsApp under its `TIER_MEDIUM` display defaults — tool progress on, mid-turn

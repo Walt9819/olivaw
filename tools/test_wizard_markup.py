@@ -108,16 +108,100 @@ def main():
     check("an attachment is uploaded by name and bytes, and the turn carries the ids",
           'api("talk/attach"' in src and "files: ids || []" in src)
 
+    css = io.open(os.path.join(ROOT, "src", "wizard", "web", "app.css"),
+                  encoding="utf-8").read()
+
+    print("\n=== the browser panel says how to recognise this agent's window ===")
+    check("the panel shows the window's colour", "brwLook(st)" in src
+          and 'class="brwswatch"' in src)
+    check("and it is styled", ".brwswatch{" in css and ".brwlook{" in css)
+    # The colour comes from the server, which reads the slot that was actually assigned.
+    # A colour chosen in the page would be a swatch that matches no window.
+    check("the colour is the server's, not one the page invented",
+          "look.hex" in src and "#" not in src[src.index("function brwLook"):
+                                               src.index("function paintBrw")]
+          .replace("'#'", ""))
+    check("it says the title carries the name too, and which name",
+          "targetName()" in src[src.index("function brwLook"):
+                                src.index("function paintBrw")])
+    # An owner who turned the title off must not be told it is on.
+    check("and says so when the title half is switched off",
+          "look.labelling" in src)
+
+    print("\n=== agents can be grouped into named teams ===")
+    check("the teams panel is rendered", "teamGroups" in rendered)
+    check("and the create box with it", "tmGNew" in rendered and "tmGAdd" in rendered)
+    check("every agent carries a way to move it", 'class="tmAsg"' in src)
+    check("the per-agent page has its own team control", "agTeam" in rendered)
+    # The map has to DRAW the teams, not just list them: a panel that files agents into
+    # groups the picture ignores is a filing cabinet, not a map.
+    check("the map draws a band per team",
+          "tmteam" in src and "hulls + wires + boxes" in src)
+    check("behind the wires, so a link is never hidden by a band",
+          src.index("var hulls") < src.index("'</defs>' + hulls"))
+    check("and the bands have styles to draw with", ".tmteam{" in css)
+    check("each node can wear its team's colour", ".tmnd.tc0 rect{" in css)
+    # Same specificity, so order decides. "Which team is it in" must never outrank "you
+    # are hovering it", "it is selected", or "it is armed to be connected".
+    check("but never over what the owner is doing to it right now",
+          css.index(".tmnd.tc0 rect{") < css.index(".tmnd:hover rect{")
+          and css.index(".tmnd.tc0 rect{") < css.index(".tmnd.arm rect{"))
+    check("teammates are placed next to each other on the ring",
+          "function tmOrder(" in src and "tmOrder(st)" in src)
+    # The one invariant worth a markup test: nothing on this panel may write a link.
+    grp = src[src.index("function tmGroupsHtml"):src.index("function tmName")]
+    check("the teams panel cannot create a connection",
+          "teams/link" not in grp and "teams/unlink" not in grp)
+    check("an agent in no team is still a group the page draws",
+          "Sin equipo" in src and "unassigned" in src)
+
+    print("\n=== the scheduled routines can be told to be quiet ===")
+    check("the panel is rendered", "cronBox" in rendered)
+    check("and painted", 'el("cronBox")' in src and "paintCron()" in src)
+    # Two switches, and they must stay two: one checkbox that meant both would make
+    # "don't shout the header at me" also mean "don't tell me it ran", which is a
+    # different decision with a different risk.
+    check("there are two switches, not one",
+          'cjSwitch(job, prof, "clean"' in src and 'cjSwitch(job, prof, "only"' in src)
+    check("each one sends the field the server reads",
+          '"clean" : "only_on_error"' in src)
+    check("a job is named by its id and its agent, never by a path the page chose",
+          'var body = { profile: c.getAttribute("data-p"), id: c.getAttribute("data-i") };'
+          in src)
+    # The page cannot know the answer it is about to get: the flag may be refused, and
+    # the patch state travels with the reply. Painting from the server's answer is what
+    # keeps a ticked box and a working switch the same thing.
+    check("the row repaints from the server's answer, not from the click",
+          "paintCron();" in src and "c.checked = !c.checked" in src)
+    check("the panel never offers to create or delete a job",
+          'api("cron/create"' not in src and 'api("cron/remove"' not in src)
+    # A warning about a patch nobody needs is noise with a yellow border, and it would be
+    # the first thing every owner saw on a page about her routines.
+    check("it only warns about the patch when a switch depends on it",
+          "wanted && !p.active" in src)
+
     print("\n=== it talks to endpoints the server actually serves ===")
     server = io.open(os.path.join(ROOT, "src", "wizard", "wizard_server.py"),
                      encoding="utf-8").read()
     called = sorted(set(re.findall(r'api\("channel/([a-z0-9-]+)"', src)))
     plain = sorted(set(re.findall(
-        r'api\("((?:workspace|telegram|policy|browser|images|talk)/[a-z-]+)"', src)))
+        r'api\("((?:workspace|telegram|policy|browser|images|talk|cron)/[a-z-]+)"', src)))
     routed = set(re.findall(r'route == "([a-z0-9/_-]+)"', server))
     missing_routes = [c for c in plain if c not in routed]
     check("every workspace/telegram/talk route the UI calls exists on the server",
           not missing_routes, "unrouted: " + ", ".join(missing_routes))
+    # These do not go through api() directly - teamSave()/agtSave() take the route as
+    # their last argument - so the generic sweep above cannot see them.
+    team_routes = sorted(set(re.findall(r'"(teams/[a-z-]+)"', src)))
+    check("the page calls at least the team routes it has buttons for",
+          len(team_routes) >= 8, ", ".join(team_routes))
+    # Most of them are dispatched from one `route in (...)` tuple rather than from a
+    # `route == "x"` line, so the sweep's own regex cannot see them.
+    served = routed | set(re.findall(r'"(teams/[a-z-]+)"', server))
+    unrouted = [r for r in team_routes if r not in served]
+    check("every teams/* route the page calls exists on the server",
+          not unrouted, "unrouted: " + ", ".join(unrouted))
+
     handled = set(re.findall(r'sub == "([a-z0-9-]+)"', server))
     unknown = [c for c in called if c not in handled]
     check("no channel endpoint is called that the server does not handle",
