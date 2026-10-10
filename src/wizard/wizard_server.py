@@ -24,26 +24,40 @@ import threading
 import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 
 # allow running as a script (python src/wizard/wizard_server.py) or as a module
 if __package__ in (None, ""):
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    _HERE = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, os.path.dirname(_HERE))
+    # And take THIS directory back off. Python puts a script's own directory first on
+    # sys.path, which here is src/wizard - a directory that contains numbers.py. From
+    # then on stdlib `numbers` resolves to this package's module, which cannot be
+    # imported outside its package, so every library that imports `numbers` fails. The
+    # failure is silent where it matters: Pillow swallows a plugin that will not import,
+    # registers no PNG decoder, and simply stops being able to open images - which is how
+    # an uploaded avatar came to be stored exactly as it arrived, original container and
+    # all, instead of being decoded and re-encoded by us. (The same shadow is why
+    # importing this file printed a warning about _decimal being initialised twice.)
+    # Nothing imports a wizard module bare - they are all `from . import x` or
+    # `from wizard import x` - so removing it costs nothing.
+    sys.path[:] = [d for d in sys.path if os.path.abspath(d or ".") != _HERE]
     from wizard import updates as updates_mod
-    from wizard import (agents_registry, browser_setup, channels, checks, config_writer,
-                        browser_label, connections, context_policy, cron_patch,
-                        cronjobs, hermes_ctl, image_setup, numbers, obsidian,
-                        proposals, providers, rescue, selfcare, session_health, talk,
-                        telegram_health, telegram_setup, usecases)
+    from wizard import (agents_registry, avatars, browser_setup, channels, checks,
+                        config_writer, browser_label, connections, context_policy,
+                        cron_patch, cronjobs, hermes_ctl, image_setup, numbers, obsidian,
+                        proposals, providers, renaming, rescue, selfcare, session_health,
+                        talk, telegram_health, telegram_setup, usecases)
     from wizard import workspace as wsdir   # aliased: `workspace` is a local
                                             # variable name elsewhere in this file
     from wizard.procutil import http_json, which
 else:
     from . import updates as updates_mod
-    from . import (agents_registry, browser_setup, channels, checks, config_writer,
-                   browser_label, connections, context_policy, cron_patch, cronjobs,
-                   hermes_ctl, image_setup, numbers, obsidian, proposals, providers,
-                   rescue, selfcare, session_health, talk, telegram_health,
-                   telegram_setup, usecases)
+    from . import (agents_registry, avatars, browser_setup, channels, checks,
+                   config_writer, browser_label, connections, context_policy, cron_patch,
+                   cronjobs, hermes_ctl, image_setup, numbers, obsidian, proposals,
+                   providers, renaming, rescue, selfcare, session_health, talk,
+                   telegram_health, telegram_setup, usecases)
     from . import workspace as wsdir        # aliased: see above
     from .procutil import http_json, which
 
@@ -258,6 +272,17 @@ def agents_snapshot():
     # principal" would leave her reading two names for the same agent on one screen - the
     # exact confusion that override exists to end.
     names = intercom.config().get("names") or {}
+    # Give every agent its colour before anyone draws a face with it. A READ must not
+    # hand out a slot (browser_label.slot_for), so without this every agent that has
+    # never had its browser opened honestly answers "slot 0" - and the sidebar showed
+    # seven faces in the same blue, which is precisely what the colours exist to stop.
+    # Assigning for agents that actually exist is the case assign_all is for.
+    try:
+        browser_label.assign_all(
+            ["default"] + [a.get("slug") for a in agents_registry.list_agents(INSTALL_DIR)],
+            INSTALL_DIR)
+    except Exception:  # noqa: BLE001
+        pass
     default = {
         "slug": "default", "name": names.get("default") or "Agente principal",
         "profile": "default",
@@ -267,6 +292,10 @@ def agents_snapshot():
         "bridge_up": _bridge_up(agents_registry.BASE_PORT),
         "owners": owners,
     }
+    # The face rides with the row rather than in a call of its own: the sidebar draws
+    # every agent on every repaint, and a second round trip per agent would make the
+    # list arrive in pieces. It is four short keys, not the image.
+    default["look"] = avatars.look("default", default["name"], INSTALL_DIR)
     extra = []
     for a in agents_registry.list_agents(INSTALL_DIR):
         slug = a.get("slug")
@@ -281,6 +310,7 @@ def agents_snapshot():
         else:
             row["gateway_running"] = None
             row["missing_profile"] = True     # code/profile deleted -> restore candidate
+        row["look"] = avatars.look(slug, row.get("name") or slug, INSTALL_DIR)
         extra.append(row)
     return {"default": default, "extra": extra}
 
@@ -502,9 +532,47 @@ class Handler(BaseHTTPRequestHandler):
         tok = self.headers.get("X-Wizard-Token", "")
         return secrets.compare_digest(tok, TOKEN)
 
+    def _avatar(self):
+        """GET /api/avatar?slug=X&t=TOKEN&v=N - the one image route in this server.
+
+        A GET because it is an <img src>, and the only reason that is acceptable is that
+        the page itself is already opened with ?t= (see _json's Referrer-Policy note).
+        Same two gates as every POST - loopback Host, and the token - plus:
+
+        * the bytes are re-sniffed in avatars.read() and a file that no longer looks like
+          an image is not served at all;
+        * nosniff, because this is the owner's token-bearing origin and a mislabelled
+          response that the browser decided was HTML would run there;
+        * ?v= changes whenever the picture does, so it is cached hard and still never
+          shows the previous face.
+        """
+        if not self._local_host():
+            self.send_error(403)
+            return
+        q = parse_qs(urlparse(self.path).query)
+        if not secrets.compare_digest((q.get("t") or [""])[0], TOKEN):
+            self.send_error(403)
+            return
+        got = avatars.read((q.get("slug") or [""])[0], INSTALL_DIR)
+        if not got:
+            self.send_error(404)
+            return
+        data, mime = got
+        self.send_response(200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Security-Policy", "default-src 'none'; sandbox")
+        self.send_header("Cache-Control", "private, max-age=86400")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.end_headers()
+        self.wfile.write(data)
+
     def do_GET(self):
         path = self.path.split("?", 1)[0]
-        if path == "/" or path.startswith("/web") or path in ("/app.css", "/app.js"):
+        if path == "/api/avatar":
+            self._avatar()
+        elif path == "/" or path.startswith("/web") or path in ("/app.css", "/app.js"):
             self._static(self.path if path != "/" else "index.html")
         else:
             self._static(self.path)
@@ -559,6 +627,27 @@ class Handler(BaseHTTPRequestHandler):
 
         if route == "agent/action":
             return self._agent_action(body.get("slug", ""), body.get("action", ""))
+
+        # A name is carried in four places at once - see wizard/renaming.py. Renaming
+        # from here is the only way all four move together, which is why the console no
+        # longer has a box that edits just one of them.
+        if route == "agent/rename":
+            return self._agent_rename(body)
+
+        # The face. Three shapes: a picture she uploaded, an emoji, or initials in the
+        # agent's own colour (which is the colour its Chrome window wears).
+        if route == "avatar/set":
+            slug = (body.get("slug") or "").strip().lower()
+            if body.get("data"):
+                res = avatars.set_picture(slug, body.get("data", ""), INSTALL_DIR)
+            elif body.get("clear"):
+                res = avatars.clear(slug, INSTALL_DIR)
+            else:
+                res = avatars.set_mark(slug, emoji=body.get("emoji", ""),
+                                       color=body.get("color", ""),
+                                       install_dir=INSTALL_DIR)
+            # Deliberately NOT the whole agents snapshot: see _agent_rename.
+            return res
 
         if route == "check":
             what = body.get("what")
@@ -1153,6 +1242,39 @@ class Handler(BaseHTTPRequestHandler):
             names.pop(slug, None)          # empty box = go back to the detected name
         return intercom.save_config({"names": names})
 
+    def _agent_rename(self, body):
+        """Rename, then make the machine act on it while she is still looking.
+
+        Three things follow a rename and none of them is cosmetic: every other agent's
+        skill names this one, so the mesh is rewritten; the gateway holds the old name in
+        its environment, so it is reloaded; and the console repaints from the snapshot
+        this returns rather than from what it hoped happened.
+        """
+        slug = (body.get("slug") or "").strip().lower()
+        ws = ""
+        if slug == "default":
+            ws = _default_workspace()
+        res = renaming.rename(slug, body.get("name", ""), install_dir=INSTALL_DIR,
+                              hermes=which("hermes"), workspace=ws)
+        try:
+            for r in intercom.ensure_all(install_dir=INSTALL_DIR):
+                if r.get("changed"):
+                    prof = r.get("profile") or "default"
+                    _queue_gateway_reload(None if prof == "default" else prof)
+        except Exception as e:  # noqa: BLE001
+            res.setdefault("failed", []).append("avisar a los dem\u00e1s (%s)" % e)
+        # The .env only reaches a running gateway on a restart, so the agent keeps
+        # signing with the old name until this lands. Queued, not awaited: it takes
+        # seconds and she should not watch a spinner for it.
+        _queue_gateway_reload(None if res.get("is_default") else res.get("profile"))
+        # The reply carries the new name and nothing else. Returning agents_snapshot()
+        # here looked tidier and made every rename wait for a full inventory of the
+        # machine - gateway status per profile, a pairing list per profile, a probe per
+        # bridge port - which on a slow CLI is tens of seconds of spinner for a write
+        # that already finished. The console patches the agent it just renamed and picks
+        # the rest up on its next ordinary refresh.
+        return res
+
     def _intercom_save(self, body):
         """Write the owner's limits, then report the state she should actually see."""
         updates = {}
@@ -1433,6 +1555,10 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:  # noqa: BLE001
                     pass
             agents_registry.remove(slug, INSTALL_DIR)
+            try:
+                avatars.forget(slug, INSTALL_DIR)
+            except Exception:  # noqa: BLE001
+                pass
             return {"ok": True, "detail": "Agente eliminado por completo."}
         return {"ok": False, "detail": "Acción desconocida."}
 

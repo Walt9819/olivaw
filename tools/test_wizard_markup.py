@@ -180,6 +180,74 @@ def main():
     check("it only warns about the patch when a switch depends on it",
           "wanted && !p.active" in src)
 
+    print("\n=== the roster: a face, a name you can change, a pill to switch halves ===")
+    html = io.open(os.path.join(ROOT, "src", "wizard", "web", "index.html"),
+                   encoding="utf-8").read()
+    css = io.open(os.path.join(ROOT, "src", "wizard", "web", "app.css"),
+                  encoding="utf-8").read()
+    check("the shell has somewhere to put the pill", 'id="navPill"' in html)
+    check("and it is hidden with the tree during setup",
+          'if (el("navPill")) el("navPill").hidden = !con;' in src)
+    check("the pill has exactly two halves",
+          '["agentes",' in src and '["equipo",' in src)
+    # Landing on a page while the sidebar says you are somewhere else is a small lie the
+    # whole navigation rests on, so goSec moves the pill rather than leaving it behind.
+    check("jumping to a section moves the pill with it",
+          "S.nav = navOf(CONSOLE[i]);" in src)
+    check("switching halves lands on that half's front page",
+          'S.sec = want === "equipo" ? "entre-agentes" : "home";' in src)
+
+    check("every agent row draws a face", 'avatarHtml(a, "av-sm")' in src)
+    check("the profile draws a big one", 'avatarHtml(a, "av-xl")' in src)
+    # The colour is interpolated into a style attribute. The server only writes #RRGGBB
+    # and this checks it anyway, because that is the one place where trusting an upstream
+    # string turns a colour into a payload.
+    check("the colour is validated before it reaches a style attribute",
+          "function avHex(v) { return /^#[0-9A-Fa-f]{6}$/.test" in src)
+    check("the picture URL carries the token and the version",
+          '"&t=" + encodeURIComponent(TOKEN) + "&v="' in src)
+    check("the agent's slug is encoded into it",
+          "'<img src=\"/api/avatar?slug=' + encodeURIComponent(slug)" in src)
+
+    for ident in ("agFace", "agFaceBox", "agFaceFile", "agFaceClear", "agFacePill",
+                  "agRename", "agNameBox", "agNameInput", "agNameSave", "agNamePill",
+                  "agTeamChip"):
+        check("the profile renders and wires #%s" % ident,
+              ('id="%s"' % ident) in src and ('el("%s")' % ident) in src)
+
+    check("a photo is refused before it is read, not after",
+          "f.size > 5 * 1024 * 1024" in src)
+    check("renaming says what did not land, rather than a bare ok",
+          'r.failed && r.failed.length' in src)
+    # A write already knows its own answer, and agents_snapshot() costs a Hermes call per
+    # profile plus a probe per bridge port. Refetching it to redraw one circle is how
+    # choosing a colour came to take tens of seconds of spinner.
+    check("a face or a name is patched onto the one agent, not refetched for all of them",
+          "if (row) row.look = r.look;" in src and "row.name = r.name;" in src and
+          'api("agents/list"' not in src.split("function wireFace()")[1].split(
+              "function secAgentTasks")[0])
+    check("and its initials follow the new name without asking the server for them",
+          "initials: initialsOf(r.name)" in src and "function initialsOf(name)" in src)
+    check("the team chip moves the agent through the same route the map uses",
+          'api("teams/assign", { slug: a.slug, team: sel.value })' in src)
+
+    # One agent's routines and the machine's are the same rows with a filter. The filter
+    # is resolved from the section on screen, because leaving it to whatever the last
+    # page set is how the team list stayed filtered to one agent.
+    check("the routine list can be filtered to one agent",
+          "function cronHtml(st, only)" in src)
+    check("and the filter is decided by the page, not inherited",
+          'curSec().id === "tareas"' in src)
+
+    for cls in (".av", ".av-sm", ".av-xl", ".navpill", ".npb", ".agprof", ".agcam",
+                ".agnamerow", ".fem", ".fsw"):
+        check("app.css styles %s" % cls, (cls + "{" in css) or (cls + " " in css))
+    # A face is a circle with text on a colour the server chose. White text on all eight
+    # of those colours is the only combination that is always legible.
+    check("the face has a shape but never its own colour",
+          "border-radius:50%" in css and "background:" not in
+          css.split(".av{")[1].split("}")[0])
+
     print("\n=== it talks to endpoints the server actually serves ===")
     server = io.open(os.path.join(ROOT, "src", "wizard", "wizard_server.py"),
                      encoding="utf-8").read()

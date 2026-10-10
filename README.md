@@ -591,6 +591,81 @@ only mechanism Chrome leaves open; `OLIVAW_BROWSER_LABEL=0` turns the title half
 keeps the colour and the name. Only profiles Olivaw owns are touched — the owner's
 everyday Chrome has no `--user-data-dir` of ours and is left alone.
 
+#### A roster, not a list of settings
+
+The console listed each agent as a status dot and a line of text, under one long sidebar
+that mixed the agents with the six machine-wide pages. That reads as a settings tree, and
+it stopped matching how the owner thinks about them: with seven of these running, they are
+*workers*, and you pick one the way you pick a person in a chat app — by face, before you
+have read anything.
+
+So the sidebar is now in two halves, switched by a pill at the top:
+
+- **Agentes** — the roster. One row per agent with its face, its name and its state, and
+  the agent's own pages nested under whichever one is open.
+- **Equipo** — the machine-wide pages: the map, every routine, the proposals, the vault,
+  the brain, the version. These used to sit below the agents; on a machine with seven of
+  them, reaching "El cerebro" meant scrolling past forty rows.
+
+Jumping to a page from anywhere — a card on the dashboard, a button on a profile — moves
+the pill with it, because a sidebar that says you are somewhere you are not is the kind of
+small lie that makes a console feel broken.
+
+**Every agent has a face** (`src/wizard/avatars.py`). Three shapes, in the order the owner
+chose them: a picture she uploaded, a symbol from a short list, or its initials — and the
+last one is the floor, never an empty circle. The colour is not decoration: it is the
+**same colour that agent's Chrome window wears**, read from `browser_label`, so the green
+face in the sidebar and the green-framed window on the taskbar are visibly one agent.
+Drawing a face must not *claim* a colour, for the same reason the browser panel must not
+— a read that hands out slots reshuffles everyone's colour the day an agent is added — so
+the snapshot assigns for the agents that actually exist, once, and the face lookup only
+reads.
+
+An uploaded image is a file from outside that gets served back to a page holding the
+owner's token, so: the magic bytes are checked, Pillow decodes it and **we** re-encode it
+as a 256px square PNG (nothing of the original container survives), the slug is validated
+on the way in *and* on the way out, and a file that stopped looking like an image is not
+served at all. The route answers `403` without the token and `404` for anything shaped
+like a path. Where Pillow is missing the re-encode cannot run, so a file too big to serve
+is refused outright rather than kept.
+
+> One defect here was invisible until it was run: Python puts a script's own directory
+> first on `sys.path`, which for `python src/wizard/wizard_server.py` is `src/wizard` — a
+> directory containing `numbers.py`. Stdlib `numbers` then resolved to our module, Pillow
+> caught the plugin that would not import, registered no PNG decoder and silently stopped
+> being able to open images. Nothing raised; uploads were simply stored exactly as they
+> arrived. `src/wizard/__init__.py` now takes its own directory back off `sys.path`, and
+> `test_faces.py` uploads a non-square PNG from a child process started the way the
+> shortcut starts it.
+
+**Opening an agent opens a profile**: a big face with a camera button on it, the name as
+the heading with a pencil beside it, which team it is in as a selector, and — first —
+the button that talks to it. Its own pages follow: WhatsApp, the chat, **Lo que hace
+solo**, the other channels, what it remembers, what it knows how to do, who it talks to.
+"Lo que hace solo" is the machine's routine list filtered to this one agent, same rows and
+same two switches; which list a page is showing is decided by the page, not inherited from
+the last one you looked at.
+
+**Renaming is not a label change** (`src/wizard/renaming.py`). The same name is carried in
+four places, written at four different moments: `agents.json`, the `names` map the other
+agents read, `TELEGRAM_HOME_CHANNEL_NAME` in its Hermes `.env`, and — the one that decides
+what it says when somebody asks who it is — **its own `CLAUDE.md`**. A rename that moves
+only the first three produces an agent introducing itself by the old name forever.
+
+That last file belongs to the agent, not to us: it has been edited by hand and by the agent
+since setup, so it is never regenerated. The name lives in a marker-delimited block that is
+rewritten in place, and the generated identity lines are retitled only while they still
+match the shape the wizard wrote. The old name stays in the block on purpose — an agent
+with months of notes full of it needs to be told *that was me*, or it treats its own
+history as somebody else's. If one of the four writes fails, the reply names it and the
+console says so instead of reporting a clean success.
+
+Neither renaming nor changing a face returns a fresh snapshot of the machine. That looked
+tidier and meant every one of them waited on a Hermes call per profile and a probe per
+bridge port — measured at **over 45 seconds** of spinner for a write that had already
+finished. The reply carries the one agent's answer; the console patches that row and picks
+the rest up on its next ordinary refresh.
+
 #### Teams: grouping that cannot become a wall
 
 Six agents fit on one diagram. A dozen is a hairball, and the owner's real structure — this

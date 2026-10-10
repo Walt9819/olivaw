@@ -26,6 +26,12 @@
     smtp: { provider: "gmail", host: "", port: 587, user: "", password: "", from_addr: "", secure: "starttls", to_addr: "" }
   };
   if (!S.agent) S.agent = { mode: "default", slug: "default" };
+  // Two ways to look at the same machine, and the owner is almost always in one of them:
+  // "agentes" is the roster - faces, one page each - and "equipo" is how they are wired
+  // to each other. They used to be one list, which meant scrolling past six team-wide
+  // settings to reach the fourth agent. Remembered, because switching back to find your
+  // place gone is the thing that makes a toggle annoying.
+  if (S.nav !== "equipo") S.nav = "agentes";
   if (!S.smtp) S.smtp = { provider: "gmail", port: 587, secure: "starttls" };
   delete S.rescue_history;   // conversations now live on disk, not in localStorage
   // One-time code used to bind ownership to the exact account that sends it (anti-hijack).
@@ -104,6 +110,7 @@
     document.body.classList[con ? "add" : "remove"]("console");
     el("stepper").hidden = con;
     el("navTree").hidden = !con;
+    if (el("navPill")) el("navPill").hidden = !con;
     if (el("closeBtn")) el("closeBtn").hidden = !con;
     if (el("toConsole")) el("toConsole").hidden = con || !hasAnyAgent();
     if (el("brandSub"))
@@ -190,6 +197,58 @@
   }
   function agentLabel(a) { return (a && (a.name || a.slug)) || "Tu agente"; }
 
+  // -- a face per agent -------------------------------------------------------
+  // The sidebar used to be a dot and a line of text for each agent, which reads as a list
+  // of settings. They are workers, and a worker is recognised by face before the name is
+  // read - so every agent has one, and it is never empty: initials on its own colour is
+  // the floor, not a placeholder.
+  //
+  // That colour is the SAME one its Chrome window wears (wizard/avatars.py asks
+  // browser_label for it), so the green face here and the green-framed window on the
+  // taskbar are visibly one agent.
+  var FACE_EMOJI = ["\u{1F916}", "\u{1F4BC}", "\u{1F4CA}", "\u{1F4DA}", "\u{1F50D}",
+                    "\u{1F3A8}", "\u{1F527}", "\u{1F4E3}", "\u{1F3E5}", "\u{1F4C8}",
+                    "\u{1F5C2}", "\u2699\uFE0F", "\u{1F680}", "\u{1F9ED}",
+                    "\u{1F514}", "\u{1F4DD}"];
+  var FACE_HEX = ["#5B7CFA", "#1E9E6A", "#D2803A", "#B45EC9",
+                  "#CF5A72", "#2A9DB5", "#8A8F3C", "#C2543F"];
+
+  // The same two letters wizard/avatars.py picks. Duplicated on purpose, and only for
+  // the instant after a rename: asking the server for them would mean a round trip to
+  // redraw a circle, and the next ordinary refresh brings its own answer anyway.
+  function initialsOf(name) {
+    var skip = { de: 1, del: 1, la: 1, el: 1, los: 1, las: 1, y: 1, the: 1, of: 1 };
+    var words = String(name || "").split(/[\s_\-.]+/).filter(Boolean);
+    var big = words.filter(function (w) { return !skip[w.toLowerCase()]; });
+    if (!big.length) big = words;
+    if (!big.length) return "?";
+    if (big.length === 1) return big[0].slice(0, 2).toUpperCase();
+    return (big[0].slice(0, 1) + big[1].slice(0, 1)).toUpperCase();
+  }
+
+  function faceOf(a) {
+    var f = (a && a.look) || {};
+    return { kind: f.kind || "initials", hex: avHex(f.hex),
+             initials: f.initials || (a && agentLabel(a).slice(0, 2).toUpperCase()) || "?",
+             emoji: f.emoji || "", v: f.v || 0 };
+  }
+  // The server only ever writes #RRGGBB, and this is still checked here: the value is
+  // interpolated into a style attribute, which is the one place where trusting an upstream
+  // string is how a colour becomes a payload.
+  function avHex(v) { return /^#[0-9A-Fa-f]{6}$/.test(v || "") ? v : "#5B7CFA"; }
+
+  function avatarHtml(a, cls) {
+    var f = faceOf(a), slug = (a && a.slug) || "";
+    var open = '<span class="av ' + (cls || "") + '" style="background:' + f.hex + '">';
+    if (f.kind === "image") {
+      return open + '<img src="/api/avatar?slug=' + encodeURIComponent(slug) +
+        "&t=" + encodeURIComponent(TOKEN) + "&v=" + (f.v | 0) +
+        '" alt="" draggable="false"></span>';
+    }
+    if (f.kind === "emoji") return open + '<span class="avem">' + esc(f.emoji) + "</span></span>";
+    return open + '<span class="avin">' + esc(f.initials) + "</span></span>";
+  }
+
   // A section is one page in the console, so its accordion is a click for nothing. Only
   // the outermost <details> goes: the fine-print folds inside it are still worth folding.
   function unfold(html) {
@@ -230,6 +289,15 @@
       lead: "El mismo agente que te contesta por Telegram — con su memoria, sus " +
             "habilidades y su forma de ser. Sólo que aquí, sin teléfono.",
       render: secTalk, wire: eTalk },
+    // Its OWN routines, on its own page. The machine-wide list is still there under
+    // "El equipo" - this is the same jobs seen from the one agent that runs them, which
+    // is where the owner is standing when she wonders why this one messages her at 3am.
+    { id: "tareas", scope: "agent", icon: "🌙", label: "Lo que hace solo",
+      blurb: "Sus tareas programadas",
+      title: "Lo que hace solo",
+      lead: "Las tareas que este agente ejecuta sin que se lo pidas, y <b>cuánto ruido " +
+            "hace cada una</b> cuando termina.",
+      render: secAgentTasks },
     { id: "canales", scope: "agent", icon: "🔗", label: "Otros canales",
       blurb: "Correo, Slack, webhooks",
       title: "Por dónde más puede hablarle la gente",
@@ -299,7 +367,11 @@
 
   function goSec(id, slug) {
     if (slug) S.sel = slug;
-    S.sec = id; S.view = "console"; save();
+    S.sec = id; S.view = "console";
+    for (var i = 0; i < CONSOLE.length; i++) {
+      if (CONSOLE[i].id === id) { S.nav = navOf(CONSOLE[i]); break; }
+    }
+    save();
     var w = document.querySelector(".panel-wrap"); if (w) w.scrollTop = 0;
     render();
   }
@@ -316,41 +388,83 @@
     return "unk";
   }
 
+  // Which half of the console a section belongs to, so that jumping to one from anywhere
+  // - a card on the dashboard, a button on a profile - also moves the pill. Landing on a
+  // page the sidebar says you are not on is the kind of small lie that makes a UI feel
+  // broken.
+  function navOf(sec) { return isTeamSec(sec) ? "equipo" : "agentes"; }
+
+  function renderNavPill() {
+    var p = el("navPill");
+    if (!p) return;
+    var tabs = [["agentes", "👥", "Agentes"], ["equipo", "🗺️", "Equipo"]];
+    p.innerHTML = tabs.map(function (t) {
+      return '<button class="npb' + (S.nav === t[0] ? " on" : "") + '" data-nav="' + t[0] +
+        '" role="tab" aria-selected="' + (S.nav === t[0]) + '">' +
+        '<span class="npi">' + t[1] + "</span>" + esc(t[2]) + "</button>";
+    }).join("");
+    Array.prototype.forEach.call(p.querySelectorAll("[data-nav]"), function (b) {
+      b.onclick = function () {
+        var want = b.getAttribute("data-nav");
+        if (S.nav === want) return;
+        S.nav = want;
+        // Switching halves lands on that half's front page rather than leaving the panel
+        // showing a page the new list does not contain.
+        S.sec = want === "equipo" ? "entre-agentes" : "home";
+        save(); render();
+      };
+    });
+  }
+
+  function stateWord(a) {
+    if (a.missing_profile) return "Le falta su perfil";
+    if (a.gateway_running === true) return "Encendido";
+    if (a.gateway_running === false) return "Pausado";
+    return "No pude comprobarlo";
+  }
+
+  function treeAgentRow(a, cur, sec) {
+    var on = !!(cur && a.slug === cur.slug);
+    var html = '<div class="tnode' + (on ? " on" : "") + '">' +
+      '<div class="tnode-top" data-agent="' + esc(a.slug) + '" tabindex="0">' +
+      avatarHtml(a, "av-sm") +
+      '<span class="tname">' + esc(agentLabel(a)) + '</span>' +
+      (a.is_default ? '<span class="tflag">principal</span>' : '') +
+      '<span class="tdot ' + dotClass(a) + '" title="' + esc(stateWord(a)) + '"></span></div>';
+    if (on) {
+      html += '<div class="tkids">' + CONSOLE.filter(isAgentSec).map(function (x) {
+        return '<div class="tkid' + (x.id === sec.id ? " active" : "") +
+          '" data-sec="' + x.id + '" tabindex="0"><span class="tico">' + x.icon +
+          '</span>' + esc(x.label) + '</div>';
+      }).join("") + '</div>';
+    }
+    return html + '</div>';
+  }
+
   function renderTree() {
     var t = el("navTree");
     if (!t) return;
+    renderNavPill();
     var cur = curAgent(), sec = curSec(), html = "";
     html += CONSOLE.filter(function (x) { return x.scope === "dash"; }).map(function (x) {
       return '<div class="tkid flat top' + (x.id === sec.id ? " active" : "") +
         '" data-sec="' + x.id + '" tabindex="0"><span class="tico">' + x.icon + '</span>' +
         esc(x.label) + '</div>';
     }).join("");
-    html += '<div class="tree-h">Tus agentes</div>';
-    allAgents().forEach(function (a) {
-      var on = !!(cur && a.slug === cur.slug);
-      html += '<div class="tnode' + (on ? " on" : "") + '">' +
-        '<div class="tnode-top" data-agent="' + esc(a.slug) + '" tabindex="0">' +
-        '<span class="tdot ' + dotClass(a) + '"></span>' +
-        '<span class="tname">' + esc(agentLabel(a)) + '</span>' +
-        (a.is_default ? '<span class="tflag">principal</span>' : '') + '</div>';
-      if (on) {
-        html += '<div class="tkids">' + CONSOLE.filter(isAgentSec).map(function (x) {
-          return '<div class="tkid' + (x.id === sec.id ? " active" : "") +
-            '" data-sec="' + x.id + '" tabindex="0"><span class="tico">' + x.icon +
-            '</span>' + esc(x.label) + '</div>';
-        }).join("") + '</div>';
-      }
-      html += '</div>';
-    });
-    html += '<div class="tnew" id="treeNew" tabindex="0">➕ Crear un agente nuevo</div>';
-    html += '<div class="tree-h">De todo el equipo</div>';
-    // "not an agent section" would now also catch the dashboard, which already has its own
-    // entry above the agent list. Team sections are the ones that are neither.
-    html += CONSOLE.filter(isTeamSec).map(function (x) {
-      return '<div class="tkid flat' + (x.id === sec.id ? " active" : "") +
-        '" data-sec="' + x.id + '" tabindex="0"><span class="tico">' + x.icon + '</span>' +
-        esc(x.label) + '</div>';
-    }).join("");
+    if (S.nav === "equipo") {
+      html += '<div class="tree-h">De todo el equipo</div>';
+      // "not an agent section" would now also catch the dashboard, which already has its
+      // own entry above. Team sections are the ones that are neither.
+      html += CONSOLE.filter(isTeamSec).map(function (x) {
+        return '<div class="tkid flat' + (x.id === sec.id ? " active" : "") +
+          '" data-sec="' + x.id + '" tabindex="0"><span class="tico">' + x.icon + '</span>' +
+          esc(x.label) + '</div>';
+      }).join("");
+    } else {
+      html += '<div class="tree-h">Tus agentes</div>';
+      allAgents().forEach(function (a) { html += treeAgentRow(a, cur, sec); });
+      html += '<div class="tnew" id="treeNew" tabindex="0">➕ Crear un agente nuevo</div>';
+    }
     t.innerHTML = html;
 
     function act(node, fn) {
@@ -378,6 +492,11 @@
   }
 
   // -- the agent's own front page ---------------------------------------------
+  // -- the agent's own page: a profile, not an index of settings ---------------
+  // What changed and why: this page used to open with a heading and a list of facts, and
+  // everything that identifies the agent - its name, its face, which team it is in - was
+  // either elsewhere or nowhere. An owner with seven of them was reading a configuration
+  // screen when what she wanted was to look at a worker and see who it is.
   function secAgentHome() {
     var a = curAgent();
     if (!a) {
@@ -429,11 +548,7 @@
           '<span class="muted small">' + esc(x.blurb || "") + '</span></div>';
       }).join("");
 
-    return '' +
-      '<div class="eyebrow">Tus agentes</div>' +
-      '<h1>' + esc(agentLabel(a)) +
-      (a.is_default ? ' <span class="badge">principal</span>' : '') + '</h1>' +
-      warn +
+    return profileHead(a) + faceBox(a) + nameBox(a) + warn +
       '<div class="card pad"><ul class="filelist">' + facts + '</ul>' +
       '<div class="row" style="margin-top:12px">' + actions + '</div>' +
       '<span class="pill" data-pill="' + esc(a.slug) + '" style="display:none;margin-top:8px"></span></div>' +
@@ -495,7 +610,215 @@
       .catch(function () { paintConn(null); });
   }
 
-  function eAgentHome() { wireAgentActions(); loadConn(); }
+  function profileHead(a) {
+    return '<div class="agprof">' +
+      '<div class="agfacewrap">' + avatarHtml(a, "av-xl") +
+      '<button class="agcam" id="agFace" title="Cambiar su foto" ' +
+      'aria-label="Cambiar su foto">📷</button></div>' +
+      '<div class="agid">' +
+      '<div class="agnamerow"><h1 id="agH1">' + esc(agentLabel(a)) + '</h1>' +
+      '<button class="agpen" id="agRename" title="Cambiar su nombre" ' +
+      'aria-label="Cambiar su nombre">✏️</button>' +
+      (a.is_default ? '<span class="badge">principal</span>' : '') + '</div>' +
+      '<div class="agsub"><span class="tdot ' + dotClass(a) + '"></span>' +
+      esc(stateWord(a)) +
+      // Filled in by intercom/status, which is the same call the map panel makes: one
+      // source for which team an agent is in, so the chip and the map cannot disagree.
+      '<span class="agteam" id="agTeamChip"></span></div>' +
+      '<div class="row agacts">' +
+      '<button class="btn btn-primary btn-sm" data-sec="hablar">💬 Hablar con ' +
+      (a.is_default ? "él" : "ella o él") + '</button>' +
+      '<button class="btn btn-soft btn-sm" data-sec="tareas">🌙 Lo que hace solo</button>' +
+      '<button class="btn btn-soft btn-sm" data-sec="habilidades">🧰 Lo que sabe hacer</button>' +
+      '</div></div></div>';
+  }
+
+  // The face picker. Inline rather than a modal: there is no overlay system in this
+  // console except the help desk, and a face is chosen in two clicks - a dialog would be
+  // more machinery than the task.
+  function faceBox(a) {
+    var f = faceOf(a);
+    return '<div class="card pad agedit" id="agFaceBox" hidden>' +
+      '<div class="row" style="justify-content:space-between">' +
+      '<b>Su foto</b>' +
+      '<button class="btn btn-ghost btn-sm" id="agFaceClose" aria-label="Cerrar">✕</button></div>' +
+      '<p class="muted small">Sube una imagen, elige un símbolo, o déjalo en sus iniciales. ' +
+      'El color es el mismo que lleva su ventana de Chrome, para que se reconozcan a la vez.</p>' +
+      '<div class="row" style="gap:8px;flex-wrap:wrap">' +
+      '<label class="btn btn-soft btn-sm" for="agFaceFile">🖼️ Subir una imagen</label>' +
+      '<input type="file" id="agFaceFile" accept="image/png,image/jpeg,image/gif,image/webp" ' +
+      'style="display:none">' +
+      '<button class="btn btn-ghost btn-sm" id="agFaceClear">Volver a sus iniciales</button>' +
+      '<span class="pill" id="agFacePill" style="display:none"></span></div>' +
+      '<div class="flab">Un símbolo</div><div class="fgrid">' +
+      FACE_EMOJI.map(function (e) {
+        return '<button class="fem' + (f.kind === "emoji" && f.emoji === e ? " on" : "") +
+          '" data-em="' + esc(e) + '" title="Usar este símbolo">' + esc(e) + '</button>';
+      }).join("") + '</div>' +
+      '<div class="flab">Su color</div><div class="fgrid">' +
+      FACE_HEX.map(function (c) {
+        return '<button class="fsw' + (f.hex.toUpperCase() === c ? " on" : "") +
+          '" data-col="' + c + '" style="background:' + c + '" title="' + c + '"></button>';
+      }).join("") + '</div></div>';
+  }
+
+  // Renaming is not a label change, and the sentence under the box says so: the same name
+  // is written into its prompt, into what the other agents call it and into how it signs
+  // on Telegram. See wizard/renaming.py.
+  function nameBox(a) {
+    return '<div class="card pad agedit" id="agNameBox" hidden>' +
+      '<div class="row" style="justify-content:space-between">' +
+      '<b>Su nombre</b>' +
+      '<button class="btn btn-ghost btn-sm" id="agNameClose" aria-label="Cerrar">✕</button></div>' +
+      '<input id="agNameInput" maxlength="40" value="' + esc(agentLabel(a)) + '" ' +
+      'style="margin-top:8px">' +
+      '<p class="muted small">Se lo cambio en los cuatro sitios donde lleva su nombre: en ' +
+      'esta lista, en <b>sus propias instrucciones</b> (así que sabrá que se llama así y ' +
+      'que antes se llamaba de otra forma), en lo que le dicen los demás agentes, y en ' +
+      'cómo firma cuando te escribe él primero.</p>' +
+      '<div class="row"><button class="btn btn-primary btn-sm" id="agNameSave">Guardar</button>' +
+      '<span class="pill" id="agNamePill" style="display:none"></span></div></div>';
+  }
+
+  function eAgentHome() {
+    wireAgentActions();
+    loadConn();
+    wireFace();
+    wireRename();
+    api("intercom/status", {}).then(paintAgentChip);
+  }
+
+  // -- which team this agent is in, changeable from here ----------------------
+  function paintAgentChip(st) {
+    var chip = el("agTeamChip");
+    if (!chip) return;
+    var a = curAgent(), t = (st && st.team) || {};
+    var me = null;
+    (t.agents || []).forEach(function (x) { if (a && x.slug === a.slug) me = x; });
+    var groups = t.teams || [];
+    if (!me) { chip.innerHTML = ""; return; }
+    if (!groups.length) {
+      chip.innerHTML = '<span class="agteam-none">Sin equipos todavía · ' +
+        '<a href="#" data-sec="entre-agentes">crear uno</a></span>';
+      wireSecCards();
+      return;
+    }
+    chip.innerHTML = '<label class="agteam-l">Equipo</label>' +
+      '<select id="agTeamSel">' + tmTeamOpts(groups, me.team || "") + "</select>";
+    var sel = el("agTeamSel");
+    sel.onchange = function () {
+      sel.disabled = true;
+      api("teams/assign", { slug: a.slug, team: sel.value }).then(function (r) {
+        sel.disabled = false;
+        if (r && r.ok) { toast("Listo"); api("intercom/status", {}).then(paintAgentChip); }
+        else { toast((r && r.detail) || "No pude moverlo"); }
+      });
+    };
+  }
+
+  // -- the face -----------------------------------------------------------------
+  function wireFace() {
+    var btn = el("agFace"), box = el("agFaceBox");
+    if (!btn || !box) return;
+    var a = curAgent();
+    btn.onclick = function () { box.hidden = !box.hidden; };
+    if (el("agFaceClose")) el("agFaceClose").onclick = function () { box.hidden = true; };
+
+    function send(body, msg) {
+      var pill = el("agFacePill");
+      if (pill) pill.style.display = "inline-flex";
+      return runTest(btn, pill, function () {
+        return api("avatar/set", Object.assign({ slug: a.slug }, body));
+      }, msg || "Guardando…").then(function (r) {
+        // Patch the agent we just changed rather than refetching every agent on the
+        // machine: the reply IS the server's answer for this one, and a full refresh
+        // costs a Hermes call per profile - measured at tens of seconds, all of it
+        // spinner, for a write that had already finished.
+        if (r && r.ok && r.look) {
+          var row = agentBySlug(a.slug);
+          if (row) row.look = r.look;
+          render();            // the sidebar, the header and the picker all show the face
+        }
+        return r;
+      });
+    }
+
+    var file = el("agFaceFile");
+    if (file) file.onchange = function () {
+      var f = file.files && file.files[0];
+      if (!f) return;
+      // Checked here as well as on the server: a 12MB photo should be refused before it
+      // is read into memory and base64'd, not after.
+      if (f.size > 5 * 1024 * 1024) { toast("Esa imagen pesa más de 5 MB."); file.value = ""; return; }
+      var fr = new FileReader();
+      fr.onload = function () {
+        send({ data: String(fr.result || "").split(",").pop() }, "Subiendo…");
+        file.value = "";
+      };
+      fr.onerror = function () { toast("No pude leer ese archivo."); file.value = ""; };
+      fr.readAsDataURL(f);
+    };
+    if (el("agFaceClear")) el("agFaceClear").onclick = function () { send({ clear: true }); };
+    Array.prototype.forEach.call(box.querySelectorAll("[data-em]"), function (b) {
+      b.onclick = function () {
+        var cur = faceOf(curAgent());
+        // Clicking the symbol it already wears takes it off, which is the only way back to
+        // initials without hunting for the other button.
+        var em = b.getAttribute("data-em");
+        send({ emoji: (cur.kind === "emoji" && cur.emoji === em) ? "" : em });
+      };
+    });
+    Array.prototype.forEach.call(box.querySelectorAll("[data-col]"), function (b) {
+      b.onclick = function () { send({ color: b.getAttribute("data-col") }); };
+    });
+  }
+
+  // -- the name -----------------------------------------------------------------
+  function wireRename() {
+    var btn = el("agRename"), box = el("agNameBox");
+    if (!btn || !box) return;
+    var a = curAgent();
+    btn.onclick = function () {
+      box.hidden = !box.hidden;
+      if (!box.hidden && el("agNameInput")) el("agNameInput").focus();
+    };
+    if (el("agNameClose")) el("agNameClose").onclick = function () { box.hidden = true; };
+    var save = el("agNameSave"), input = el("agNameInput");
+    if (!save || !input) return;
+    function go() {
+      var name = (input.value || "").trim();
+      if (!name) { toast("El nombre no puede quedar vacío."); return; }
+      if (name === agentLabel(a)) { box.hidden = true; return; }
+      var pill = el("agNamePill");
+      if (pill) pill.style.display = "inline-flex";
+      runTest(save, pill, function () {
+        return api("agent/rename", { slug: a.slug, name: name });
+      }, "Cambiándolo en todas partes…").then(function (r) {
+        if (!(r && r.ok)) return;
+        var row = agentBySlug(a.slug);
+        // Same reason as the face. Its initials follow the name, so they are recomputed
+        // here rather than left showing the old ones until the next refresh.
+        if (row) {
+          row.name = r.name;
+          if (row.look) row.look = Object.assign({}, row.look, { initials: initialsOf(r.name) });
+        }
+        // Say what did NOT land rather than a bare "listo": a rename whose .env write
+        // failed leaves the agent still signing with the old name, and that is worth
+        // knowing before she wonders why.
+        toast((r.failed && r.failed.length)
+          ? "Renombrado, pero no pude: " + r.failed.join(", ")
+          : "Ahora se llama " + r.name);
+        render();
+      });
+    }
+    save.onclick = go;
+    input.onkeydown = function (e) { if (e.key === "Enter") { e.preventDefault(); go(); } };
+  }
+
+  // -- its own scheduled routines ---------------------------------------------
+  function secAgentTasks() {
+    return '<div id="cronBox" class="card pad"><span class="muted small">Revisando…</span></div>';
+  }
 
   // Shared by the console's front page and the wizard's agent list, so pausing an agent
   // does the same thing (and says the same thing) in both.
@@ -4111,7 +4434,7 @@
   // `hermes cron` and with the agent: that side owns the scheduling grammar, the
   // injection scanner and the one-shot dispatch claim, and a second writer of jobs.json
   // is how a paused job starts firing again.
-  var CRON = { st: null };
+  var CRON = { st: null, only: "" };
 
   // What a schedule actually says, in Spanish, or the expression if we cannot say it
   // honestly. `cronHuman` assumes ONE hour, ONE minute and ONE weekday - so `0 2,8,14,20
@@ -4195,12 +4518,18 @@
       '</div></div>';
   }
 
-  function cronHtml(st) {
+  // `only` is a slug: the agent's own page shows its routines and nothing else, while
+  // "El equipo" shows the machine. Same call, same rows, same switches - the filter is
+  // the whole difference, so the two pages can never drift apart.
+  function cronHtml(st, only) {
     if (!st || !st.ok) {
       return '<span class="muted small">No pude leer las tareas programadas.</span>';
     }
-    var ags = (st.agents || []).filter(function (a) { return (a.jobs || []).length; });
-    var broken = (st.agents || []).filter(function (a) { return a.ok === false; });
+    var mine = function (a) { return !only || a.slug === only; };
+    var ags = (st.agents || []).filter(mine)
+      .filter(function (a) { return (a.jobs || []).length; });
+    var broken = (st.agents || []).filter(mine)
+      .filter(function (a) { return a.ok === false; });
     var head = "";
     // Only ever complain about the patch when something actually depends on it. On a
     // machine where nobody has ticked a box it is absent on purpose, and a warning about
@@ -4220,27 +4549,35 @@
         esc(a.detail || "no pude leer sus tareas") + '</div>';
     });
     if (!ags.length) {
-      return head + '<span class="muted small">Todavía no hay ninguna tarea programada. ' +
-        'Las crea tu agente cuando le pides algo que se repite — «revísalo cada lunes», ' +
+      return head + '<span class="muted small">' +
+        (only ? 'Este agente todavía no tiene ninguna tarea programada. Las crea él mismo '
+              : 'Todavía no hay ninguna tarea programada. Las crea tu agente ') +
+        'cuando le pides algo que se repite — «revísalo cada lunes», ' +
         '«avísame si se cae el sitio» — y entonces aparecen aquí.</span>';
     }
     return head + ags.map(function (a) {
-      return '<div class="cjag"><b>' + esc(a.name) + '</b> <span class="muted small">· ' +
-        a.jobs.length + (a.jobs.length === 1 ? " tarea" : " tareas") + '</span></div>' +
+      // One agent's own page already says whose routines these are, twice: in the title
+      // and in the sidebar. A third heading repeating the name is noise.
+      return (only ? '' :
+        '<div class="cjag"><b>' + esc(a.name) + '</b> <span class="muted small">· ' +
+        a.jobs.length + (a.jobs.length === 1 ? " tarea" : " tareas") + '</span></div>') +
         a.jobs.map(function (j) { return cjRow(j, a.profile || a.slug); }).join("");
     }).join("") +
       '<p class="muted small" style="margin:12px 0 0">Crear, pausar o borrar una tarea se ' +
       'lo pides a tu agente por su canal. Aquí sólo se decide cómo te avisa.</p>';
   }
 
-  function paintCron() {
+  function paintCron(only) {
     var box = el("cronBox");
     if (!box) return;
+    // Remembered, because a switch repaints from the server's answer and must land back
+    // on the same page it was ticked on - not on the whole machine's list.
+    if (only !== undefined) CRON.only = only || "";
     api("cron/list", {}).then(function (st) {
       box = el("cronBox");
       if (!box) return;
       CRON.st = st;
-      box.innerHTML = cronHtml(st);
+      box.innerHTML = cronHtml(st, CRON.only);
       wireCron();
     });
   }
@@ -4328,7 +4665,14 @@
     // single-section page of the console, so anything that costs a request has to ask
     // whether its own markup is on screen. Everything below is already el()-guarded.
     if (el("selfcareBox")) paintSelfcare();
-    if (el("cronBox")) paintCron();
+    // WHICH list this page is, resolved here rather than left to whatever the last page
+    // set: cronBox is rendered by two different sections - one agent's routines and the
+    // whole machine's - and without this the team list stayed filtered to the agent you
+    // had been looking at a moment before.
+    if (el("cronBox")) {
+      paintCron(S.view === "console" && curSec().id === "tareas"
+        ? ((curAgent() || {}).slug || "") : "");
+    }
     if (el("obsBox")) paintObs();
     if (el("propBox")) paintProps();
     if (S.view !== "console" && !S.applied) return;

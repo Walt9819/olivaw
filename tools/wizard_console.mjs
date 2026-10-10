@@ -331,11 +331,13 @@ const DEFAULT_AGENT = {
   slug: "default", name: "Agente principal", profile: "default", port: 8790,
   workspace: "C:/ws/main", is_default: true, gateway_running: true, bridge_up: true,
   owners: [{ user_id: "111", name: "Walt" }],
+  look: { slug: "default", kind: "initials", initials: "AP", hex: "#5B7CFA", emoji: "", v: 0 },
 };
 const EXTRA_AGENT = {
   slug: "daneel", name: "Daneel", profile: "daneel", port: 8791,
   workspace: "C:/ws/daneel", is_default: false, gateway_running: true, bridge_up: true,
   owners: [{ user_id: "222", name: "Walt" }],
+  look: { slug: "daneel", kind: "image", initials: "DA", hex: "#1E9E6A", emoji: "", v: 3 },
 };
 const AGENTS = { default: DEFAULT_AGENT, extra: [EXTRA_AGENT] };
 
@@ -359,6 +361,12 @@ const CANNED = {
                 repo: "o/r" },
   },
   "agents/list": { ok: true, ...AGENTS },
+  // Neither reply carries the whole machine: see wizard_server._agent_rename for why.
+  "avatar/set": { ok: true, look: { slug: "daneel", kind: "emoji", emoji: "\u{1F916}",
+                                    initials: "DA", hex: "#5B7CFA", v: 4 } },
+  "agent/rename": { ok: true, slug: "daneel", name: "Chalenus", old: "Daneel",
+                    changed: ["registro", "sus instrucciones"], failed: [] },
+  "teams/assign": { ok: true },
   "policy/get": {
     ok: true, policy: { mode: "both", idle_minutes: 150, at_hour: 4, compact: true, compact_at: 0.1 },
     presets: [{ id: "recomendado", label: "Recomendado", note: "n", values: {} }],
@@ -488,7 +496,7 @@ const HOOK = "\n  globalThis.__ol = { CONSOLE: CONSOLE, S: S, META: META, STEPS:
   " SOS: SOS, openSos: openSos, sendTurn: sendTurn, paintMsgs: paintMsgs," +
   " showQr: showQr, TALK: TALK, sendTalk: sendTalk, loadConn: loadConn," +
   " paintLog: paintLog, tkChips: tkChips, tkAdd: tkAdd, tkFileHtml: tkFileHtml," +
-  " paintCron: paintCron, cronHtml: cronHtml, CRON: CRON, cjWhen: cjWhen," +
+  " paintCron: paintCron, cronHtml: cronHtml, CRON: CRON, cjWhen: cjWhen, avatarHtml: avatarHtml, faceOf: faceOf, avHex: avHex, renderTree: renderTree, __faceEmoji: FACE_EMOJI, paintAgentChip: paintAgentChip, navOf: navOf," +
   " startLogin: startLogin, loadDash: loadDash, DASH: DASH, BOOT: BOOT, paintTeam: paintTeam, teamSvg: teamSvg, TEAM: TEAM, secTeam: secTeam, paintAgentTeam: paintAgentTeam, AGT: AGT, paintProposal: paintProposal, rAgent: rAgent, rFinished: rFinished, agentConnectCard: agentConnectCard," +
   " get LIVE(){ return LIVE } };\n";
 const hooked = src.slice(0, cut) + HOOK + src.slice(cut);
@@ -2015,6 +2023,161 @@ OL.S.team = { asked: true, connect: ["default"] };
 }
 OL.S.view = "console"; OL.S.team = null;
 
+
+console.log("\n=== the roster: faces, a pill, and a profile you can edit ===");
+
+// The sidebar is the thing the owner looks at forty times a day. It used to be a dot and
+// a line of text per agent; the point of the rewrite is that an agent is recognised
+// before it is read.
+OL.S.nav = "agentes";
+OL.goSec("home", "default");
+{
+  const tree = htmlOf("navTree");
+  ok("every agent row carries a face", (tree.match(/class="av av-sm"/g) || []).length === 2,
+     tree.slice(0, 400));
+  ok("the one with a picture gets an <img>", tree.includes('/api/avatar?slug=daneel'));
+  ok("and it is cache-busted by the version the server gave", tree.includes("&v=3"));
+  ok("the one without gets its initials, not an empty circle", tree.includes(">AP<"));
+  ok("the colour comes from the server's look", tree.includes("background:#1E9E6A"));
+  ok("the running dot is still there, as a detail and not as the identity",
+     tree.includes('class="tdot ok"'));
+  ok("creating another agent is still one click away", tree.includes('id="treeNew"'));
+
+  const pill = htmlOf("navPill");
+  ok("the pill offers both halves", pill.includes('data-nav="agentes"') &&
+     pill.includes('data-nav="equipo"'));
+  ok("and marks the one we are in, and only that one",
+     /class="npb on" data-nav="agentes"/.test(pill) &&
+     /data-nav="agentes" role="tab" aria-selected="true"/.test(pill) &&
+     !/class="npb on" data-nav="equipo"/.test(pill), pill);
+  ok("the agent half does not list the team-wide pages",
+     !tree.includes("Rutinas autom") && !tree.includes("El cerebro"));
+}
+
+// Switching halves is the whole reason the pill exists: the team pages are no longer
+// below six agents' worth of scrolling.
+OL.S.nav = "equipo"; OL.S.sec = "entre-agentes"; OL.render();
+{
+  const tree = htmlOf("navTree");
+  ok("the team half lists the shared pages", tree.includes("El equipo") &&
+     tree.includes("Rutinas autom"));
+  ok("and stops listing the agents", !tree.includes('class="av av-sm"'));
+  ok("the dashboard stays reachable from both halves", tree.includes('data-sec="panel"'));
+}
+
+// A section reached from anywhere must move the pill with it, or the sidebar says you
+// are somewhere you are not.
+OL.goSec("hablar", "daneel");
+ok("jumping to an agent page switches the pill back", OL.S.nav === "agentes", OL.S.nav);
+OL.goSec("memoria");
+ok("and jumping to a shared page switches it the other way", OL.S.nav === "equipo", OL.S.nav);
+
+console.log("\n=== the agent's profile ===");
+OL.goSec("home", "daneel");
+{
+  const html = htmlOf("panel");
+  const ids = idsIn(html);
+  ok("it opens with a big face", html.includes('class="av av-xl"'));
+  for (const id of ["agFace", "agFaceBox", "agRename", "agNameBox", "agNameInput",
+                    "agNameSave", "agTeamChip", "agFaceFile", "agFaceClear"])
+    ok("the profile has #" + id, ids.includes(id));
+  ok("the name is the heading, not a field in a list", html.includes('id="agH1"'));
+  ok("talking to it is the first button", html.indexOf('data-sec="hablar"') <
+     html.indexOf('data-sec="tareas"'));
+  ok("its own routines have a page of their own", html.includes('data-sec="tareas"'));
+  ok("the editors start closed", /id="agFaceBox" hidden/.test(html) &&
+     /id="agNameBox" hidden/.test(html));
+  ok("the picker offers every symbol the server accepts",
+     (html.match(/data-em="/g) || []).length === OL.__faceEmoji.length,
+     (html.match(/data-em="/g) || []).length);
+  ok("and the eight colours the windows wear",
+     (html.match(/data-col="/g) || []).length === 8);
+  ok("nothing rendered as 'undefined'", !html.includes("undefined"), html.slice(0, 200));
+}
+
+// Renaming. The sentence under the box promises four places; what the harness can see is
+// that it goes through one route and repaints from the answer.
+{
+  CALLS.length = 0;
+  getEl("agNameInput").value = "Chalenus";
+  getEl("agNameSave").onclick();
+  await new Promise((r) => setTimeout(r, 0));
+  const call = CALLS.find((c) => c.route === "agent/rename");
+  ok("saving a new name calls agent/rename", !!call, CALLS.map((c) => c.route).join(", "));
+  ok("with the agent and the name", call && call.body.slug === "daneel" &&
+     call.body.name === "Chalenus", call && JSON.stringify(call.body));
+}
+{
+  CALLS.length = 0;
+  getEl("agNameInput").value = "   ";
+  getEl("agNameSave").onclick();
+  await new Promise((r) => setTimeout(r, 0));
+  ok("an empty name never reaches the server",
+     !CALLS.some((c) => c.route === "agent/rename"));
+}
+
+// The face.
+{
+  CALLS.length = 0;
+  getEl("agFaceClear").onclick();
+  await new Promise((r) => setTimeout(r, 0));
+  const call = CALLS.find((c) => c.route === "avatar/set");
+  ok("clearing the face calls avatar/set", !!call);
+  ok("and says so explicitly rather than sending an empty picture",
+     call && call.body.clear === true, call && JSON.stringify(call.body));
+  // The whole point of the lean reply: the face on screen came from THIS answer, and
+  // nothing went back to the server for the rest of the machine.
+  ok("the new face is drawn from the reply alone",
+     htmlOf("navTree").includes("\u{1F916}") && htmlOf("panel").includes("\u{1F916}"),
+     htmlOf("navTree").slice(0, 200));
+  ok("and no second request was made to redraw it",
+     !CALLS.some((c) => c.route === "agents/list"), CALLS.map((c) => c.route).join(", "));
+}
+
+// Which team it is in, from its own page.
+{
+  OL.paintAgentChip(teamState());
+  const chip = htmlOf("agTeamChip");
+  ok("the profile says which team the agent is in", chip.includes("iGalenus"));
+  ok("and lets it be moved out of all of them", chip.includes(">Sin equipo<"));
+  CALLS.length = 0;
+  getEl("agTeamSel").value = "";
+  getEl("agTeamSel").onchange();
+  await new Promise((r) => setTimeout(r, 0));
+  const call = CALLS.find((c) => c.route === "teams/assign");
+  ok("moving it goes through the same route the map uses", !!call);
+  ok("and an empty team is sent as a real answer", call && call.body.team === "",
+     call && JSON.stringify(call.body));
+}
+{
+  // A machine with no teams yet. The chip must invite rather than show an empty select.
+  const none = teamState();
+  none.team.teams = [];
+  none.team.agents.forEach((a) => { a.team = ""; a.team_name = ""; });
+  OL.paintAgentChip(none);
+  ok("with no teams, it offers to create one instead of an empty box",
+     htmlOf("agTeamChip").includes("crear uno"), htmlOf("agTeamChip"));
+}
+
+console.log("\n=== one agent's routines are the machine's, filtered ===");
+OL.goSec("tareas", "daneel");
+ok("the agent's routine page asks for the same list",
+   CALLS.some((c) => c.route === "cron/list"));
+{
+  const st = CANNED["cron/list"];
+  const mine = OL.cronHtml(st, "default");
+  const all = OL.cronHtml(st, "");
+  ok("filtered to one agent, the other agents' jobs are gone",
+     mine.includes("Digest diario 9am") && !mine.includes("Limpieza"),
+     mine.slice(0, 200));
+  ok("and its name is not repeated as a heading over its own page",
+     !mine.includes('class="cjag"'));
+  ok("unfiltered, every agent is still headed by name", all.includes('class="cjag"'));
+  ok("the switches are the same ones in both", (mine.match(/class="cjf/g) || []).length > 0);
+  const empty = OL.cronHtml(st, "nobody");
+  ok("an agent with no routines is told so about itself",
+     empty.includes("Este agente todav"), empty.slice(0, 160));
+}
 
 report();
 

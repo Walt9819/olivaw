@@ -20,6 +20,13 @@ updater.config.json
 sessions.json
 # per-machine registry of extra agents (Phase B)
 agents.json
+# per-machine agent state, written beside the code because the install root IS the
+# code root in production - so it lands in the checkout when run from source
+intercom.json
+intercom/
+teams.json
+browser-labels.json
+avatars/
 # per-agent workspaces / isolated Claude config dirs
 agents/
 # generated fallback snippet (may contain owner id)
