@@ -519,11 +519,27 @@ class Session(object):
 
 
 def port_of(agent, install_dir=None):
-    """Which debugging port belongs to this agent, without starting anything."""
+    """Which debugging port belongs to this agent, without starting anything.
+
+    The CONFIGURED url first, exactly as browser_setup.status() does it and for the same
+    reason it says there: port_for() answers "which port should this agent get", which
+    for an agent that has none yet is a free one nobody is serving - and for anything
+    else is a guess. Showing a phone a window and telling it the wrong agent's name is
+    worse than showing it nothing, because the two look identical and only one of them is
+    signed into that agent's accounts.
+    """
     from . import browser_setup
     profile = None if agent in ("", "default") else agent
     try:
-        return int(browser_setup.port_for(profile))
+        configured = (browser_setup.hermes_ctl.config_get(
+            browser_setup.CONFIG_KEY, None, profile) or "").strip()
+    except Exception:  # noqa: BLE001
+        configured = ""
+    if "://" not in configured:
+        configured = ""
+    try:
+        return int(browser_setup._port_of(configured)
+                   or browser_setup.port_for(profile, configured=configured))
     except Exception:  # noqa: BLE001
         return 0
 

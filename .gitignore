@@ -68,7 +68,21 @@ relay.json
 # Flutter build output
 app/.dart_tool/
 app/build/
-app/android/
-app/ios/
 app/.flutter-plugins*
-app/pubspec.lock
+
+# android/ IS tracked, on purpose. `flutter create` regenerates it, but it regenerates
+# it WRONG for this app in three ways that each cost a build to find: no INTERNET
+# permission outside the debug manifest, -Xmx8G on a machine with less free memory than
+# that, and the debug signing key. Those fixes live in these files.
+app/android/.gradle/
+app/android/build/
+app/android/app/build/
+app/android/local.properties
+app/android/key.properties
+app/ios/
+
+# The app signing key: whoever holds it can publish an update Android installs over
+# Olivaw without a word to the person running it. It lives outside this repo entirely;
+# these lines only catch a copy made by accident.
+*.jks
+*.keystore

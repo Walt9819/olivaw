@@ -94,6 +94,19 @@ def call_api(route, body, caps):
     if not pairing.allowed(route, caps):
         return {"ok": False, "detail": u"Ese permiso no está activado para este teléfono.",
                 "denied": route}, 403
+    if route == "net/home":
+        # Answered here rather than by the console, because it is about the connection
+        # itself and the console knows nothing about it. A phone asks on every successful
+        # local connection, so a rendezvous configured AFTER a phone was paired still
+        # reaches it - while it can still get home to be told.
+        try:
+            from . import relay_client
+            rc = relay_client.config(INSTALL_DIR)
+            return {"ok": True, "relay": ({"url": rc["url"], "room": rc.get("room", "")}
+                                          if rc.get("on") and rc.get("url") else None),
+                    "addresses": selfcert.local_ips(), "port": PORT}, 200
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "detail": str(e)}, 500
     try:
         return _api().dispatch("/api/" + route, body or {}), 200
     except Exception as e:  # noqa: BLE001
@@ -270,6 +283,19 @@ class Handler(BaseHTTPRequestHandler):
                             platform=str(body.get("platform") or ""))
         if res.get("ok"):
             log("paired a device: %s (%s)" % (res.get("name"), res.get("device_id")))
+            # How to find this house from outside it. It has to be handed over HERE,
+            # during pairing, because by definition the phone cannot ask for it later:
+            # the moment it needs the rendezvous is the moment it cannot reach the
+            # machine to be told about one. The room id is not a secret worth withholding
+            # from a device that already holds a token - a stranger who learns it meets
+            # the same pinned TLS and the same permission table.
+            try:
+                from . import relay_client
+                rc = relay_client.config(INSTALL_DIR)
+                if rc.get("on") and rc.get("url"):
+                    res["relay"] = {"url": rc["url"], "room": rc.get("room", "")}
+            except Exception:  # noqa: BLE001
+                pass
         else:
             log("a pairing attempt was refused: %s" % res.get("detail"))
         return self._json(res, 200 if res.get("ok") else 403)

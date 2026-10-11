@@ -12,6 +12,8 @@ scratchpad harness. What is tested here of screencast.py is the part that decide
 remote tap is allowed to reach, which must hold whether or not a browser is running.
 """
 import hashlib
+import io
+import re
 import json
 import os
 import shutil
@@ -171,6 +173,7 @@ class FakeApi(object):
 
 
 remote._shim = FakeApi()
+_real_port_of = screencast.port_of   # kept: the last block in this file tests it
 screencast.port_of = lambda agent, install_dir=None: 9876   # nothing is listening there
 
 pairing.set_enabled(SAND, True)
@@ -524,6 +527,81 @@ head = s.recv(200)
 ok("a host with no key at all is refused",
    b" 101 " not in head.split(b"\r\n", 1)[0], head[:60])
 s.close()
+
+# ── the way home ───────────────────────────────────────────────────────────────────────
+# A phone that was paired before the rendezvous existed has to be able to learn about it,
+# and the only moment it can is while it can still reach the house.
+out, code = remote.call_api("net/home", {}, ["ver"])
+ok("net/home answers a phone that may look", code == 200 and out.get("ok") is True, (code, out))
+ok("net/home says which addresses to try", isinstance(out.get("addresses"), list), out)
+ok("net/home gives the port", isinstance(out.get("port"), int) and out["port"] > 0, out)
+
+out, code = remote.call_api("net/home", {}, [])
+ok("net/home is refused without permission", code == 403, (code, out))
+
+# What it says about the rendezvous has to match what is actually configured - this
+# runs after the relay section above, so here one IS on.
+_cfg = relay_client.config(remote.INSTALL_DIR)
+_said = remote.call_api("net/home", {}, ["ver"])[0].get("relay")
+ok("net/home agrees with the rendezvous actually configured",
+   (_said or {}).get("url", "") == (_cfg.get("url", "") if _cfg.get("on") else ""),
+   (_said, _cfg))
+
+# ── which browser belongs to which agent ───────────────────────────────────────────────
+# port_of used to answer with port_for(), which for an agent that has no browser
+# configured hands back a FREE port - and for the default agent hands back 9222 whatever
+# is sitting on it. Showing a phone one agent's window under another agent's name is the
+# one failure here that looks exactly like success.
+from wizard import browser_setup  # noqa: E402
+
+# The default agent moved to another port is the case that separates the two: port_for()
+# answers PORT_BASE for the default agent whatever it is actually using, so an answer of
+# 9222 here would be a different agent's window - or a stranger's - under this one's name.
+_fake_cfg = {None: "http://127.0.0.1:9341", "uno": "http://127.0.0.1:9287", "dos": ""}
+_real_get = browser_setup.hermes_ctl.config_get
+browser_setup.hermes_ctl.config_get = (
+    lambda key, hermes=None, profile=None: _fake_cfg.get(profile, ""))
+try:
+    ok("the default agent is followed to the port it actually uses",
+       _real_port_of("default") == 9341, _real_port_of("default"))
+    ok("a named agent is followed to its configured port",
+       _real_port_of("uno") == 9287, _real_port_of("uno"))
+    got = _real_port_of("dos")
+    ok("an agent with no browser never borrows 9222", got != 9222, got)
+finally:
+    browser_setup.hermes_ctl.config_get = _real_get
+
+# ── the app's own manifest ─────────────────────────────────────────────────────────────
+# Flutter's template grants INTERNET in the DEBUG manifest only. A release build of a
+# network client then installs, opens, and fails every connection with nothing to show
+# for it - found by building the APK, which is too late and too slow to find it again.
+_MANIFEST = os.path.join(ROOT, "app", "android", "app", "src", "main",
+                         "AndroidManifest.xml")
+if os.path.exists(_MANIFEST):
+    _man = io.open(_MANIFEST, encoding="utf-8").read()
+    for _perm in ("INTERNET", "ACCESS_NETWORK_STATE", "ACCESS_WIFI_STATE"):
+        ok("the release manifest asks for %s" % _perm,
+           "android.permission.%s" % _perm in _man)
+    # Nothing here needs a camera, a microphone, contacts or location. An app that holds
+    # the keys to somebody's agents should ask for the least it can.
+    for _no in ("CAMERA", "RECORD_AUDIO", "ACCESS_FINE_LOCATION", "READ_CONTACTS",
+                "READ_EXTERNAL_STORAGE"):
+        ok("the app does not ask for %s" % _no,
+           "android.permission.%s" % _no not in _man)
+
+_GRADLE = os.path.join(ROOT, "app", "android", "gradle.properties")
+if os.path.exists(_GRADLE):
+    _gp = io.open(_GRADLE, encoding="utf-8").read()
+    # The template's -Xmx8G is larger than the free memory on the machine this is built
+    # on, and Gradle's daemon is killed mid-build with a message about disappearing.
+    # The SETTING, not the comment above it that quotes the number being avoided:
+    # searching the whole file found the explanation and called the fix a failure.
+    _args = [l for l in _gp.splitlines()
+             if l.strip().startswith("org.gradle.jvmargs")]
+    _xmx = re.search(r"-Xmx(\d+)([gGmM])", _args[0]) if _args else None
+    _mb = (int(_xmx.group(1)) * 1024 if _xmx.group(2) in "gG"
+           else int(_xmx.group(1))) if _xmx else 0
+    ok("the gradle heap is one a small machine can actually give", 0 < _mb <= 4096, _mb)
 
 # ── tidy up ────────────────────────────────────────────────────────────────────────────
 relay_client.stop()

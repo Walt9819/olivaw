@@ -251,6 +251,53 @@ class Link {
     return call(method, path, body: body, auth: auth, viaRelay: true);
   }
 
+  /// Is the computer answering on its own address right now? One cheap connect, not a
+  /// request: this decides which path to open a long stream on, and getting it wrong
+  /// costs a visible reconnect.
+  Future<bool> _directWorks() async {
+    if (!canReachDirectly) return false;
+    try {
+      final s = await Socket.connect(pairing.host, pairing.port,
+          timeout: const Duration(seconds: 2));
+      s.destroy();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Ask the computer how to reach it from outside, and remember the answer.
+  ///
+  /// Called after a successful local connection, because that is the only moment a phone
+  /// can be told about a rendezvous that was set up after it was paired - by the time it
+  /// needs one, it cannot ask.
+  Future<bool> refreshHome() async {
+    try {
+      final res = await call('POST', '/api/net/home');
+      if (res['ok'] != true) return false;
+      final r = res['relay'];
+      final changed = r is Map
+          ? (pairing.relayUrl != r['url'] || pairing.relayRoom != r['room'])
+          : pairing.relayUrl.isNotEmpty;
+      if (r is Map) {
+        pairing.relayUrl = (r['url'] ?? '').toString();
+        pairing.relayRoom = (r['room'] ?? '').toString();
+      } else {
+        pairing.relayUrl = '';
+        pairing.relayRoom = '';
+      }
+      // The house may also have moved to another address on the same wifi.
+      final addrs = (res['addresses'] as List?)?.cast<String>() ?? const [];
+      if (addrs.isNotEmpty && !addrs.contains(pairing.host)) {
+        pairing.host = addrs.first;
+        return true;
+      }
+      return changed;
+    } catch (_) {
+      return false;
+    }
+  }
+
   void dispose() {
     _relay?.close();
     _relay = null;
@@ -258,8 +305,13 @@ class Link {
 
   // ── the browser stream ───────────────────────────────────────────────────────────
   /// Opens the screencast socket. Yields JPEG frames and JSON events.
-  Future<BrowserStream> watchBrowser(String agent, {String quality = 'normal'}) async {
-    final socket = await _open(expectDer: pairing.certDer);
+  Future<BrowserStream> watchBrowser(String agent,
+      {String quality = 'normal', bool? viaRelay}) async {
+    // Same fallback as reach(): the wifi if it is there, the rendezvous if it is not.
+    // The first version of this always went direct, so the browser - the feature that
+    // most wants to work from a train - was the one thing Phase B did not cover.
+    final useRelay = viaRelay ?? !(await _directWorks());
+    final socket = await _open(expectDer: pairing.certDer, viaRelay: useRelay);
     final key = base64.encode(
       List<int>.generate(16, (_) => Random.secure().nextInt(256)),
     );

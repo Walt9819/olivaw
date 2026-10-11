@@ -58,6 +58,11 @@ CAP_LABEL = {
 # whatever it is called and whoever added it.
 ROUTES = {
     # looking
+    # How to reach this machine from outside the house. Answered by remote.py, not
+    # by the console - and readable with nothing but "ver", because a device that
+    # already holds a token learns nothing from it that it could not learn by
+    # connecting.
+    "net/home": "ver",
     "state": "ver",
     "agents/list": "ver",
     "hermes/status": "ver",

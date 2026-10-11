@@ -11,7 +11,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -89,6 +88,17 @@ class _BootState extends State<Boot> {
     Store.load().then((v) => setState(() => _saved = v));
   }
 
+  /// Not a closure inside build(): there, the `context` parameter shadows the State's
+  /// own, so a BuildContext would be held across the save and `mounted` would be
+  /// guarding something else.
+  Future<void> _paired(Pairing p) async {
+    await Store.save([p]);
+    if (!mounted) return;
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(builder: (_) => Home(pairing: p)),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final saved = _saved;
@@ -96,13 +106,7 @@ class _BootState extends State<Boot> {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
     if (saved.isEmpty) {
-      return LinkScreen(onPaired: (p) async {
-        await Store.save([p]);
-        if (!mounted) return;
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (_) => Home(pairing: p)),
-        );
-      });
+      return LinkScreen(onPaired: _paired);
     }
     return Home(pairing: saved.first);
   }
@@ -262,6 +266,13 @@ class _LinkScreenState extends State<LinkScreen> {
       draft.token = res['token'] as String;
       draft.caps = (res['caps'] as List?)?.cast<String>() ?? const [];
       draft.name = 'Mi ordenador';
+      // How to find this computer when not on its wifi. Handed over now because later is
+      // too late: the moment the phone needs it is the moment it cannot ask.
+      final relay = res['relay'];
+      if (relay is Map) {
+        draft.relayUrl = (relay['url'] ?? '').toString();
+        draft.relayRoom = (relay['room'] ?? '').toString();
+      }
       await widget.onPaired(draft);
     } catch (e) {
       setState(() {
@@ -411,6 +422,11 @@ class _HomeState extends State<Home> {
         _error = '';
         _loading = false;
       });
+      // A rendezvous configured after this phone was paired, or a computer that moved to
+      // another address on the wifi, both arrive here.
+      if (await _link.refreshHome()) {
+        await Store.save([widget.pairing]);
+      }
     } catch (e) {
       setState(() {
         _error = '$e';
@@ -787,15 +803,21 @@ class _RoutinesTabState extends State<RoutinesTab> {
           subtitle: Text((r['schedule_text'] ?? r['schedule'] ?? '').toString()),
           value: r['enabled'] != false,
           onChanged: (v) async {
+            // Taken BEFORE the await, not after: reaching for the messenger through a
+            // BuildContext once the request has come back is a use of a context that may
+            // no longer be in the tree. The switch flips straight away and flips back if
+            // the computer refuses, so the row never lies about what the agent is doing.
+            final messenger = ScaffoldMessenger.of(context);
             setState(() => r['enabled'] = v);
             final res = await widget.link.reach('POST', '/api/cron/flags', body: {
               if (!widget.agent.isDefault) 'slug': widget.agent.slug,
               'id': r['id'],
               'enabled': v,
             });
-            if (res['ok'] != true && mounted) {
+            if (!mounted) return;
+            if (res['ok'] != true) {
               setState(() => r['enabled'] = !v);
-              ScaffoldMessenger.of(c).showSnackBar(SnackBar(
+              messenger.showSnackBar(SnackBar(
                   content: Text((res['detail'] ?? 'No se pudo').toString())));
             }
           },
