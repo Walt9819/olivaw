@@ -1,0 +1,542 @@
+# -*- coding: utf-8 -*-
+"""The phone's door: the certificate, pairing, the permission table, and the rendezvous.
+
+This suite is about one question - *can a phone do something a phone should not be able
+to do* - so most of it is written as attempts that must fail. The certificate and the
+relay are exercised for real (a TLS handshake against a server this starts, and a
+rendezvous in its own process), because both are code we wrote from scratch and "it
+imports" proves nothing about either.
+
+Chrome is not required: the parts that need a browser are measured by hand in the
+scratchpad harness. What is tested here of screencast.py is the part that decides what a
+remote tap is allowed to reach, which must hold whether or not a browser is running.
+"""
+import hashlib
+import json
+import os
+import shutil
+import socket
+import ssl
+import struct
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(ROOT, "src"))
+
+SAND = tempfile.mkdtemp(prefix="olivaw-test-phone-")
+os.environ["OLIVAW_INSTALL_DIR"] = SAND
+os.environ["HERMES_HOME"] = os.path.join(SAND, "hermes")
+os.environ["OLIVAW_CRON_SCHEDULER"] = os.path.join(SAND, "scheduler.py")
+os.environ["OLIVAW_BRIDGE_JS"] = os.path.join(SAND, "bridge.js")
+
+from wizard import pairing, relay_client, remote, screencast, selfcert  # noqa: E402
+
+PORT = 8893
+RELAY_PORT = 8094
+passed = failed = 0
+
+
+def ok(label, cond, extra=""):
+    global passed, failed
+    if cond:
+        passed += 1
+    else:
+        failed += 1
+        print("  FAIL %s  %s" % (label, extra))
+
+
+def section(name):
+    print("\n-- %s" % name)
+
+
+# ── the certificate ────────────────────────────────────────────────────────────────────
+section("a certificate this machine makes for itself")
+
+got = selfcert.ensure(SAND)
+ok("it is created", got["created"] and os.path.isfile(got["cert"]))
+again = selfcert.ensure(SAND)
+ok("and then reused, not remade", not again["created"])
+ok("same fingerprint both times", again["fingerprint"] == got["fingerprint"])
+ok("the fingerprint is a sha256", len(got["fingerprint"]) == 64)
+
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+ctx.load_cert_chain(got["cert"], got["key"])
+ok("OpenSSL accepts the hand-rolled certificate and key", True)
+
+srv = socket.socket()
+srv.bind(("127.0.0.1", 0))
+srv.listen(1)
+cert_port = srv.getsockname()[1]
+
+
+def _serve_one():
+    try:
+        c, _ = srv.accept()
+        with ctx.wrap_socket(c, server_side=True) as s:
+            s.recv(8)
+            s.sendall(b"ok")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+threading.Thread(target=_serve_one, daemon=True).start()
+cli = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+cli.check_hostname = False
+cli.verify_mode = ssl.CERT_NONE
+with socket.create_connection(("127.0.0.1", cert_port), timeout=10) as raw:
+    with cli.wrap_socket(raw) as s:
+        der = s.getpeercert(binary_form=True)
+        s.sendall(b"ping")
+        answer = s.recv(8)
+ok("a real TLS handshake completes against it", answer == b"ok")
+ok("the certificate on the wire is the one the QR names",
+   hashlib.sha256(der).hexdigest() == got["fingerprint"])
+ok("the two words shown on both screens come from the certificate",
+   selfcert.short_code(got["fingerprint"]) == selfcert.short_code(got["fingerprint"])
+   and selfcert.short_code("a" * 64) != selfcert.short_code("b" * 64))
+
+key = selfcert.generate_key(1024)
+ok("a generated key really is a key: d*e == 1 mod phi",
+   (key["d"] * key["e"]) % ((key["p"] - 1) * (key["q"] - 1)) == 1)
+ok("and its modulus is the product of its primes", key["p"] * key["q"] == key["n"])
+ok("a DER integer with the top bit set is padded, not read as negative",
+   selfcert._int(0xFF) == b"\x02\x02\x00\xff")
+
+# ── the permission table ───────────────────────────────────────────────────────────────
+section("default deny")
+
+ALL = list(pairing.ALL_CAPS)
+ok("a route nobody listed cannot be called", not pairing.allowed("invented/route", ALL))
+ok("a route added to the console tomorrow is closed until it is listed",
+   not pairing.allowed("agents/delete-everything", ALL))
+for route in ("phone/offer", "phone/enable", "phone/caps", "phone/relay",
+              "phone/revoke"):
+    ok("a phone cannot manage pairing: %s" % route, not pairing.allowed(route, ALL))
+for route in ("provider/install", "telegram/capture", "session/login", "teams/apply",
+              "numbers/add", "rescue/start", "workspace/pick"):
+    ok("and cannot reach %s even with every permission" % route,
+       not pairing.allowed(route, ALL))
+ok("looking needs 'ver'", pairing.allowed("agents/list", ["ver"]))
+ok("talking needs 'hablar'", pairing.allowed("talk/send", ["ver", "hablar"])
+   and not pairing.allowed("talk/send", ["ver"]))
+ok("renaming needs 'config'", pairing.allowed("agent/rename", ["ver", "config"])
+   and not pairing.allowed("agent/rename", ["ver", "hablar", "tareas", "operar"]))
+# NEVER is a second lock behind default-deny, so proving it works means giving it
+# something to block: a route that IS listed, under a forbidden prefix.
+_saved = dict(pairing.ROUTES)
+pairing.ROUTES["phone/status"] = "ver"
+ok("a forbidden prefix wins even over a route that is listed",
+   not pairing.allowed("phone/status", ALL))
+pairing.ROUTES.clear()
+pairing.ROUTES.update(_saved)
+ok("and the prefix list still names the pairing routes",
+   "phone/" in pairing.NEVER)
+
+# A timing property cannot be caught by asking the function for an answer, so this is
+# checked where it lives: the comparison has to BE constant-time, not merely correct.
+_src = open(os.path.join(ROOT, "src", "wizard", "pairing.py"), encoding="utf-8").read()
+ok("the device token is compared in constant time",
+   "hmac.compare_digest(str(dev.get(\"token\", \"\")), want)" in _src)
+ok("and every entry is compared, so the clock does not say which one matched",
+   "found = dev" in _src and "return found" in _src and "break" not in
+   _src.split("def device_for")[1].split("def touch")[0])
+_relay_src = open(os.path.join(ROOT, "relay", "relay.py"), encoding="utf-8").read()
+ok("the relay compares its room key in constant time",
+   "hmac.compare_digest(room.key_hash, want)" in _relay_src)
+ok("and stores only the hash of it",
+   "hashlib.sha256(key.encode(\"utf-8\")).hexdigest()" in _relay_src)
+
+ok("every listed capability is one of the real ones",
+   all(c in pairing.ALL_CAPS for c in pairing.ROUTES.values()))
+ok("every capability has something to say for itself in Spanish",
+   all(c in pairing.CAP_LABEL for c in pairing.ALL_CAPS))
+ok("a new phone is not given the browser or the settings",
+   "navegador" not in pairing.DEFAULT_CAPS and "config" not in pairing.DEFAULT_CAPS)
+
+# ── the store ──────────────────────────────────────────────────────────────────────────
+section("the device store")
+
+
+class FakeApi(object):
+    seen = []
+
+    def dispatch(self, path, body):
+        FakeApi.seen.append(path)
+        return {"ok": True, "echo": path}
+
+
+remote._shim = FakeApi()
+screencast.port_of = lambda agent, install_dir=None: 9876   # nothing is listening there
+
+pairing.set_enabled(SAND, True)
+st = remote.start(SAND, logger=lambda m: None, port=PORT)
+ok("the door opens", st.get("running"), st)
+FP = st.get("fingerprint") or got["fingerprint"]
+
+
+class Phone(object):
+    """Exactly what the app does: pin the fingerprint, carry a bearer token."""
+
+    def __init__(self, fingerprint, port=PORT):
+        self.fp, self.port, self.token = fingerprint, port, ""
+
+    def request(self, method, path, body=None, token=None, headers=()):
+        c = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        c.check_hostname = False
+        c.verify_mode = ssl.CERT_NONE
+        raw = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+        s = c.wrap_socket(raw)
+        if selfcert.fingerprint(s.getpeercert(binary_form=True)) != self.fp:
+            s.close()
+            raise ssl.SSLError("pinned certificate mismatch")
+        data = json.dumps(body or {}).encode()
+        head = ["%s %s HTTP/1.1" % (method, path), "Host: olivaw",
+                "Content-Length: %d" % len(data), "Connection: close"]
+        tok = self.token if token is None else token
+        if tok:
+            head.append("Authorization: Bearer %s" % tok)
+        head += list(headers)
+        s.sendall(("\r\n".join(head) + "\r\n\r\n").encode() + data)
+        buf = b""
+        while True:
+            try:
+                chunk = s.recv(65536)
+            except Exception:  # noqa: BLE001
+                break
+            if not chunk:
+                break
+            buf += chunk
+        s.close()
+        h, _, b = buf.partition(b"\r\n\r\n")
+        code = int(h.split(b" ")[1]) if b" " in h else 0
+        try:
+            return code, json.loads(b.decode("utf-8", "replace") or "{}")
+        except ValueError:
+            return code, {"raw": b[:80].decode("latin-1")}
+
+
+p = Phone(FP)
+code, res = p.request("GET", "/ping")
+ok("/ping answers without a token", code == 200 and res.get("app") == "olivaw", res)
+ok("and says nothing about this machine",
+   set(res) <= {"ok", "app", "protocol", "pairing"}, res)
+try:
+    Phone("0" * 64).request("GET", "/ping")
+    ok("a different certificate is refused by the phone", False)
+except ssl.SSLError:
+    ok("a different certificate is refused by the phone", True)
+
+section("pairing")
+code, res = p.request("POST", "/pair", {"pin": "000000"})
+ok("no open window, no token", code == 403, res)
+offer = pairing.offer(SAND)
+code, res = p.request("POST", "/pair", {"pin": "999999"})
+ok("the wrong code is refused", code == 403, res)
+code, res = p.request("POST", "/pair", {"pin": offer["pin"], "name": u"Pixel de Walt",
+                                        "platform": "android"})
+ok("the code on screen works", code == 200 and res.get("token"), res)
+p.token = res.get("token", "")
+ok("a new phone gets the useful half and nothing else",
+   sorted(res.get("caps", [])) == sorted(pairing.DEFAULT_CAPS), res.get("caps"))
+code, res = p.request("POST", "/pair", {"pin": offer["pin"]})
+ok("one code, one device", code == 403, res)
+
+offer2 = pairing.offer(SAND)
+for _ in range(pairing.PIN_TRIES):
+    p.request("POST", "/pair", {"pin": "111111"})
+code, res = p.request("POST", "/pair", {"pin": offer2["pin"]})
+ok("guessing burns the offer, right answer included", code == 403, res)
+
+stored = json.load(open(os.path.join(SAND, pairing.STORE), encoding="utf-8"))
+ok("the token itself is never stored",
+   all(p.token not in json.dumps(d) for d in stored["devices"]))
+ok("only its hash is", any(d["token"] == hashlib.sha256(p.token.encode()).hexdigest()
+                           for d in stored["devices"]))
+ok("the pairing offer is gone from disk once it is used",
+   not os.path.isfile(os.path.join(SAND, pairing.OFFER_STORE)))
+
+section("what a token opens")
+FakeApi.seen = []
+ok("no token, no API", p.request("POST", "/api/agents/list", {}, token="")[0] == 401)
+ok("an invented token, no API",
+   p.request("POST", "/api/agents/list", {}, token="x" * 40)[0] == 401)
+ok("the paired phone may look", p.request("POST", "/api/agents/list", {})[0] == 200)
+ok("and talk", p.request("POST", "/api/talk/send", {"text": "hola"})[0] == 200)
+ok("but not rename", p.request("POST", "/api/agent/rename", {})[0] == 403)
+ok("nor install anything", p.request("POST", "/api/provider/install", {})[0] == 403)
+ok("nor pair another phone", p.request("POST", "/api/phone/offer", {})[0] == 403)
+ok("and nothing forbidden ever reached the console",
+   set(FakeApi.seen) == {"/api/agents/list", "/api/talk/send"}, FakeApi.seen)
+
+section("the browser is its own permission")
+WS_HEAD = ["Upgrade: websocket", "Sec-WebSocket-Key: abcdefghijklmnop",
+           "Sec-WebSocket-Version: 13"]
+ok("without it, no stream",
+   p.request("GET", "/ws/browser?agent=default", None, headers=WS_HEAD)[0] == 403)
+dev_id = pairing.devices(SAND)["devices"][0]["id"]
+pairing.set_caps(SAND, dev_id, ["ver", "navegador"])
+ok("with it, it is let through to a browser that is not open",
+   p.request("GET", "/ws/browser?agent=default", None, headers=WS_HEAD)[0] == 409)
+ok("taking a permission away takes it away",
+   p.request("POST", "/api/talk/send", {"text": "x"})[0] == 403)
+ok("'ver' cannot be taken away by accident",
+   "ver" in pairing.set_caps(SAND, dev_id, [])["caps"])
+
+section("the master switch and revoking")
+pairing.set_enabled(SAND, False)
+ok("off shuts every device at once",
+   p.request("POST", "/api/agents/list", {})[0] == 401)
+pairing.set_enabled(SAND, True)
+ok("on gives them back", p.request("POST", "/api/agents/list", {})[0] == 200)
+pairing.revoke(SAND, dev_id)
+ok("a revoked device is a stranger",
+   p.request("POST", "/api/agents/list", {})[0] == 401)
+ok("and is gone from the list",
+   all(d["id"] != dev_id for d in pairing.devices(SAND)["devices"]))
+
+# ── what a remote tap may reach ───────────────────────────────────────────────────────
+section("what a remote tap may reach")
+
+
+class Loose(screencast.Session):
+    def __init__(self):
+        self.armed_until = time.time() + 999
+        self.sent = []
+        self.meta = {"deviceWidth": 1000, "deviceHeight": 500}
+        self._lock = threading.Lock()
+        self._ws = None
+
+    def _send(self, method, params=None):
+        self.sent.append((method, params))
+        return 1
+
+
+loose = Loose()
+for bad in ("javascript:alert(1)", "JaVaScRiPt:alert(1)", "data:text/html,<b>x",
+            "file:///c:/windows/win.ini", "chrome://settings", "vbscript:x",
+            "//evil.com", ""):
+    ok("a tap cannot navigate to %r" % bad, not loose.navigate(bad).get("ok"))
+ok("but a plain address is fine", loose.navigate("gmail.com")["url"] == "https://gmail.com")
+ok("and a real url is left alone",
+   loose.navigate("http://192.168.1.5:8080/x")["url"] == "http://192.168.1.5:8080/x")
+ok("an arbitrary key is refused", not loose.key("F13").get("ok"))
+ok("a named one is not", loose.key("Enter").get("ok"))
+ok("coordinates are scaled against the page, not trusted",
+   loose._css(0.5, 0.5) == (500.0, 250.0))
+ok("and are clamped, so a tap cannot be aimed outside the window",
+   loose._css(9.0, -3.0) == (1000.0, 0.0))
+
+cold = Loose()
+cold.armed_until = 0
+for what in (lambda: cold.tap(0.5, 0.5), lambda: cold.type_text("hola"),
+             lambda: cold.key("Enter"), lambda: cold.navigate("gmail.com"),
+             lambda: cold.back()):
+    ok("nothing is driveable before arming", not what().get("ok"))
+ok("and nothing was sent to Chrome", not cold.sent, cold.sent)
+
+# ── the rendezvous ─────────────────────────────────────────────────────────────────────
+section("the rendezvous")
+
+relay_proc = subprocess.Popen(
+    [sys.executable, "-I", os.path.join(ROOT, "relay", "relay.py"),
+     "--port", str(RELAY_PORT)],
+    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+time.sleep(1.5)
+cfg = relay_client.save_config(SAND, url="ws://127.0.0.1:%d" % RELAY_PORT, on=True)
+relay_client.start(SAND, PORT, logger=lambda m: None)
+for _ in range(60):
+    if relay_client.state(SAND)["connected"]:
+        break
+    time.sleep(0.2)
+ok("this machine dials out and stays attached",
+   relay_client.state(SAND)["connected"], relay_client.state(SAND))
+
+
+class Guest(object):
+    """The phone's half of the pipe: one WebSocket carrying TCP streams."""
+
+    def __init__(self, port, room):
+        import base64
+        self.sock = socket.create_connection(("127.0.0.1", port), timeout=10)
+        k = base64.b64encode(os.urandom(16)).decode()
+        self.sock.sendall((
+            "GET /attach?role=guest&room=%s HTTP/1.1\r\nHost: r\r\nUpgrade: websocket\r\n"
+            "Connection: Upgrade\r\nSec-WebSocket-Key: %s\r\n"
+            "Sec-WebSocket-Version: 13\r\n\r\n" % (room, k)).encode())
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            buf += self.sock.recv(4096)
+        if b" 101 " not in buf.split(b"\r\n", 1)[0]:
+            raise OSError("refused")
+        self.lock = threading.Lock()
+        self.streams = {}
+        self.next = 1
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def _ws_send(self, payload):
+        mask = os.urandom(4)
+        n = len(payload)
+        if n < 126:
+            h = struct.pack("!BB", 0x82, 0x80 | n)
+        elif n < 65536:
+            h = struct.pack("!BBH", 0x82, 0x80 | 126, n)
+        else:
+            h = struct.pack("!BBQ", 0x82, 0x80 | 127, n)
+        with self.lock:
+            self.sock.sendall(h + mask +
+                              bytes(b ^ mask[i % 4] for i, b in enumerate(payload)))
+
+    def _exact(self, n):
+        out = b""
+        while len(out) < n:
+            c = self.sock.recv(n - len(out))
+            if not c:
+                raise OSError("closed")
+            out += c
+        return out
+
+    def _loop(self):
+        try:
+            while True:
+                b1, b2 = self._exact(2)
+                n = b2 & 0x7F
+                if n == 126:
+                    n = struct.unpack("!H", self._exact(2))[0]
+                elif n == 127:
+                    n = struct.unpack("!Q", self._exact(8))[0]
+                mask = self._exact(4) if b2 & 0x80 else b""
+                body = self._exact(n) if n else b""
+                if mask:
+                    body = bytes(b ^ mask[i % 4] for i, b in enumerate(body))
+                if (b1 & 0x0F) == 0x8 or len(body) < 5:
+                    continue
+                kind, sid = struct.unpack("!BI", body[:5])
+                peer = self.streams.get(sid)
+                if peer and kind == 2:
+                    peer.sendall(body[5:])
+                elif peer and kind == 3:
+                    peer.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def tunnel(self):
+        a, b = socket.socketpair()
+        sid = self.next
+        self.next += 1
+        self.streams[sid] = b
+        self._ws_send(struct.pack("!BI", 1, sid))
+
+        def up():
+            try:
+                while True:
+                    d = b.recv(32768)
+                    if not d:
+                        break
+                    self._ws_send(struct.pack("!BI", 2, sid) + d)
+            except Exception:  # noqa: BLE001
+                pass
+        threading.Thread(target=up, daemon=True).start()
+        return a
+
+
+guest = Guest(RELAY_PORT, cfg["room"])
+time.sleep(0.4)
+
+
+def through_relay(method, path, body=None, token=""):
+    c = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    c.check_hostname = False
+    c.verify_mode = ssl.CERT_NONE
+    s = c.wrap_socket(guest.tunnel())
+    if selfcert.fingerprint(s.getpeercert(binary_form=True)) != FP:
+        raise ssl.SSLError("pinned certificate mismatch through the relay")
+    data = json.dumps(body or {}).encode()
+    head = ["%s %s HTTP/1.1" % (method, path), "Host: olivaw",
+            "Content-Length: %d" % len(data), "Connection: close"]
+    if token:
+        head.append("Authorization: Bearer %s" % token)
+    s.sendall(("\r\n".join(head) + "\r\n\r\n").encode() + data)
+    buf = b""
+    while True:
+        try:
+            chunk = s.recv(65536)
+        except Exception:  # noqa: BLE001
+            break
+        if not chunk:
+            break
+        buf += chunk
+    s.close()
+    h, _, b = buf.partition(b"\r\n\r\n")
+    return int(h.split(b" ")[1]), json.loads(b.decode("utf-8", "replace") or "{}")
+
+
+code, res = through_relay("GET", "/ping")
+ok("a phone that is not on this wifi reaches this machine",
+   code == 200 and res.get("app") == "olivaw", res)
+ok("and the certificate at the far end is this machine's, not the relay's", True)
+
+off3 = pairing.offer(SAND)
+code, res = through_relay("POST", "/pair", {"pin": off3["pin"], "name": "Pixel"})
+ok("it can pair from outside", code == 200 and res.get("token"), res)
+away = res.get("token", "")
+ok("and use the API", through_relay("POST", "/api/agents/list", {}, away)[0] == 200)
+ok("with exactly the permissions it has at home",
+   through_relay("POST", "/api/provider/install", {}, away)[0] == 403)
+
+raw = guest.tunnel()
+raw.sendall(b"GET /ping HTTP/1.1\r\nHost: x\r\n\r\n")
+time.sleep(0.5)
+raw.settimeout(1.0)
+try:
+    answer = raw.recv(400)
+except Exception:  # noqa: BLE001
+    answer = b""
+ok("plaintext through the pipe gets nothing: the far end speaks only TLS",
+   b"olivaw" not in answer.lower(), answer[:60])
+
+try:
+    Guest(RELAY_PORT, "no-such-room")
+    ok("an unknown room is refused", False)
+except OSError:
+    ok("an unknown room is refused", True)
+
+import base64 as _b64  # noqa: E402
+s = socket.create_connection(("127.0.0.1", RELAY_PORT), timeout=5)
+s.sendall(("GET /attach?role=host&room=%s&key=wrong HTTP/1.1\r\nHost: r\r\n"
+           "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\n"
+           "Sec-WebSocket-Version: 13\r\n\r\n"
+           % (cfg["room"], _b64.b64encode(os.urandom(16)).decode())).encode())
+head = s.recv(200)
+ok("and a room cannot be stolen from the machine that owns it",
+   b" 101 " not in head.split(b"\r\n", 1)[0], head[:60])
+s.close()
+s = socket.create_connection(("127.0.0.1", RELAY_PORT), timeout=5)
+s.sendall(("GET /attach?role=host&room=brandnew HTTP/1.1\r\nHost: r\r\n"
+           "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\n"
+           "Sec-WebSocket-Version: 13\r\n\r\n"
+           % _b64.b64encode(os.urandom(16)).decode()).encode())
+head = s.recv(200)
+ok("a host with no key at all is refused",
+   b" 101 " not in head.split(b"\r\n", 1)[0], head[:60])
+s.close()
+
+# ── tidy up ────────────────────────────────────────────────────────────────────────────
+relay_client.stop()
+remote.stop()
+try:
+    relay_proc.terminate()
+except Exception:  # noqa: BLE001
+    pass
+try:
+    srv.close()
+except Exception:  # noqa: BLE001
+    pass
+shutil.rmtree(SAND, ignore_errors=True)
+
+print("\n%d passed, %d failed" % (passed, failed))
+sys.exit(1 if failed else 0)

@@ -1,0 +1,27 @@
+name: olivaw
+description: Olivaw en el teléfono — tus agentes, donde estés.
+publish_to: "none"
+version: 0.1.0
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # The ONLY package here, and it is the Flutter team's own (github.com/flutter/packages).
+  # It exists because a pairing token has to survive the app being closed, and the
+  # alternatives were writing an Android platform channel by hand or keeping the token in
+  # a cache directory the system is allowed to delete. Everything else this app does -
+  # TLS with a pinned certificate, HTTP, WebSocket framing, the rendezvous tunnel, even
+  # SHA-256 - is written here against dart:io and dart:typed_data.
+  shared_preferences: ^2.3.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

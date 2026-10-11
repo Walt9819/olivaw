@@ -817,3 +817,12 @@ li.bad .boot-tick{background:var(--warn); border-color:var(--warn); color:#fff;
   .av-xl{width:56px; height:56px; font-size:20px}
   .agnamerow h1{font-size:24px}
 }
+
+/* The phone page. A pairing code is read off a screen and typed into a small keyboard,
+   so it is big, spaced, and in a font where 0 and O are not an argument. */
+.pairgrid { display:flex; gap:18px; flex-wrap:wrap; margin-top:10px }
+.paircode { font:700 22px/1.3 ui-monospace,"Cascadia Mono",Consolas,monospace;
+            letter-spacing:.08em; margin-top:2px }
+.swrow { display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer }
+.swrow input { width:16px; height:16px; flex:none }
+.swrow b.warn { color:#b45309; font-weight:600 }

@@ -95,6 +95,14 @@ try:
     import intercom as _intercom
 except Exception:  # noqa: BLE001
     _intercom = None
+# The door the phone comes in through, and the rendezvous that lets it find this house
+# from outside it. Guarded like everything else here: a supervisor that will not start
+# because of a feature nobody has turned on is a worse outage than the feature missing.
+try:
+    from wizard import remote as _remote
+    from wizard import relay_client as _relay
+except Exception:  # noqa: BLE001
+    _remote = _relay = None
 
 
 # The update source is PINNED into the distributed code. A mutable `repo` in updater.config.json
@@ -1547,6 +1555,27 @@ def _activate_pending_policy(cfg, state):
                 f"(attempt {tries}/{_ctxpol.MAX_ACTIVATION_TRIES}): {res.get('detail', '')}")
 
 
+def _ensure_remote():
+    """Open or shut the phone's door, to match what the owner last asked for.
+
+    Checked on every tick rather than at startup because the owner turns this on from
+    the console, which is a different process: a setting that only took effect after a
+    reboot would read as broken. Both calls are cheap when nothing changed - "already
+    listening and still wanted" does nothing at all.
+    """
+    if not _remote:
+        return
+    try:
+        _remote.start(INSTALL_DIR, logger=log)
+    except Exception as e:  # noqa: BLE001
+        log(f"remote: could not apply the phone setting: {e}")
+    if _relay:
+        try:
+            _relay.start(INSTALL_DIR, _remote.PORT, logger=log)
+        except Exception as e:  # noqa: BLE001
+            log(f"relay: could not apply the rendezvous setting: {e}")
+
+
 def main():
     cfg = load_config()
     log(f"supervisor up. install={INSTALL_DIR} version={read_version()} "
@@ -1621,6 +1650,9 @@ def main():
             # the colour is read by Chrome at startup and does not need re-deciding four
             # times a minute.
             _ensure_browser_labels(stamp=False)
+            # Same cadence, same reason: the console that turns the phone on is another
+            # process, so this is how its switch becomes true here.
+            _ensure_remote()
             # The owner pressed "update now" in the UI. Checked every loop, not on the
             # poll interval, so the button feels like a button (~15s) instead of like a
             # setting that might take three quarters of an hour to do anything.

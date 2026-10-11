@@ -46,8 +46,9 @@ if __package__ in (None, ""):
     from wizard import (agents_registry, avatars, browser_setup, channels, checks,
                         config_writer, browser_label, connections, context_policy,
                         cron_patch, cronjobs, hermes_ctl, image_setup, numbers, obsidian,
-                        proposals, providers, renaming, rescue, selfcare, session_health,
-                        talk, telegram_health, telegram_setup, usecases)
+                        pairing, proposals, providers, relay_client, remote, renaming,
+                        rescue, selfcare, session_health, talk, telegram_health,
+                        telegram_setup, usecases)
     from wizard import workspace as wsdir   # aliased: `workspace` is a local
                                             # variable name elsewhere in this file
     from wizard.procutil import http_json, which
@@ -55,9 +56,10 @@ else:
     from . import updates as updates_mod
     from . import (agents_registry, avatars, browser_setup, channels, checks,
                    config_writer, browser_label, connections, context_policy, cron_patch,
-                   cronjobs, hermes_ctl, image_setup, numbers, obsidian, proposals,
-                   providers, renaming, rescue, selfcare, session_health, talk,
-                   telegram_health, telegram_setup, usecases)
+                   cronjobs, hermes_ctl, image_setup, numbers, obsidian, pairing,
+                   proposals, providers, relay_client, remote, renaming, rescue,
+                   selfcare, session_health, talk, telegram_health, telegram_setup,
+                   usecases)
     from . import workspace as wsdir        # aliased: see above
     from .procutil import http_json, which
 
@@ -648,6 +650,62 @@ class Handler(BaseHTTPRequestHandler):
                                        install_dir=INSTALL_DIR)
             # Deliberately NOT the whole agents snapshot: see _agent_rename.
             return res
+
+        # ── the phone ──────────────────────────────────────────────────────
+        # This whole block is desktop-only. pairing.NEVER keeps every one of these
+        # unreachable from a phone, because a contact point that can grant itself
+        # permissions, pair a second device or move the rendezvous is not a contact
+        # point, it is a second owner.
+        if route == "phone/status":
+            st = remote.state(INSTALL_DIR)
+            st["relay"] = relay_client.state(INSTALL_DIR)
+            return {"ok": True, **st}
+
+        if route == "phone/enable":
+            on = bool(body.get("on"))
+            pairing.set_enabled(INSTALL_DIR, on)
+            if not on:
+                pairing.cancel_offer(INSTALL_DIR)
+                remote.stop()
+            else:
+                remote.start(INSTALL_DIR)
+            return {"ok": True, **remote.state(INSTALL_DIR)}
+
+        if route == "phone/offer":
+            res = pairing.offer(INSTALL_DIR, caps=body.get("caps"))
+            if res.get("ok"):
+                # Open the door now rather than on the supervisor's next tick: the
+                # owner is looking at a code that is only good for three minutes.
+                remote.start(INSTALL_DIR)
+                st = remote.state(INSTALL_DIR)
+                res.update({"addresses": st.get("addresses", []),
+                            "port": st.get("port"), "code": st.get("code", ""),
+                            "fingerprint": st.get("fingerprint", ""),
+                            "running": st.get("running"),
+                            "firewall": st.get("firewall", {})})
+            return res
+
+        if route == "phone/cancel":
+            pairing.cancel_offer(INSTALL_DIR)
+            return {"ok": True}
+
+        if route == "phone/revoke":
+            return pairing.revoke(INSTALL_DIR, body.get("id", ""))
+
+        if route == "phone/caps":
+            return pairing.set_caps(INSTALL_DIR, body.get("id", ""), body.get("caps"))
+
+        if route == "phone/rename":
+            return pairing.rename(INSTALL_DIR, body.get("id", ""), body.get("name", ""))
+
+        if route == "phone/firewall":
+            return remote.open_firewall()
+
+        if route == "phone/relay":
+            relay_client.save_config(INSTALL_DIR, url=body.get("url", ""),
+                                     on=body.get("on"))
+            relay_client.start(INSTALL_DIR, remote.PORT)
+            return {"ok": True, **relay_client.state(INSTALL_DIR)}
 
         if route == "check":
             what = body.get("what")

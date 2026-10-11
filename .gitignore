@@ -53,3 +53,22 @@ console/
 
 # Generated while designing the icon; not part of the payload
 tools/olivaw-preview.png
+
+# The phone's door. In production the install root IS the code root, so these land here.
+# remote-key.pem is this machine's whole identity to every paired phone, and devices.json
+# holds the hash of every device token: neither may ever be published.
+remote-cert.pem
+remote-key.pem
+remote-key.pem.new
+remote-cert.pem.new
+devices.json
+pair-offer.json
+relay.json
+
+# Flutter build output
+app/.dart_tool/
+app/build/
+app/android/
+app/ios/
+app/.flutter-plugins*
+app/pubspec.lock

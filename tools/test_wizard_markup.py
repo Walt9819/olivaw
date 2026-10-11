@@ -35,6 +35,8 @@ def check(name, cond, extra=""):
 
 def main():
     src = io.open(APP, encoding="utf-8").read()
+    server = io.open(os.path.join(ROOT, "src", "wizard", "wizard_server.py"),
+                     encoding="utf-8").read()
 
     print("=== app.js is valid JavaScript ===")
     node = shutil.which("node")
@@ -238,6 +240,32 @@ def main():
           "function cronHtml(st, only)" in src)
     check("and the filter is decided by the page, not inherited",
           'curSec().id === "tareas"' in src)
+
+    print("\n=== the phone page ===")
+    check("there is a section for it, on the Equipo half",
+          'id: "telefono", scope: "team"' in src)
+    check("it is rendered and wired",
+          "render: secPhone, wire: ePhone" in src and
+          "function secPhone()" in src and "function ePhone()" in src)
+    # The pairing code is read off one screen and typed into another, so the thing that
+    # makes it safe is the two words - which must be shown, and must be explained as a
+    # reason to STOP, not as decoration.
+    check("the two words are shown during pairing", "phone/offer" in src and
+          'esc(o.code || st.code' in src)
+    check("and the page says what to do when they do not match",
+          "no contin" in src and "ordenador" in src)
+    check("every phone route the page calls exists on the server",
+          all(('"%s"' % r) in server for r in
+              ("phone/status", "phone/enable", "phone/offer", "phone/cancel",
+               "phone/revoke", "phone/caps", "phone/firewall", "phone/relay")))
+    # A permission the console can switch has to be a permission the server knows; a
+    # checkbox for a capability nobody enforces is worse than no checkbox.
+    check("the capabilities the page draws come from the server, not from the page",
+          "(st.caps || [])" in src and "st.labels" in src)
+    check("the page says the rendezvous cannot read anything",
+          "cifrado de extremo a extremo" in src)
+    for cls in (".pairgrid", ".paircode", ".swrow"):
+        check("app.css styles %s" % cls, (cls + "{" in css) or (cls + " " in css))
 
     for cls in (".av", ".av-sm", ".av-xl", ".navpill", ".npb", ".agprof", ".agcam",
                 ".agnamerow", ".fem", ".fsw"):

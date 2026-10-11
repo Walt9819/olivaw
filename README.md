@@ -764,6 +764,93 @@ skip the wizard and configure from parameters (add `-NoWizard` / `HB_NO_WIZARD=1
 > so there's no manual paste when the `hermes` command is available. The paste-in snippet remains
 > only as a fallback for machines where the CLI isn't on PATH.
 
+## Olivaw on a phone
+
+The console is on the computer. The phone is a *different kind of contact point*: it can
+be left in a taxi, so the rule it is built around is the one the owner set — the main
+channel is almost unrestricted, and **anything else must not be able to compromise the
+machine, the agents, or the way they work**. Everything below follows from that.
+
+### Where it lives
+
+Not in `wizard_server.py`. That server binds `127.0.0.1`, rejects any request whose
+`Host` is not loopback (anti-DNS-rebinding), mints a fresh token per launch, and only
+exists while the console is open — all three deliberate, and all three wrong for a phone.
+The always-on process is the supervisor, so `wizard/remote.py` runs there and
+`launcher.py` opens or shuts it on each tick to match the switch in the console.
+
+### Nothing is installed, and nothing is opened
+
+- **A certificate this machine signs for itself** (`wizard/selfcert.py`): RSA keygen,
+  DER, X.509, PKCS#1 signing, all from `secrets` and `pow()`, because `pip install
+  cryptography` is exactly the step this product exists to avoid. It is never trusted by
+  name — the phone pins *that certificate* from the pairing screen and refuses every
+  other one. Stricter than the public CA system, which vouches for a name and admits
+  anyone who fools a CA.
+- **No inbound port on the internet.** On the wifi the phone dials the computer. Away
+  from it, both dial *out* to a rendezvous (`relay/relay.py`, ~200 lines, stdlib only)
+  that forwards bytes it has no key for — the TLS session is still phone-to-computer, so
+  whoever runs the relay sees ciphertext and nothing else. That is what makes hosting it
+  a question of cost rather than trust.
+- **Windows firewall**: a covered port fails as silence, so the console asks and can fix
+  it, scoped to the *private* profile — the wifi at home, not every café the laptop joins.
+
+### Default deny, and powers rather than a switch
+
+`wizard/pairing.py` holds a table of route → permission. A route that is not in that
+table cannot be reached from a phone, whatever it is called — so a console route added
+next month is closed until somebody opens it on purpose. The opposite arrangement, a
+deny-list, fails open every time a feature is added, which is the only failure mode that
+matters here.
+
+Pairing hands out the useful half (see them, talk to them, their routines, start and
+stop). Two stay off until the owner turns them on per device:
+
+- **`navegador`** — driving that agent's Chrome. That window is signed into the owner's
+  accounts; whoever drives it *is* the owner as far as every site is concerned.
+- **`config`** — the brain, the vault, the channels, renaming. The settings that decide
+  what Olivaw is.
+
+The device token is stored only as a SHA-256 and compared in constant time, every entry
+every time, so the clock does not say how far down the list the answer was.
+
+### The browser, live
+
+`wizard/screencast.py` turns Chrome's own `Page.startScreencast` into JPEGs and taps back
+into `Input.dispatchMouseEvent`. Measured on Chrome 154: **15 fps at ~75 KB/s** with a tap
+landing in 76 ms at the throttled setting, 60 fps at ~400 KB/s at the sharp one. DevTools
+itself is never exposed — it stays on loopback, and this process is the only thing that
+speaks it.
+
+Driving is **armed, not standing**: control expires on its own, and the window wears a
+banner naming who is driving for as long as it lasts. A session that merely *can* click is
+a session that eventually clicks something nobody meant.
+
+Three things Chrome does that had to be found by running it:
+
+- An **occluded window renders nothing at all** — no frames, no error, just silence. Two
+  flags in `browser_setup.launch()` keep it drawing behind other windows.
+- A page that **finished painting before the stream opened sends nothing either**, and
+  re-issuing `startScreencast` does not help. `Page.captureScreenshot` composites on
+  demand, so a still is taken on open, on request, and on a slow heartbeat.
+- The **size a tap is scaled against rides along with a streamed frame**, so an idle tab
+  has no size and the first tap lands wherever the fallback guess puts it (it landed 60px
+  below the button). `Page.getLayoutMetrics` answers without the page doing anything.
+
+### The app
+
+`app/` — Flutter, Android first. One dependency, the Flutter team's own
+`shared_preferences`; the TLS pinning, HTTP, WebSocket framing, rendezvous tunnel and even
+SHA-256 are written against `dart:io`. There is no QR scanner, because scanning one needs
+a camera package and verifies no more than the two words a person compares. It is
+distributed as an APK on the same GitHub Releases page as everything else: no store, no
+account, no cost.
+
+**It has never been compiled** — there is no Flutter SDK on the development machine. The
+Python half is tested end to end (`tools/test_phone.py`, 90 checks: a real TLS handshake
+against the hand-rolled certificate, a real rendezvous in its own process, and every
+forbidden route attempted and refused). The Dart half is not.
+
 ## Publishing an update (maintainer)
 
 One-time setup (so `--publish` can create the GitHub Release):

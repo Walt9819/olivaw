@@ -358,6 +358,12 @@
       lead: "Quién razona por tus agentes y qué ejecuta sus acciones. Es <b>compartido</b>: " +
             "lo que cambies aquí les afecta a todos.",
       render: secBrain, wire: eBrain },
+    { id: "telefono", scope: "team", icon: "📱", label: "Tu teléfono",
+      title: "Olivaw en tu teléfono",
+      lead: "Enlaza un teléfono y lleva a tus agentes encima: verlos, hablarles, revisar " +
+            "sus rutinas. Cada teléfono lleva sólo los permisos que le des, y puedes " +
+            "quitárselos — o borrarlo — en cualquier momento.",
+      render: secPhone, wire: ePhone },
     { id: "version", scope: "team", icon: "🔄", label: "Versión y actualizaciones",
       title: "Versión y actualizaciones",
       lead: "Olivaw se actualiza solo cuando nadie lo está usando. Aquí ves en qué " +
@@ -879,6 +885,235 @@
     if (el("brainRecheck")) el("brainRecheck").onclick = load;
     if (el("brainRedo")) el("brainRedo").onclick = function () { enterSetup(1); };
     load();
+  }
+
+  // ── the phone ───────────────────────────────
+  // Pairing is a code on this screen typed into the phone, and two words on both screens
+  // that have to match. The words are computed from the certificate each side is actually
+  // holding, which is what makes them worth comparing: somebody sitting in the middle of
+  // the wifi would have to present a different certificate, and a different certificate
+  // produces different words.
+  var PHONE = { st: null, offer: null, left: 0, timer: 0 };
+
+  function secPhone() {
+    return '' +
+      '<div id="phBox" class="card pad"><span class="muted small">Comprobando\u2026</span></div>' +
+      '<div id="phPair" style="margin-top:12px"></div>' +
+      '<div id="phDevs" style="margin-top:14px"></div>' +
+      '<div id="phAway" style="margin-top:14px"></div>';
+  }
+
+  function capRow(dev, cap, labels) {
+    var on = (dev.caps || []).indexOf(cap) >= 0;
+    var hard = (cap === "navegador" || cap === "config");
+    return '<label class="swrow" data-dev="' + esc(dev.id) + '" data-cap="' + esc(cap) + '">' +
+      '<input type="checkbox" ' + (on ? "checked" : "") + (cap === "ver" ? " disabled" : "") + '>' +
+      '<span>' + esc(labels[cap] || cap) + (hard ? ' <b class="warn">\u00b7 con cuidado</b>' : '') +
+      '</span></label>';
+  }
+
+  function since(ts) {
+    if (!ts) return "nunca";
+    var m = Math.round((Date.now() / 1000 - ts) / 60);
+    if (m < 2) return "ahora mismo";
+    if (m < 60) return "hace " + m + " min";
+    var h = Math.round(m / 60);
+    if (h < 48) return "hace " + h + " h";
+    return "hace " + Math.round(h / 24) + " d\u00edas";
+  }
+
+  function paintPhone(st) {
+    PHONE.st = st;
+    var box = el("phBox");
+    if (!box) return;
+    if (!st || !st.ok) { box.innerHTML = "No pude comprobarlo."; return; }
+    var rows = [];
+    rows.push(st.enabled
+      ? sumline("\u2705", "Acceso desde el tel\u00e9fono", "activado")
+      : sumline("\u23f8\ufe0f", "Acceso desde el tel\u00e9fono",
+                "apagado \u2014 nadie puede conectarse"));
+    if (st.enabled) {
+      rows.push(sumline(st.running ? "\ud83d\udfe2" : "\u26a0\ufe0f", "La puerta",
+                        st.running ? "abierta en el puerto " + st.port
+                                   : "a\u00fan no abierta (espera unos segundos)"));
+      if ((st.addresses || []).length)
+        rows.push(sumline("\ud83c\udfe0", "Direcci\u00f3n en tu wifi",
+                          st.addresses.join(", ") + ":" + st.port));
+      if (st.code)
+        rows.push(sumline("\ud83d\udd10", "Las dos palabras de este ordenador", st.code));
+      var fw = st.firewall || {};
+      if (fw.known && !fw.open)
+        rows.push(sumline("\u26a0\ufe0f", "Firewall de Windows",
+                          "est\u00e1 bloqueando el puerto"));
+      var rl = st.relay || {};
+      rows.push(rl.on
+        ? sumline(rl.connected ? "\ud83c\udf0d" : "\u26a0\ufe0f", "Fuera de casa",
+                  rl.connected ? "conectado al punto de encuentro"
+                               : ("sin conectar" + (rl.detail ? " \u00b7 " + rl.detail : "")))
+        : sumline("\ud83c\udfe0", "Fuera de casa",
+                  "no configurado \u2014 s\u00f3lo funciona en tu wifi"));
+    }
+    box.innerHTML = '<ul class="filelist">' + rows.join("") + '</ul>' +
+      '<div class="row" style="margin-top:10px">' +
+      '<button class="btn btn-sm ' + (st.enabled ? "btn-soft" : "btn-primary") +
+      '" id="phToggle">' + (st.enabled ? "Apagar el acceso" : "Activar el acceso") +
+      '</button>' +
+      (st.enabled ? '<button class="btn btn-primary btn-sm" id="phLink">' +
+                    'Enlazar un tel\u00e9fono</button>' : '') +
+      ((st.firewall && st.firewall.known && !st.firewall.open && st.enabled)
+        ? '<button class="btn btn-soft btn-sm" id="phFw">Desbloquear en Windows</button>' : '') +
+      '</div>';
+
+    var devs = el("phDevs");
+    var list = st.devices || [];
+    if (!st.enabled) { devs.innerHTML = ""; }
+    else if (!list.length) {
+      devs.innerHTML = '<div class="card pad muted small">' +
+        'Todav\u00eda no hay ning\u00fan tel\u00e9fono enlazado.</div>';
+    } else {
+      devs.innerHTML = '<b class="small">Tel\u00e9fonos enlazados</b>' +
+        list.map(function (d) {
+          return '<div class="card pad" style="margin-top:8px">' +
+            '<div class="row" style="justify-content:space-between;align-items:center">' +
+            '<div><b>' + esc(d.name) + '</b> ' +
+            '<span class="muted small">' + esc(d.platform || "") + ' \u00b7 ' +
+            since(d.last_seen) + '</span></div>' +
+            '<button class="btn btn-soft btn-sm" data-revoke="' + esc(d.id) + '">' +
+            'Quitar</button></div>' +
+            '<div class="fgrid" style="margin-top:8px">' +
+            (st.caps || []).map(function (c) { return capRow(d, c, st.labels || {}); }).join("") +
+            '</div></div>';
+        }).join("");
+    }
+
+    var away = el("phAway");
+    if (!st.enabled) { away.innerHTML = ""; return; }
+    var rl = st.relay || {};
+    away.innerHTML = '<div class="card pad">' +
+      '<b class="small">Fuera de casa</b>' +
+      '<div class="small muted" style="margin-top:6px">' +
+      'En tu wifi no hace falta nada m\u00e1s. Para usarlo con datos m\u00f3viles, ' +
+      'tu ordenador tiene que poder encontrarse con el tel\u00e9fono en un punto ' +
+      'intermedio. Ese punto <b>no puede leer nada</b>: lo que pasa por \u00e9l va ' +
+      'cifrado de extremo a extremo entre tu tel\u00e9fono y este ordenador.</div>' +
+      '<div class="row" style="margin-top:8px">' +
+      '<input id="phRelay" class="inp" style="flex:1" placeholder="wss://\u2026" value="' +
+      esc(rl.url || "") + '">' +
+      '<button class="btn btn-soft btn-sm" id="phRelaySave">' +
+      (rl.on ? "Desactivar" : "Activar") + '</button></div></div>';
+  }
+
+  function paintOffer() {
+    var box = el("phPair");
+    if (!box) return;
+    var o = PHONE.offer;
+    if (!o) { box.innerHTML = ""; return; }
+    var st = PHONE.st || {};
+    box.innerHTML = '<div class="card pad">' +
+      '<b>En el tel\u00e9fono, abre Olivaw y escribe:</b>' +
+      '<div class="pairgrid">' +
+      '<div><span class="muted small">Direcci\u00f3n</span><div class="paircode">' +
+      esc((o.addresses || [])[0] || "") + ':' + esc(o.port || "") + '</div></div>' +
+      '<div><span class="muted small">C\u00f3digo</span><div class="paircode">' +
+      esc(o.pin) + '</div></div>' +
+      '<div><span class="muted small">Debe decir</span><div class="paircode">' +
+      esc(o.code || st.code || "") + '</div></div></div>' +
+      '<div class="small muted" style="margin-top:8px">Si el tel\u00e9fono muestra otras ' +
+      'dos palabras, <b>no contin\u00faes</b>: no estar\u00edas hablando con este ordenador. ' +
+      'El c\u00f3digo caduca en <span id="phLeft">' + PHONE.left + '</span> s.</div>' +
+      '<div class="row" style="margin-top:8px">' +
+      '<button class="btn btn-soft btn-sm" id="phCancel">Cancelar</button></div></div>';
+  }
+
+  function ePhone() {
+    function refresh() {
+      return api("phone/status").then(function (st) { paintPhone(st); return st; });
+    }
+    refresh();
+
+    function tick() {
+      PHONE.left--;
+      var sp = el("phLeft");
+      if (sp) sp.textContent = PHONE.left;
+      if (PHONE.left <= 0) {
+        clearInterval(PHONE.timer); PHONE.offer = null; paintOffer(); refresh();
+      }
+    }
+
+    document.addEventListener("click", function (ev) {
+      var t = ev.target;
+      if (!document.body.contains(t)) return;
+      if (t.id === "phToggle") {
+        var on = !(PHONE.st && PHONE.st.enabled);
+        t.disabled = true;
+        api("phone/enable", { on: on }).then(function () {
+          PHONE.offer = null; paintOffer(); refresh();
+          toast(on ? "Acceso activado" : "Acceso apagado");
+        });
+      } else if (t.id === "phLink") {
+        t.disabled = true;
+        api("phone/offer").then(function (o) {
+          t.disabled = false;
+          if (!o.ok) { toast(o.detail || "No pude abrir el enlace"); return; }
+          PHONE.offer = o; PHONE.left = o.expires_in || 180;
+          paintOffer(); refresh();
+          clearInterval(PHONE.timer);
+          PHONE.timer = setInterval(tick, 1000);
+          // The phone appearing in the list is the only confirmation that matters.
+          var watch = setInterval(function () {
+            if (!PHONE.offer) { clearInterval(watch); return; }
+            refresh().then(function (st) {
+              var n = ((st && st.devices) || []).length;
+              if (n > (PHONE._was || 0)) {
+                clearInterval(watch); clearInterval(PHONE.timer);
+                PHONE.offer = null; paintOffer();
+                toast("Tel\u00e9fono enlazado");
+              }
+            });
+          }, 2500);
+          PHONE._was = ((PHONE.st && PHONE.st.devices) || []).length;
+        });
+      } else if (t.id === "phCancel") {
+        clearInterval(PHONE.timer); PHONE.offer = null; paintOffer();
+        api("phone/cancel").then(refresh);
+      } else if (t.id === "phFw") {
+        t.disabled = true; t.textContent = "Pidiendo permiso\u2026";
+        api("phone/firewall").then(function (r) {
+          toast(r.ok ? "Desbloqueado" : (r.detail || "No se pudo"));
+          refresh();
+        });
+      } else if (t.id === "phRelaySave") {
+        var inp = el("phRelay");
+        var want = !((PHONE.st || {}).relay || {}).on;
+        t.disabled = true;
+        api("phone/relay", { url: inp ? inp.value.trim() : "", on: want })
+          .then(function () { refresh(); toast(want ? "Activado" : "Desactivado"); });
+      } else if (t.getAttribute && t.getAttribute("data-revoke")) {
+        var id = t.getAttribute("data-revoke");
+        t.disabled = true;
+        api("phone/revoke", { id: id }).then(function (r) {
+          toast(r.ok ? "Tel\u00e9fono quitado" : (r.detail || "No se pudo"));
+          refresh();
+        });
+      }
+    });
+
+    document.addEventListener("change", function (ev) {
+      var lab = ev.target.closest ? ev.target.closest(".swrow") : null;
+      if (!lab || !lab.getAttribute("data-dev")) return;
+      var id = lab.getAttribute("data-dev");
+      var dev = ((PHONE.st || {}).devices || []).filter(function (d) { return d.id === id; })[0];
+      if (!dev) return;
+      var caps = [];
+      var rows = lab.parentNode.querySelectorAll(".swrow");
+      for (var i = 0; i < rows.length; i++) {
+        if (rows[i].querySelector("input").checked) caps.push(rows[i].getAttribute("data-cap"));
+      }
+      api("phone/caps", { id: id, caps: caps }).then(function (r) {
+        if (r.ok) { dev.caps = r.caps; toast("Permisos guardados"); }
+        else toast(r.detail || "No se pudo");
+      });
+    });
   }
 
   // ── version + updates ─────────────────────────────────────────────────────

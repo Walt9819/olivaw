@@ -380,7 +380,15 @@ def launch(port=DEFAULT_PORT, browser_path=None, profile=None, name=""):
             "--no-first-run",
             "--no-default-browser-check",
             "--window-position=%d,%d" % (80 + 52 * slot, 60 + 44 * slot),
-            "--window-size=1180,860"]
+            "--window-size=1180,860",
+            # Windows reports a covered window as occluded, and an occluded tab renders
+            # nothing: no paint, no screencast frame, no screenshot - the stream to the
+            # phone simply goes silent with no error (measured on Chrome 154). These two
+            # keep it drawing behind other windows. They also fix the quieter version of
+            # the same problem the agent already had: a screenshot it takes of a window
+            # it is not looking at.
+            "--disable-features=CalculateNativeWinOcclusion",
+            "--disable-backgrounding-occluded-windows"]
     card = write_card(profile, name, port)
     if card:
         args += [card, "about:blank"]
