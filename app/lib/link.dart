@@ -143,6 +143,10 @@ class Link {
 
   bool get canReachDirectly => pairing.host.isNotEmpty;
 
+  /// Set when rediscover() moved the computer to a new address. The screen that notices
+  /// it is the one that can write it down - Link itself does not own the storage.
+  bool hostChanged = false;
+
   /// A JSON call. [auth] false only for /ping and /pair.
   Future<Map<String, dynamic>> call(
     String method,
@@ -243,12 +247,70 @@ class Link {
       try {
         return await call(method, path, body: body, auth: auth);
       } on SocketException {
+        // The address we have is dead. Before giving up, look for the computer where we
+        // are NOW: a laptop that moved from the study to the kitchen, a router that
+        // handed out a new lease, a phone that paired over a USB tether and is now on
+        // wifi. Without this a paired phone can never find its computer again, because
+        // the sweep only ever ran on the pairing screen.
+        if (await rediscover()) {
+          return await call(method, path, body: body, auth: auth);
+        }
         if (!hasRelay) rethrow;
       } on HandshakeException {
         rethrow; // a wrong certificate is never something to retry around
       }
     }
     return call(method, path, body: body, auth: auth, viaRelay: true);
+  }
+
+  /// Look again for the computer this phone is paired WITH, on whatever network it is on
+  /// now. Updates [pairing.host] and returns whether it found it.
+  ///
+  /// Safe to do unprompted, and that is the whole point of pinning: a machine is only
+  /// accepted here if it presents the certificate this phone already holds. Nothing else
+  /// on the wifi can, so there is nobody to be fooled by - this is not the pairing
+  /// screen's question of "is this my computer", it is "which address is it at today".
+  Future<bool> rediscover() async {
+    if (pairing.certDer.isEmpty) return false;
+    final bases = <String>{};
+    for (final ni in await NetworkInterface.list(type: InternetAddressType.IPv4)) {
+      for (final a in ni.addresses) {
+        if (a.isLoopback) continue;
+        final parts = a.address.split('.');
+        if (parts.length == 4) bases.add('${parts[0]}.${parts[1]}.${parts[2]}');
+      }
+    }
+    for (final base in bases) {
+      final hits = <String>[];
+      await Future.wait([
+        for (var i = 1; i < 255; i++)
+          () async {
+            final ip = '$base.$i';
+            if (ip == pairing.host) return;   // already known not to answer
+            try {
+              final s = await Socket.connect(ip, pairing.port,
+                  timeout: const Duration(milliseconds: 700));
+              s.destroy();
+              hits.add(ip);
+            } catch (_) {}
+          }(),
+      ]);
+      for (final ip in hits) {
+        final was = pairing.host;
+        pairing.host = ip;
+        try {
+          // A handshake against the pinned certificate IS the identity check - so the
+          // certificate must be passed explicitly: call() only pins it when `auth` is
+          // true, and /ping is the one route that does not take a token.
+          await call('GET', '/ping', auth: false, expectDer: pairing.certDer);
+          hostChanged = true;
+          return true;
+        } catch (_) {
+          pairing.host = was;
+        }
+      }
+    }
+    return false;
   }
 
   /// Is the computer answering on its own address right now? One cheap connect, not a

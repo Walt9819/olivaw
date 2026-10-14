@@ -571,6 +571,26 @@ try:
 finally:
     browser_setup.hermes_ctl.config_get = _real_get
 
+# ── which agent a phone is actually talking to ─────────────────────────────────────────
+# wizard_server resolves the agent from body["profile"] and ignores body["slug"] for
+# everything scoped to one agent. The app sent "slug", so opening Daneel and typing a
+# message held a conversation with the DEFAULT agent under Daneel's name, and a routine
+# switched off on the phone was switched off on the wrong agent's jobs.json. Nothing
+# errored; it was the right-looking answer from the wrong agent.
+_MAIN = os.path.join(ROOT, "app", "lib", "main.dart")
+if os.path.exists(_MAIN):
+    _dart = io.open(_MAIN, encoding="utf-8").read()
+    ok("the app addresses agents by profile",
+       "'profile': widget.agent.slug" in _dart)
+    ok("the app no longer sends slug for per-agent work",
+       "'slug': widget.agent.slug" not in _dart)
+
+# And the server's half of that contract, so the test fails from either side.
+import inspect as _inspect  # noqa: E402
+from wizard import wizard_server as _ws  # noqa: E402
+_src = _inspect.getsource(_ws._target_profile)
+ok("the server resolves an agent from 'profile'", 'body.get("profile")' in _src, _src[:80])
+
 # ── the app's own manifest ─────────────────────────────────────────────────────────────
 # Flutter's template grants INTERNET in the DEBUG manifest only. A release build of a
 # network client then installs, opens, and fails every connection with nothing to show

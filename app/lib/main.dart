@@ -423,8 +423,11 @@ class _HomeState extends State<Home> {
         _loading = false;
       });
       // A rendezvous configured after this phone was paired, or a computer that moved to
-      // another address on the wifi, both arrive here.
-      if (await _link.refreshHome()) {
+      // another address on the wifi, both arrive here. _link.hostChanged covers the
+      // third case: reach() had to go looking for the computer and found it elsewhere.
+      final moved = _link.hostChanged;
+      _link.hostChanged = false;
+      if (await _link.refreshHome() || moved) {
         await Store.save([widget.pairing]);
       }
     } catch (e) {
@@ -594,8 +597,11 @@ class _ChatTabState extends State<ChatTab> {
     _start();
   }
 
+  /// `profile`, not `slug`: wizard_server resolves the agent from body["profile"]
+  /// and ignores anything else, so a slug here reached the DEFAULT agent - this
+  /// conversation would have been with the wrong agent, under the right name.
   Map<String, dynamic> _body([Map<String, dynamic>? extra]) => {
-        if (!widget.agent.isDefault) 'slug': widget.agent.slug,
+        if (!widget.agent.isDefault) 'profile': widget.agent.slug,
         ...?extra,
       };
 
@@ -802,7 +808,7 @@ class _RoutinesTabState extends State<RoutinesTab> {
   Future<void> _load() async {
     try {
       final res = await widget.link.reach('POST', '/api/cron/list',
-          body: {if (!widget.agent.isDefault) 'slug': widget.agent.slug});
+          body: {if (!widget.agent.isDefault) 'profile': widget.agent.slug});
       setState(() {
         _rows = ((res['jobs'] ?? res['rows'] ?? []) as List)
             .map((r) => (r as Map).cast<String, dynamic>())
@@ -851,7 +857,9 @@ class _RoutinesTabState extends State<RoutinesTab> {
             final messenger = ScaffoldMessenger.of(context);
             setState(() => r['enabled'] = v);
             final res = await widget.link.reach('POST', '/api/cron/flags', body: {
-              if (!widget.agent.isDefault) 'slug': widget.agent.slug,
+              // Same again: set_flags opens THIS agent's jobs.json, and a slug here
+              // would have switched a routine off on the default agent instead.
+              if (!widget.agent.isDefault) 'profile': widget.agent.slug,
               'id': r['id'],
               'enabled': v,
             });
