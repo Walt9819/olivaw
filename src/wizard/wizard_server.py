@@ -285,33 +285,70 @@ def agents_snapshot():
             INSTALL_DIR)
     except Exception:  # noqa: BLE001
         pass
+    # Asking about the agents AT THE SAME TIME, not one after another. Each of these
+    # answers costs a `hermes` CLI launch - about three and a half seconds, nearly all of
+    # it Python starting up - and there are three per agent. Serially that is seventy
+    # seconds on a seven-agent machine, which is what the phone's first screen used to
+    # spend showing a spinner. They do not depend on each other, so they wait together.
+    def _about(slug):
+        """(gateway_running, owners, missing_profile) for one agent."""
+        if not hp:
+            return (None, [], False)
+        if slug == "default":
+            return (hermes_ctl.gateway_status(hp).get("running"), owners, False)
+        if not hermes_ctl.profile_exists(slug, hp):
+            return (None, [], True)   # code/profile deleted -> restore candidate
+        return (hermes_ctl.gateway_status(hp, profile=slug).get("running"),
+                hermes_ctl.pairing_list(hp, profile=slug).get("approved", []), False)
+
+    _rows = agents_registry.list_agents(INSTALL_DIR)
+    _slugs = ["default"] + [a.get("slug") for a in _rows]
+    _facts = {}
+    try:
+        import concurrent.futures
+        # Bounded: one `hermes` process per worker, and this runs on a laptop that is
+        # also running the agents themselves.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(_slugs))) as ex:
+            for slug, got in zip(_slugs, ex.map(_about, _slugs)):
+                _facts[slug] = got
+    except Exception:  # noqa: BLE001
+        # A pool that will not start is not a reason to show no agents.
+        for slug in _slugs:
+            try:
+                _facts[slug] = _about(slug)
+            except Exception:  # noqa: BLE001
+                _facts[slug] = (None, [], False)
+
+    _d_running, _d_owners, _ = _facts.get("default", (None, owners, False))
     default = {
         "slug": "default", "name": names.get("default") or "Agente principal",
         "profile": "default",
         "port": agents_registry.BASE_PORT, "workspace": _default_workspace(),
         "is_default": True,
-        "gateway_running": hermes_ctl.gateway_status(hp).get("running") if hp else None,
+        "gateway_running": _d_running,
         "bridge_up": _bridge_up(agents_registry.BASE_PORT),
-        "owners": owners,
+        "owners": _d_owners,
     }
     # The face rides with the row rather than in a call of its own: the sidebar draws
     # every agent on every repaint, and a second round trip per agent would make the
     # list arrive in pieces. It is four short keys, not the image.
     default["look"] = avatars.look("default", default["name"], INSTALL_DIR)
     extra = []
-    for a in agents_registry.list_agents(INSTALL_DIR):
+    for a in _rows:
         slug = a.get("slug")
         row = dict(a)
         row["is_default"] = False
         if names.get(slug):
             row["name"] = names[slug]
         row["bridge_up"] = _bridge_up(a.get("port", 0)) if a.get("port") else False
-        if hp and hermes_ctl.profile_exists(slug, hp):
-            row["gateway_running"] = hermes_ctl.gateway_status(hp, profile=slug).get("running")
-            row["owners"] = hermes_ctl.pairing_list(hp, profile=slug).get("approved", [])
+        running, approved, missing = _facts.get(slug, (None, [], False))
+        row["gateway_running"] = running
+        if missing:
+            row["missing_profile"] = True
         else:
-            row["gateway_running"] = None
-            row["missing_profile"] = True     # code/profile deleted -> restore candidate
+            row["owners"] = approved
+        # Left on this thread on purpose: look() may assign and write a face, and the
+        # point of the pool above is the waiting, not the bookkeeping.
         row["look"] = avatars.look(slug, row.get("name") or slug, INSTALL_DIR)
         extra.append(row)
     return {"default": default, "extra": extra}

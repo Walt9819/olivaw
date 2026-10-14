@@ -602,13 +602,31 @@ class _ChatTabState extends State<ChatTab> {
   Future<void> _start() async {
     try {
       final s = await widget.link.reach('POST', '/api/talk/sessions', body: _body());
+      // A refusal here is not an empty conversation, and showing it as one is the worst
+      // of the two: the composer looks ready, the agent never answers, and the reason -
+      // usually that talking is not switched on for this agent yet - is on the computer
+      // where nobody is looking. Say what the computer said.
+      if (s['ok'] != true) {
+        setState(() => _error = (s['detail'] ?? 'No se pudo abrir la conversación.')
+            .toString());
+        return;
+      }
       final rows = (s['sessions'] as List? ?? []);
       if (rows.isNotEmpty) {
         _session = ((rows.first as Map)['id'] ?? '').toString();
       }
       if (_session.isEmpty) {
         final made = await widget.link.reach('POST', '/api/talk/new', body: _body());
+        if (made['ok'] != true) {
+          setState(() => _error = (made['detail'] ?? 'No se pudo abrir la conversación.')
+              .toString());
+          return;
+        }
         _session = ((made['session'] as Map?)?['id'] ?? made['id'] ?? '').toString();
+      }
+      if (_session.isEmpty) {
+        setState(() => _error = 'El ordenador no abrió ninguna conversación.');
+        return;
       }
       await _history();
     } catch (e) {
@@ -620,6 +638,11 @@ class _ChatTabState extends State<ChatTab> {
     if (_session.isEmpty) return;
     final h = await widget.link
         .reach('POST', '/api/talk/history', body: _body({'session_id': _session}));
+    if (h['ok'] != true) {
+      setState(() => _error = (h['detail'] ?? 'No se pudo leer la conversación.')
+          .toString());
+      return;
+    }
     setState(() {
       _msgs = ((h['messages'] as List? ?? []))
           .map((m) => (m as Map).cast<String, dynamic>())
@@ -665,6 +688,9 @@ class _ChatTabState extends State<ChatTab> {
     }
   }
 
+  /// There is somewhere for a message to go.
+  bool get _ready => _session.isNotEmpty;
+
   @override
   Widget build(BuildContext context) {
     return Column(children: [
@@ -675,6 +701,18 @@ class _ChatTabState extends State<ChatTab> {
           padding: const EdgeInsets.all(10),
           child: Text(_error, style: const TextStyle(fontSize: 12)),
         ),
+      if (_msgs.isEmpty && _error.isEmpty && _ready)
+        const Expanded(
+          child: Center(
+            child: Padding(
+              padding: EdgeInsets.all(32),
+              child: Text('Todavía no os habéis dicho nada.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.black54)),
+            ),
+          ),
+        )
+      else
       Expanded(
         child: ListView.builder(
           controller: _scroll,
@@ -718,9 +756,12 @@ class _ChatTabState extends State<ChatTab> {
                 controller: _input,
                 minLines: 1,
                 maxLines: 4,
-                decoration: const InputDecoration(
-                  hintText: 'Escribe…',
-                  border: OutlineInputBorder(),
+                // A box you can type into is a promise. Without a conversation open
+                // there is nowhere for the words to go, so it does not make one.
+                enabled: _ready,
+                decoration: InputDecoration(
+                  hintText: _ready ? 'Escribe…' : 'No disponible',
+                  border: const OutlineInputBorder(),
                   isDense: true,
                 ),
                 onSubmitted: (_) => _send(),
@@ -728,7 +769,7 @@ class _ChatTabState extends State<ChatTab> {
             ),
             const SizedBox(width: 8),
             IconButton.filled(
-              onPressed: _sending ? null : _send,
+              onPressed: (_sending || !_ready) ? null : _send,
               icon: const Icon(Icons.send),
             ),
           ]),
