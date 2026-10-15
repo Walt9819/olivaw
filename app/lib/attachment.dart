@@ -30,6 +30,7 @@ class Attachment extends StatelessWidget {
     required this.file,
     required this.body,
     required this.ink,
+    this.thumbnail = false,
   });
 
   final Link link;
@@ -38,6 +39,10 @@ class Attachment extends StatelessWidget {
   /// The body to send with the fetch, so the computer knows which agent is being asked.
   final Map<String, dynamic> Function([Map<String, dynamic>?]) body;
   final Color ink;
+
+  /// In a grid: fill the cell and crop, with no bubble padding. A picture in a
+  /// conversation wants its own shape; a picture in a gallery wants to tile.
+  final bool thumbnail;
 
   String get _name => (file['name'] ?? 'archivo').toString();
   String get _id => (file['id'] ?? '').toString();
@@ -67,6 +72,15 @@ class Attachment extends StatelessWidget {
   }
 
   Widget _frame(BuildContext context, Uint8List bytes) {
+    if (thumbnail) {
+      return GestureDetector(
+        onTap: () => _open(context, bytes),
+        child: SizedBox.expand(
+          child: Image.memory(bytes,
+              fit: BoxFit.cover, errorBuilder: (c, e, st) => _row(c)),
+        ),
+      );
+    }
     return Padding(
       padding: const EdgeInsets.only(top: 6),
       child: ClipRRect(
@@ -187,7 +201,7 @@ class Attachment extends StatelessWidget {
     final res = await link.reach('POST', '/api/talk/file',
         body: body({'id': _id}), wait: Link.thinkingWait);
     if (res['ok'] != true) {
-      throw LinkError((res['detail'] ?? tr('No pude traer ese archivo.')).toString());
+      throw LinkError(tr((res['detail'] ?? tr('No pude traer ese archivo.')).toString()));
     }
     final b64 = (res['data_b64'] ?? '').toString();
     if (b64.isEmpty) throw LinkError(tr('Ese archivo llegó vacío.'));

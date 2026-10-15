@@ -91,9 +91,15 @@ ROUTES = {
     "proposals/decide": "tareas",
     # running them
     "agent/action": "operar",
-    # the two that are off until the owner says otherwise
+    # the ones that are off until the owner says otherwise
     "agent/rename": "config",
     "avatar/set": "config",
+    # Switching talking on is what makes an agent reachable at all, and a phone that
+    # already holds "config" may change the agent's policy, which is the stronger of
+    # the two by some distance. Keeping this desktop-only meant the settings screen
+    # could show the one switch that matters and not touch it.
+    "talk/enable": "config",
+    "talk/disable": "config",
     "policy/save": "config",
     "teams/assign": "config",
     "channel/": "config",

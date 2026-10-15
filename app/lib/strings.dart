@@ -290,4 +290,46 @@ const Map<String, (String, String)> _table = {
   'Enviando…': ('Sending…', 'Senden…'),
   'Ver transcripción': ('Show transcript', 'Transkript anzeigen'),
   'Ocultar transcripción': ('Hide transcript', 'Transkript ausblenden'),
+  'Ajustes del agente': ('Agent settings', 'Agenten-Einstellungen'),
+  'La cara': ('The face', 'Das Gesicht'),
+  'Foto': ('Photo', 'Foto'),
+  'Símbolo': ('Symbol', 'Symbol'),
+  'Iniciales': ('Initials', 'Initialen'),
+  'El nombre': ('The name', 'Der Name'),
+  'Guardar el nombre': ('Save the name', 'Namen speichern'),
+  'Cambiarlo aquí también cambia cómo se presenta el agente.': (
+    'Changing it here also changes how the agent introduces itself.',
+    'Das ändert auch, wie sich der Agent vorstellt.'
+  ),
+  'Hablar con él': ('Talking to it', 'Mit ihm sprechen'),
+  'Conversaciones desde aquí': ('Conversations from here', 'Gespräche von hier'),
+  'Abre el canal del agente en la computadora, solo para ella.': (
+    'Opens the agent channel on the computer, for it alone.',
+    'Öffnet den Kanal des Agenten auf dem Computer, nur für ihn.'
+  ),
+  'Buscar': ('Search', 'Suchen'),
+  'Buscar en la conversación': ('Search in the conversation', 'Im Gespräch suchen'),
+  'Nada': ('None', 'Nichts'),
+  'Fotos y archivos': ('Photos and files', 'Fotos und Dateien'),
+  'Fotos': ('Photos', 'Fotos'),
+  'Archivos': ('Files', 'Dateien'),
+  'Notas': ('Notes', 'Notizen'),
+  'Nada por aquí todavía.': ('Nothing here yet.', 'Hier ist noch nichts.'),
+
+  // Sentences the COMPUTER writes. It speaks Spanish and always will - the
+  // console is Spanish - but the Spanish is the key here, so its messages go
+  // through the same table. The ones it assembles from parts (a size, a path)
+  // are not here: they arrive already assembled and cannot be matched.
+  'Puedes escribirle desde aquí.': ('You can write to it from here.', 'Du kannst ihm von hier schreiben.'),
+  'Aún no está activado. Actívalo y podrás escribirle desde aquí, igual que por Telegram.': ('Not switched on yet. Switch it on and you can write to it from here, just like on Telegram.', 'Noch nicht aktiviert. Aktiviere es, dann kannst du ihm von hier schreiben, genau wie über Telegram.'),
+  'Conversación no válida.': ('Invalid conversation.', 'Ungültiges Gespräch.'),
+  'Escribe algo primero.': ('Write something first.', 'Schreib zuerst etwas.'),
+  'Ese archivo está vacío.': ('That file is empty.', 'Diese Datei ist leer.'),
+  'Ese archivo ya no está disponible. Pídeselo otra vez al agente.': ('That file is not available any more. Ask the agent for it again.', 'Diese Datei ist nicht mehr verfügbar. Frag den Agenten noch einmal danach.'),
+  'Ese archivo ya no está donde estaba.': ('That file is not where it was any more.', 'Diese Datei ist nicht mehr dort, wo sie war.'),
+  'La grabación llegó vacía.': ('The recording arrived empty.', 'Die Aufnahme kam leer an.'),
+  'No pude leer esa grabación.': ('I could not read that recording.', 'Ich konnte diese Aufnahme nicht lesen.'),
+  'No pude leer ese archivo.': ('I could not read that file.', 'Ich konnte diese Datei nicht lesen.'),
+  'No encontré un puerto libre para hablar con el agente.': ('I could not find a free port to talk to the agent.', 'Ich habe keinen freien Port gefunden, um mit dem Agenten zu sprechen.'),
+  'Este ordenador no tiene instalado el transcriptor de voz.': ('This computer does not have the voice transcriber installed.', 'Auf diesem Computer ist der Transkriptor nicht installiert.'),
 };

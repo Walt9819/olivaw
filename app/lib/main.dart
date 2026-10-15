@@ -20,9 +20,11 @@ import 'attachment.dart';
 import 'link.dart';
 import 'sha256.dart';
 import 'markdown.dart';
+import 'media.dart';
 import 'native.dart';
 import 'theme.dart';
 import 'voice.dart';
+import 'settings.dart';
 import 'strings.dart';
 
 Future<void> main() async {
@@ -286,7 +288,7 @@ class _LinkScreenState extends State<LinkScreen> {
       if (res['ok'] != true) {
         setState(() {
           _busy = false;
-          _status = (res['detail'] ?? 'No se pudo enlazar.').toString();
+          _status = tr((res['detail'] ?? 'No se pudo enlazar.').toString());
         });
         return;
       }
@@ -435,7 +437,7 @@ class _HomeState extends State<Home> {
     setState(() => _loading = true);
     try {
       final res = await _link.reach('POST', '/api/agents/list');
-      if (res['ok'] != true) throw LinkError((res['detail'] ?? tr('Sin respuesta')).toString());
+      if (res['ok'] != true) throw LinkError(tr((res['detail'] ?? tr('Sin respuesta')).toString()));
       final out = <Agent>[];
       if (res['default'] != null) {
         out.add(Agent.from((res['default'] as Map).cast<String, dynamic>()));
@@ -576,6 +578,56 @@ class _AgentScreenState extends State<AgentScreen> {
   /// Held so the app bar's history button can reach into the open conversation.
   final GlobalKey<ChatTabState> _chat = GlobalKey<ChatTabState>();
 
+  bool _searching = false;
+  final TextEditingController _find = TextEditingController();
+
+  @override
+  void dispose() {
+    _find.dispose();
+    super.dispose();
+  }
+
+  void _startSearch() => setState(() => _searching = true);
+
+  void _stopSearch() {
+    _find.clear();
+    _chat.currentState?.search('');
+    setState(() => _searching = false);
+  }
+
+  void _menu(String what) {
+    switch (what) {
+      case 'past':
+        _chat.currentState?.pickPastConversation();
+      case 'media':
+        final st = _chat.currentState;
+        if (st == null) return;
+        Navigator.of(context).push(MaterialPageRoute(
+          builder: (_) => MediaScreen(
+            link: widget.link,
+            messages: st.messages,
+            body: st.bodyFor,
+          ),
+        ));
+      case 'settings':
+        _openSettings();
+    }
+  }
+
+  Future<void> _openSettings() async {
+    final changed = await Navigator.of(context).push<bool>(MaterialPageRoute(
+      builder: (_) => AgentSettings(
+        link: widget.link,
+        slug: widget.agent.slug,
+        name: widget.agent.name,
+        isDefault: widget.agent.isDefault,
+      ),
+    ));
+    // A rename or a new face changes the roster behind this screen, and the title at
+    // the top of it.
+    if (changed == true && mounted) Navigator.pop(context, true);
+  }
+
   @override
   Widget build(BuildContext context) {
     final canBrowse = widget.pairing.caps.contains('navegador');
@@ -585,31 +637,89 @@ class _AgentScreenState extends State<AgentScreen> {
       if (canBrowse) BrowserTab(link: widget.link, agent: widget.agent),
     ];
     return Scaffold(
-      appBar: AppBar(
-        titleSpacing: 0,
-        title: Row(children: [
-          Face(agent: widget.agent, size: 30),
-          const SizedBox(width: 10),
-          Expanded(
-              child: Text(widget.agent.name, overflow: TextOverflow.ellipsis)),
-        ]),
-        actions: [
-          // Only over the conversation: on the routines or the browser it would be a
-          // button about a screen you are not looking at.
-          if (_tab == 0) ...[
-            IconButton(
-              icon: const Icon(Icons.edit_square),
-              tooltip: tr('Conversación nueva'),
-              onPressed: () => _chat.currentState?.newConversation(),
+      appBar: _searching
+          ? AppBar(
+              titleSpacing: 0,
+              leading: IconButton(
+                icon: const Icon(Icons.arrow_back),
+                onPressed: _stopSearch,
+              ),
+              title: TextField(
+                controller: _find,
+                autofocus: true,
+                textInputAction: TextInputAction.search,
+                decoration: InputDecoration(
+                  hintText: tr('Buscar en la conversación'),
+                  border: InputBorder.none,
+                  filled: false,
+                ),
+                onChanged: (q) => setState(() => _chat.currentState?.search(q)),
+              ),
+              actions: [
+                // The count is the whole point of a search bar: 'nothing' and 'you are
+                // looking at the first of nine' are different answers and look the same
+                // without it.
+                Builder(builder: (_) {
+                  final st = _chat.currentState;
+                  final n = st?.hitCount ?? 0;
+                  return Row(children: [
+                    Text(n == 0 ? tr('Nada') : '${st!.hitIndex}/$n',
+                        style: TextStyle(fontSize: 13, color: context.c.muted)),
+                    IconButton(
+                      icon: const Icon(Icons.keyboard_arrow_up),
+                      onPressed: n == 0 ? null : () => setState(() => st!.nextHit(-1)),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.keyboard_arrow_down),
+                      onPressed: n == 0 ? null : () => setState(() => st!.nextHit(1)),
+                    ),
+                  ]);
+                }),
+              ],
+            )
+          : AppBar(
+              titleSpacing: 0,
+              title: Row(children: [
+                Face(agent: widget.agent, size: 30),
+                const SizedBox(width: 10),
+                Expanded(
+                    child:
+                        Text(widget.agent.name, overflow: TextOverflow.ellipsis)),
+              ]),
+              actions: [
+                if (_tab == 0)
+                  IconButton(
+                    icon: const Icon(Icons.search),
+                    tooltip: tr('Buscar'),
+                    onPressed: _startSearch,
+                  ),
+                if (_tab == 0)
+                  IconButton(
+                    icon: const Icon(Icons.edit_square),
+                    tooltip: tr('Conversación nueva'),
+                    onPressed: () => _chat.currentState?.newConversation(),
+                  ),
+                // The rest behind a menu: four icons in a row is a toolbar nobody reads.
+                PopupMenuButton<String>(
+                  onSelected: _menu,
+                  itemBuilder: (_) => [
+                    PopupMenuItem(
+                      value: 'past',
+                      child: Text(tr('Conversaciones anteriores')),
+                    ),
+                    PopupMenuItem(
+                      value: 'media',
+                      child: Text(tr('Fotos y archivos')),
+                    ),
+                    if (widget.pairing.caps.contains('config'))
+                      PopupMenuItem(
+                        value: 'settings',
+                        child: Text(tr('Ajustes del agente')),
+                      ),
+                  ],
+                ),
+              ],
             ),
-            IconButton(
-              icon: const Icon(Icons.history),
-              tooltip: tr('Conversaciones anteriores'),
-              onPressed: () => _chat.currentState?.pickPastConversation(),
-            ),
-          ],
-        ],
-      ),
       body: tabs[_tab.clamp(0, tabs.length - 1)],
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tab.clamp(0, tabs.length - 1),
@@ -678,6 +788,9 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
   /// `profile`, not `slug`: wizard_server resolves the agent from body["profile"]
   /// and ignores anything else, so a slug here reached the DEFAULT agent - this
   /// conversation would have been with the wrong agent, under the right name.
+  /// The same body builder, for screens that ask on this chat's behalf.
+  Map<String, dynamic> bodyFor([Map<String, dynamic>? extra]) => _body(extra);
+
   Map<String, dynamic> _body([Map<String, dynamic>? extra]) => {
         if (!widget.agent.isDefault) 'profile': widget.agent.slug,
         ...?extra,
@@ -688,9 +801,8 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       // Whether talking is switched on, first: everything below depends on it.
       final st = await widget.link.reach('POST', '/api/talk/status', body: _body());
       if (st['ok'] != true || st['enabled'] != true) {
-        setState(() => _error = (st['detail'] ??
-                tr('Todavía no está activado para este agente.'))
-            .toString());
+        setState(() => _error = tr((st['detail'] ??
+                tr('Todavía no está activado para este agente.')).toString()));
         return;
       }
       // Where you left off. The thread this phone had open comes first; failing that,
@@ -767,8 +879,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
     final h = await widget.link
         .reach('POST', '/api/talk/history', body: _body({'session_id': _session}));
     if (h['ok'] != true) {
-      setState(() => _error = (h['detail'] ?? tr('No se pudo leer la conversación.'))
-          .toString());
+      setState(() => _error = tr((h['detail'] ?? tr('No se pudo leer la conversación.')).toString()));
       return;
     }
     setState(() {
@@ -824,8 +935,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       if (_session.isEmpty) {
         final made = await widget.link.reach('POST', '/api/talk/new', body: _body());
         if (made['ok'] != true) {
-          throw LinkError((made['detail'] ?? tr('No se pudo abrir la conversación.'))
-              .toString());
+          throw LinkError(tr((made['detail'] ?? tr('No se pudo abrir la conversación.')).toString()));
         }
         _session = ((made['session'] as Map?)?['id'] ?? made['id'] ?? '').toString();
         if (_session.isEmpty) {
@@ -852,7 +962,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
             if (files.isNotEmpty) 'files': files,
           }),
           wait: Link.thinkingWait);
-      if (res['ok'] != true) throw LinkError((res['detail'] ?? tr('Sin respuesta')).toString());
+      if (res['ok'] != true) throw LinkError(tr((res['detail'] ?? tr('Sin respuesta')).toString()));
       // The reply comes back on the send itself; re-reading the whole transcript to
       // find it would also drag in every tool call the agent made on the way.
       final reply = (res['reply'] ?? '').toString().trim();
@@ -898,6 +1008,73 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
   /// Once per run. Android only shows the dialog the first time anyway, and nagging
   /// afterwards would be asking a question that has already been answered.
   bool _askedToNotify = false;
+
+  /// What is being looked for in this conversation, if anything.
+  String _query = '';
+
+  /// Which match is in view, so the arrows can walk through them.
+  int _hit = 0;
+
+  /// Message indices that contain the query, oldest first.
+  List<int> get _hits {
+    final q = _query.trim().toLowerCase();
+    if (q.isEmpty) return const [];
+    final out = <int>[];
+    for (var i = 0; i < _msgs.length; i++) {
+      if ((_msgs[i]['text'] ?? '').toString().toLowerCase().contains(q)) out.add(i);
+    }
+    return out;
+  }
+
+  /// Called from the title bar's search field.
+  void search(String q) {
+    setState(() {
+      _query = q;
+      _hit = 0;
+    });
+    _toHit();
+  }
+
+  void nextHit(int step) {
+    final hits = _hits;
+    if (hits.isEmpty) return;
+    setState(() => _hit = (_hit + step) % hits.length);
+    _toHit();
+  }
+
+  int get hitCount => _hits.length;
+  int get hitIndex => _hits.isEmpty ? 0 : _hit + 1;
+
+  /// Bring the current match into view.
+  ///
+  /// By a fraction of the list rather than a pixel offset: the bubbles are different
+  /// heights and there is no cheap way to know where one starts, and landing near a
+  /// match is enough when it is also highlighted.
+  void _toHit() {
+    final hits = _hits;
+    if (hits.isEmpty || !_scroll.hasClients || _msgs.isEmpty) return;
+    final at = hits[_hit.clamp(0, hits.length - 1)] / _msgs.length;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scroll.hasClients) return;
+      _scroll.animateTo(
+        (_scroll.position.maxScrollExtent * at).clamp(
+            0.0, _scroll.position.maxScrollExtent),
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeOut,
+      );
+    });
+  }
+
+  /// Is this the match the arrows are currently pointing at?
+  bool _isCurrentHit(Map<String, dynamic> m) {
+    final hits = _hits;
+    if (hits.isEmpty) return false;
+    final at = hits[_hit.clamp(0, hits.length - 1)];
+    return at >= 0 && at < _msgs.length && identical(_msgs[at], m);
+  }
+
+  /// The messages currently on screen, for the media list.
+  List<Map<String, dynamic>> get messages => List.unmodifiable(_msgs);
 
   /// A restored conversation is being fetched. Distinct from 'there is nothing here':
   /// showing the empty state during the fetch told me, convincingly, that persistence
@@ -949,7 +1126,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
             body: _body({'name': f.name, 'data': base64Encode(f.bytes)}),
             wait: Link.thinkingWait);
         if (res['ok'] != true) {
-          _say((res['detail'] ?? trp('No pude subir {0}.', [f.name])).toString());
+          _say(tr((res['detail'] ?? trp('No pude subir {0}.', [f.name])).toString()));
           continue;
         }
         final rec = (res['file'] as Map).cast<String, dynamic>();
@@ -1063,7 +1240,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
           wait: Link.thinkingWait);
       if (heard['ok'] != true) {
         throw LinkError(
-            (heard['detail'] ?? tr('No pude transcribir la nota.')).toString());
+            tr((heard['detail'] ?? tr('No pude transcribir la nota.')).toString()));
       }
       final text = (heard['text'] ?? '').toString().trim();
       if (text.isEmpty) throw LinkError(tr('No entendí nada en esa nota.'));
@@ -1081,7 +1258,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
         final made = await widget.link.reach('POST', '/api/talk/new', body: _body());
         if (made['ok'] != true) {
           throw LinkError(
-              (made['detail'] ?? tr('No se pudo abrir la conversación.')).toString());
+              tr((made['detail'] ?? tr('No se pudo abrir la conversación.')).toString()));
         }
         _session = ((made['session'] as Map?)?['id'] ?? made['id'] ?? '').toString();
         if (_session.isEmpty) {
@@ -1100,7 +1277,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
           }),
           wait: Link.thinkingWait);
       if (res['ok'] != true) {
-        throw LinkError((res['detail'] ?? tr('Sin respuesta')).toString());
+        throw LinkError(tr((res['detail'] ?? tr('Sin respuesta')).toString()));
       }
       final reply = (res['reply'] ?? '').toString().trim();
       final shown = reply.isEmpty ? tr('(sin respuesta)') : reply;
@@ -1171,7 +1348,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       final res = await widget.link
           .reach('POST', '/api/talk/sessions', body: _body({'limit': 30}));
       if (res['ok'] != true) {
-        problem = (res['detail'] ?? tr('No pude leer las conversaciones.')).toString();
+        problem = tr((res['detail'] ?? tr('No pude leer las conversaciones.')).toString());
       } else {
         rows = [
           for (final r in (res['sessions'] as List? ?? []))
@@ -1514,7 +1691,13 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
                 decoration: BoxDecoration(
                   color: mine ? context.c.accent : context.c.panel,
                   borderRadius: BorderRadius.circular(16),
-                  border: mine ? null : Border.all(color: context.c.line),
+                  // The match being looked at gets a ring. Without it, scrolling to a
+                  // result lands you in a wall of bubbles with no idea which one it is.
+                  border: _isCurrentHit(m)
+                      ? Border.all(color: context.c.warn, width: 2)
+                      : mine
+                          ? null
+                          : Border.all(color: context.c.line),
                 ),
                 child: Builder(builder: (bc) {
                   final ink = mine ? context.c.accentInk : context.c.ink;
@@ -1612,7 +1795,7 @@ class _RoutinesTabState extends State<RoutinesTab> {
             .map((r) => (r as Map).cast<String, dynamic>())
             .toList();
         _loading = false;
-        _error = res['ok'] == false ? (res['detail'] ?? '').toString() : '';
+        _error = res['ok'] == false ? tr((res['detail'] ?? '').toString()) : '';
       });
     } catch (e) {
       setState(() {
@@ -1665,7 +1848,7 @@ class _RoutinesTabState extends State<RoutinesTab> {
             if (res['ok'] != true) {
               setState(() => r['enabled'] = !v);
               messenger.showSnackBar(SnackBar(
-                  content: Text((res['detail'] ?? tr('No se pudo')).toString())));
+                  content: Text(tr((res['detail'] ?? tr('No se pudo')).toString()))));
             }
           },
         );
@@ -1721,7 +1904,7 @@ class _BrowserTabState extends State<BrowserTab> {
             _armed = e['armed'] == true;
           });
         } else if (e['t'] == 'error') {
-          setState(() => _error = (e['detail'] ?? '').toString());
+          setState(() => _error = tr((e['detail'] ?? '').toString()));
         } else if (e['t'] == 'closed') {
           setState(() => _error = _error.isEmpty ? 'La sesión se cerró.' : _error);
         }
