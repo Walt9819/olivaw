@@ -18,6 +18,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'link.dart';
 import 'sha256.dart';
+import 'theme.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -26,9 +27,7 @@ void main() {
   runApp(const OlivawApp());
 }
 
-const _ink = Color(0xFF14151A);
-const _paper = Color(0xFFF7F7F5);
-const _accent = Color(0xFF2F6F4E);
+
 
 class OlivawApp extends StatelessWidget {
   const OlivawApp({super.key});
@@ -38,12 +37,11 @@ class OlivawApp extends StatelessWidget {
     return MaterialApp(
       title: 'Olivaw',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(seedColor: _accent),
-        scaffoldBackgroundColor: _paper,
-        fontFamily: 'Roboto',
-      ),
+      theme: olivawLight,
+      darkTheme: olivawDark,
+      // Whatever the phone is set to. A tool you reach for at midnight should not be
+      // the one white rectangle on the screen.
+      themeMode: ThemeMode.system,
       home: const Boot(),
     );
   }
@@ -340,7 +338,7 @@ class _LinkScreenState extends State<LinkScreen> {
         if (_status.isNotEmpty)
           Padding(
             padding: const EdgeInsets.only(top: 12),
-            child: Text(_status, style: const TextStyle(color: Colors.redAccent)),
+            child: Text(_status, style: TextStyle(color: context.c.err)),
           ),
       ]),
     );
@@ -454,15 +452,15 @@ class _HomeState extends State<Home> {
                 Padding(
                   padding: const EdgeInsets.all(24),
                   child: Column(children: [
-                    const Icon(Icons.wifi_off, size: 42, color: Colors.black26),
+                    Icon(Icons.wifi_off, size: 42, color: context.c.muted.withValues(alpha: 0.5)),
                     const SizedBox(height: 12),
                     Text(_error, textAlign: TextAlign.center),
                     const SizedBox(height: 12),
-                    const Text(
+                    Text(
                       'Si estás fuera de casa, tu ordenador necesita tener configurado '
                       'el punto de encuentro en «Tu teléfono».',
                       textAlign: TextAlign.center,
-                      style: TextStyle(fontSize: 12, color: Colors.black54),
+                      style: TextStyle(fontSize: 12, color: context.c.muted),
                     ),
                   ]),
                 )
@@ -509,10 +507,20 @@ class Face extends StatelessWidget {
       width: size,
       height: size,
       alignment: Alignment.center,
-      decoration: BoxDecoration(color: agent.colour, shape: BoxShape.circle),
+      decoration: BoxDecoration(
+        color: agent.colour,
+        shape: BoxShape.circle,
+        // The same hairline the console draws (app.css .av): it keeps a pale face from
+        // melting into a pale page, and costs nothing on a dark one.
+        border: Border.all(color: Colors.black.withValues(alpha: 0.08), width: 1),
+      ),
       child: Text(
         agent.emoji.isNotEmpty ? agent.emoji : agent.initials,
         style: TextStyle(
+          // White, always - NOT a theme colour. This text sits on the agent's own
+          // colour, which is the same in light and dark, so a token that flips with the
+          // theme turned the initials black on their own face. app.css says the same
+          // thing in words: white "is legible on all eight palette colours".
           color: Colors.white,
           fontWeight: FontWeight.w700,
           fontSize: size * (agent.emoji.isNotEmpty ? 0.5 : 0.38),
@@ -741,18 +749,19 @@ class _ChatTabState extends State<ChatTab> {
       if (_error.isNotEmpty)
         Container(
           width: double.infinity,
-          color: const Color(0xFFFFF4E5),
+          color: context.c.warnBg,
           padding: const EdgeInsets.all(10),
-          child: Text(_error, style: const TextStyle(fontSize: 12)),
+          child: Text(_error,
+              style: TextStyle(fontSize: 12, color: context.c.ink)),
         ),
       if (_msgs.isEmpty && _error.isEmpty && _ready)
-        const Expanded(
+        Expanded(
           child: Center(
             child: Padding(
-              padding: EdgeInsets.all(32),
+              padding: const EdgeInsets.all(32),
               child: Text('Todavía no os habéis dicho nada.',
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.black54)),
+                  style: TextStyle(color: context.c.muted)),
             ),
           ),
         )
@@ -773,14 +782,14 @@ class _ChatTabState extends State<ChatTab> {
                 constraints: BoxConstraints(
                     maxWidth: MediaQuery.of(c).size.width * 0.78),
                 decoration: BoxDecoration(
-                  color: mine ? _accent : Colors.white,
+                  color: mine ? context.c.accent : context.c.panel,
                   borderRadius: BorderRadius.circular(16),
-                  border: mine ? null : Border.all(color: Colors.black12),
+                  border: mine ? null : Border.all(color: context.c.line),
                 ),
                 child: Text(
                   m['pending'] == true ? 'escribiendo…' : (m['text'] ?? '').toString(),
                   style: TextStyle(
-                    color: mine ? Colors.white : _ink,
+                    color: mine ? context.c.accentInk : context.c.ink,
                     fontStyle:
                         m['pending'] == true ? FontStyle.italic : FontStyle.normal,
                   ),
@@ -1027,11 +1036,11 @@ class _BrowserTabState extends State<BrowserTab> {
       ),
       Expanded(
         child: Container(
-          color: Colors.black,
+          color: Colors.black,   // the browser frame sits on black on purpose
           child: frame == null
               ? const Center(
                   child: Text('Esperando la primera imagen…',
-                      style: TextStyle(color: Colors.white54)))
+                      style: TextStyle(color: Colors.white70)))
               : LayoutBuilder(builder: (c, box) {
                   return GestureDetector(
                     onTapDown: (d) =>
@@ -1059,7 +1068,7 @@ class _BrowserTabState extends State<BrowserTab> {
       if (_state['visible'] == false)
         Container(
           width: double.infinity,
-          color: const Color(0xFFFFF4E5),
+          color: context.c.warnBg,
           padding: const EdgeInsets.all(8),
           child: const Text(
             'La ventana está tapada en el ordenador, así que puede no refrescarse.',
@@ -1077,7 +1086,11 @@ class _BrowserTabState extends State<BrowserTab> {
             Expanded(
               child: FilledButton.icon(
                 style: _armed
-                    ? FilledButton.styleFrom(backgroundColor: const Color(0xFFB45309))
+                    // The dark palette's warn is a LIGHT amber and the light one's is a
+                    // dark ochre, so neither black nor white is right for both.
+                    ? FilledButton.styleFrom(
+                        backgroundColor: context.c.warn,
+                        foregroundColor: inkOn(context.c.warn))
                     : null,
                 onPressed: () {
                   if (_armed) {

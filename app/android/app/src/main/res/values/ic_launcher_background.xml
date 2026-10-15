@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The accent from app.css. Flat, because a launcher may
+         parallax the background under the foreground. -->
+    <color name="ic_launcher_background">#5B5BD6</color>
+</resources>
