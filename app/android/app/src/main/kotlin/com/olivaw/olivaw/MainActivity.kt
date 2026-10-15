@@ -1,6 +1,7 @@
 package com.olivaw.olivaw
 
 import android.app.Activity
+import android.app.PendingIntent
 import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -11,6 +12,8 @@ import android.provider.MediaStore
 import android.provider.OpenableColumns
 import androidx.annotation.NonNull
 import androidx.core.app.ActivityCompat
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -41,6 +44,7 @@ class MainActivity : FlutterActivity() {
 
     private val pickFileRequest = 4101
     private val micPermissionRequest = 4102
+    private val notifyPermissionRequest = 4103
 
     override fun configureFlutterEngine(@NonNull engine: FlutterEngine) {
         super.configureFlutterEngine(engine)
@@ -52,6 +56,12 @@ class MainActivity : FlutterActivity() {
         when (call.method) {
             "openUrl" -> openUrl(call.argument<String>("url"), result)
             "pick" -> pick(call.argument<String>("mime") ?: "*/*", result)
+            "waitStart" -> waitStart(call.argument<String>("who"), result)
+            "waitStop" -> waitStop(result)
+            "notify" -> notify(call.argument<String>("title"),
+                               call.argument<String>("body"), result)
+            "canNotify" -> result.success(canNotify())
+            "askNotify" -> askNotify(result)
             "save" -> save(call.argument<String>("name"),
                            call.argument<ByteArray>("bytes"), result)
             "recordStart" -> recordStart(result)
@@ -80,6 +90,81 @@ class MainActivity : FlutterActivity() {
             result.success(true)
         } catch (e: Exception) {
             result.error("open", e.message, null)
+        }
+    }
+
+    // ── waiting, and saying so ────────────────────────────────────────────────────────
+
+    private fun waitStart(who: String?, result: MethodChannel.Result) {
+        try {
+            val i = Intent(this, WaitingService::class.java)
+                .putExtra(WaitingService.EXTRA_WHO, who ?: "Tu agente")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(i)
+            } else {
+                startService(i)
+            }
+            result.success(true)
+        } catch (e: Exception) {
+            // Not fatal: without it the wait simply does not survive the screen going
+            // off, which is worth saying but not worth failing the message over.
+            result.error("wait", e.message, null)
+        }
+    }
+
+    private fun waitStop(result: MethodChannel.Result) {
+        try {
+            stopService(Intent(this, WaitingService::class.java))
+        } catch (e: Exception) { /* already gone */ }
+        result.success(true)
+    }
+
+    private fun canNotify(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return true
+        return ContextCompat.checkSelfPermission(
+            this, android.Manifest.permission.POST_NOTIFICATIONS
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun askNotify(result: MethodChannel.Result) {
+        if (canNotify()) { result.success(true); return }
+        ActivityCompat.requestPermissions(
+            this,
+            arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),
+            notifyPermissionRequest
+        )
+        result.success(false)
+    }
+
+    /** One notification for one reply. */
+    private fun notify(title: String?, body: String?, result: MethodChannel.Result) {
+        if (!canNotify()) { result.success(false); return }
+        try {
+            WaitingService.channels(this)
+            val tap = PendingIntent.getActivity(
+                this, 0,
+                Intent(this, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                PendingIntent.FLAG_IMMUTABLE
+            )
+            val note = NotificationCompat.Builder(this, WaitingService.REPLY_CHANNEL)
+                .setContentTitle(title ?: "Olivaw")
+                .setContentText(body ?: "")
+                // The whole reply, not one clipped line: an answer worth a notification
+                // is usually longer than a notification is tall.
+                .setStyle(NotificationCompat.BigTextStyle().bigText(body ?: ""))
+                .setSmallIcon(android.R.drawable.stat_notify_chat)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true)
+                .setContentIntent(tap)
+                .build()
+            NotificationManagerCompat.from(this).notify(
+                (System.currentTimeMillis() % 100000).toInt(), note)
+            result.success(true)
+        } catch (e: SecurityException) {
+            result.success(false)
+        } catch (e: Exception) {
+            result.error("notify", e.message, null)
         }
     }
 

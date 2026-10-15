@@ -11,6 +11,13 @@
          microphone, never at install: a permission requested out of context is a
          permission declined. Nothing records without that press. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <!-- An agent takes its time, and a phone back in a pocket is a phone Android
+         is free to freeze. The service keeps the wait alive and shows, while it
+         runs, that it is doing so. Not Firebase: push would mean a third party
+         holding a token for every phone and the message passing through it. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <application
         android:label="Olivaw"
         android:name="${applicationName}"
@@ -42,6 +49,10 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <service
+            android:name=".WaitingService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"/>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

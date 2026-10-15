@@ -83,6 +83,56 @@ class Native {
     }
   }
 
+  /// Keep this app alive while [who] is thinking, and show that it is waiting.
+  ///
+  /// Best effort on purpose: if the service will not start, the message has still been
+  /// sent and the computer will still finish the turn. All that is lost is the wait
+  /// surviving the screen going off, which is worth a line in a log and not worth
+  /// failing a message over.
+  static Future<void> waitStart(String who) async {
+    try {
+      await _ch.invokeMethod('waitStart', {'who': who});
+    } on PlatformException {
+      // see above
+    }
+  }
+
+  static Future<void> waitStop() async {
+    try {
+      await _ch.invokeMethod('waitStop');
+    } on PlatformException {
+      // nothing useful to say if stopping fails
+    }
+  }
+
+  /// Whether notifications are allowed. Android 13 and later ask; before that, always.
+  static Future<bool> canNotify() async {
+    try {
+      return await _ch.invokeMethod<bool>('canNotify') ?? false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  /// Ask for permission to notify. Returns whether it is already granted; the dialog's
+  /// answer arrives the next time [canNotify] is asked.
+  static Future<bool> askNotify() async {
+    try {
+      return await _ch.invokeMethod<bool>('askNotify') ?? false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  /// One notification for one reply.
+  static Future<void> notify(String title, String body) async {
+    try {
+      await _ch.invokeMethod('notify', {'title': title, 'body': body});
+    } on PlatformException {
+      // a notification that cannot be posted is not a reason to lose the reply
+    }
+  }
+
   static Future<void> recordStart() async {
     try {
       await _ch.invokeMethod('recordStart');

@@ -23,10 +23,11 @@ import 'markdown.dart';
 import 'native.dart';
 import 'theme.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // A hash that is quietly wrong would make every computer look like an impostor.
   assert(sha256SelfTest(), 'SHA-256 self test failed');
+  await loadOpenThreads();
   runApp(const OlivawApp());
 }
 
@@ -71,6 +72,29 @@ class Store {
   static Future<void> save(List<Pairing> all) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_key, jsonEncode(all.map((p) => p.toJson()).toList()));
+  }
+
+  static const _threadsKey = 'olivaw.threads.v1';
+
+  /// Which conversation is open with each agent, kept across launches.
+  ///
+  /// Only the id. The messages themselves stay on the computer, where they already are
+  /// and where they belong - a phone that is lost should not be carrying a copy of
+  /// every conversation. Reopening fetches them again.
+  static Future<Map<String, String>> loadThreads() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_threadsKey);
+    if (raw == null || raw.isEmpty) return {};
+    try {
+      return (jsonDecode(raw) as Map).map((k, v) => MapEntry('$k', '$v'));
+    } catch (_) {
+      return {};
+    }
+  }
+
+  static Future<void> saveThreads(Map<String, String> threads) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_threadsKey, jsonEncode(threads));
   }
 }
 
@@ -598,10 +622,18 @@ class _AgentScreenState extends State<AgentScreen> {
   }
 }
 
-/// The conversation currently open with each agent, for as long as the app is running.
-/// Deliberately not saved to disk: a new launch starts clean, the way the desktop
-/// console does. Reopening past conversations is a separate thing, with its own screen.
+/// The conversation currently open with each agent.
+///
+/// Kept across launches, because closing an app is not the same as finishing a
+/// conversation - a question asked on the way out of the house should still be there,
+/// with its answer, when the phone comes back out of the pocket. Only the id is saved;
+/// the messages stay on the computer.
 final Map<String, String> _openThreads = {};
+
+/// Loaded once at startup into [_openThreads].
+Future<void> loadOpenThreads() async {
+  _openThreads.addAll(await Store.loadThreads());
+}
 
 class ChatTab extends StatefulWidget {
   const ChatTab({super.key, required this.link, required this.agent});
@@ -612,7 +644,17 @@ class ChatTab extends StatefulWidget {
   State<ChatTab> createState() => ChatTabState();
 }
 
-class ChatTabState extends State<ChatTab> {
+class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
+  /// Whether the owner is actually looking at this. A reply that lands while they are
+  /// reading it does not need a notification; the same reply while the phone is in a
+  /// pocket does, and that is the only difference between the two.
+  bool _inFront = true;
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _inFront = state == AppLifecycleState.resumed;
+  }
+
   final _input = TextEditingController();
   final _scroll = ScrollController();
   List<Map<String, dynamic>> _msgs = [];
@@ -623,6 +665,7 @@ class ChatTabState extends State<ChatTab> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _start();
   }
 
@@ -655,7 +698,14 @@ class ChatTabState extends State<ChatTab> {
         _ready = true;
         _error = '';
       });
-      if (_session.isNotEmpty) await _history();
+      if (_session.isNotEmpty) {
+        setState(() => _loadingHistory = true);
+        try {
+          await _history();
+        } finally {
+          if (mounted) setState(() => _loadingHistory = false);
+        }
+      }
     } catch (e) {
       setState(() => _error = humanError(e));
     }
@@ -763,7 +813,19 @@ class ChatTabState extends State<ChatTab> {
           throw LinkError('El ordenador no abrió ninguna conversación.');
         }
         _openThreads[widget.agent.slug] = _session;
+        await Store.saveThreads(_openThreads);
       }
+      // From here the agent may take minutes. The service keeps this app out of the
+      // range where Android freezes it, so putting the phone away does not lose the
+      // wait. The computer would finish the turn either way - this is about whether
+      // the phone is still listening when it does.
+      // Asked here rather than at startup: a permission request makes sense next to
+      // the thing it is for, and this is the first moment the answer could matter.
+      if (!_askedToNotify) {
+        _askedToNotify = true;
+        if (!await Native.canNotify()) await Native.askNotify();
+      }
+      await Native.waitStart(widget.agent.name);
       final res = await widget.link.reach('POST', '/api/talk/send',
           body: _body({
             'session_id': _session,
@@ -775,20 +837,30 @@ class ChatTabState extends State<ChatTab> {
       // The reply comes back on the send itself; re-reading the whole transcript to
       // find it would also drag in every tool call the agent made on the way.
       final reply = (res['reply'] ?? '').toString().trim();
+      final shown = reply.isEmpty ? '(sin respuesta)' : reply;
       setState(() {
         _msgs = [
           ..._msgs.where((m) => m['pending'] != true),
-          {'role': 'assistant', 'text': reply.isEmpty ? '(sin respuesta)' : reply},
+          {
+            'role': 'assistant',
+            'text': shown,
+            if (res['files'] is List) 'files': res['files'],
+          },
         ];
       });
       _toBottom();
+      // Only when they are not already looking at it.
+      if (!_inFront) {
+        await Native.notify(widget.agent.name, shown);
+      }
     } catch (e) {
       setState(() {
         _msgs = _msgs.where((m) => m['pending'] != true).toList();
         _error = humanError(e);
       });
     } finally {
-      setState(() => _sending = false);
+      await Native.waitStop();
+      if (mounted) setState(() => _sending = false);
     }
   }
 
@@ -804,6 +876,15 @@ class ChatTabState extends State<ChatTab> {
   /// The message being answered, if any - Telegram's swipe, same gesture.
   Map<String, dynamic>? _replyTo;
 
+  /// Once per run. Android only shows the dialog the first time anyway, and nagging
+  /// afterwards would be asking a question that has already been answered.
+  bool _askedToNotify = false;
+
+  /// A restored conversation is being fetched. Distinct from 'there is nothing here':
+  /// showing the empty state during the fetch told me, convincingly, that persistence
+  /// was broken when it was working - and it would tell the owner the same lie.
+  bool _loadingHistory = false;
+
   bool _recording = false;
   DateTime? _recordingSince;
   Timer? _tick;
@@ -811,6 +892,8 @@ class ChatTabState extends State<ChatTab> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    Native.waitStop();
     _tick?.cancel();
     if (_recording) Native.recordCancel();
     _input.dispose();
@@ -1057,6 +1140,7 @@ class ChatTabState extends State<ChatTab> {
       _error = '';
     });
     _openThreads[widget.agent.slug] = id;
+    await Store.saveThreads(_openThreads);
     await _history();
   }
 
@@ -1246,7 +1330,9 @@ class ChatTabState extends State<ChatTab> {
           child: Text(_error,
               style: TextStyle(fontSize: 12, color: context.c.ink)),
         ),
-      if (_msgs.isEmpty && _error.isEmpty && _ready)
+      if (_loadingHistory)
+        const Expanded(child: Center(child: CircularProgressIndicator()))
+      else if (_msgs.isEmpty && _error.isEmpty && _ready)
         Expanded(
           child: Center(
             child: Padding(
