@@ -134,6 +134,48 @@ class Native {
     }
   }
 
+  /// Play a voice note. Returns how long it lasts, in milliseconds.
+  ///
+  /// One at a time: starting a second note stops the first, which is what a single
+  /// pair of ears expects and what every messaging app already does.
+  static Future<int> playStart(String name, Uint8List bytes) async {
+    try {
+      return await _ch.invokeMethod<int>(
+              'playStart', {'name': name, 'bytes': bytes}) ??
+          0;
+    } on PlatformException catch (e) {
+      throw NativeError(e.code, e.message ?? 'No pude reproducir la nota.');
+    }
+  }
+
+  /// How long a note lasts, without playing it. 0 when it cannot be read.
+  static Future<int> probeDuration(String name, Uint8List bytes) async {
+    try {
+      return await _ch.invokeMethod<int>(
+              'probeDuration', {'name': name, 'bytes': bytes}) ??
+          0;
+    } on PlatformException {
+      return 0;
+    }
+  }
+
+  static Future<void> playStop() async {
+    try {
+      await _ch.invokeMethod('playStop');
+    } on PlatformException {
+      // stopping something that is not playing is not worth saying anything about
+    }
+  }
+
+  /// Where the note is up to, in milliseconds, or -1 when nothing is playing.
+  static Future<int> playPosition() async {
+    try {
+      return await _ch.invokeMethod<int>('playPosition') ?? -1;
+    } on PlatformException {
+      return -1;
+    }
+  }
+
   static Future<void> recordStart() async {
     try {
       await _ch.invokeMethod('recordStart');

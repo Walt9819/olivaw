@@ -22,6 +22,7 @@ import 'sha256.dart';
 import 'markdown.dart';
 import 'native.dart';
 import 'theme.dart';
+import 'voice.dart';
 import 'strings.dart';
 
 Future<void> main() async {
@@ -595,12 +596,18 @@ class _AgentScreenState extends State<AgentScreen> {
         actions: [
           // Only over the conversation: on the routines or the browser it would be a
           // button about a screen you are not looking at.
-          if (_tab == 0)
+          if (_tab == 0) ...[
+            IconButton(
+              icon: const Icon(Icons.edit_square),
+              tooltip: tr('Conversación nueva'),
+              onPressed: () => _chat.currentState?.newConversation(),
+            ),
             IconButton(
               icon: const Icon(Icons.history),
               tooltip: tr('Conversaciones anteriores'),
               onPressed: () => _chat.currentState?.pickPastConversation(),
             ),
+          ],
         ],
       ),
       body: tabs[_tab.clamp(0, tabs.length - 1)],
@@ -678,10 +685,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
 
   Future<void> _start() async {
     try {
-      // Only whether talking is switched on for this agent. No session is opened here:
-      // the desktop console starts a clean thread rather than reopening the last one,
-      // and creating one on every tap into an agent would litter the list with empty
-      // conversations nobody held. One is made when there is something to put in it.
+      // Whether talking is switched on, first: everything below depends on it.
       final st = await widget.link.reach('POST', '/api/talk/status', body: _body());
       if (st['ok'] != true || st['enabled'] != true) {
         setState(() => _error = (st['detail'] ??
@@ -689,10 +693,26 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
             .toString());
         return;
       }
-      // Coming back to an agent you were just talking to should find the conversation
-      // where you left it, not an empty screen - leaving the chat for the routines tab
-      // and returning is not the same as starting again.
+      // Where you left off. The thread this phone had open comes first; failing that,
+      // the most recent conversation this agent had anywhere - including on Telegram,
+      // because it is the same agent and picking up mid-thought is the common case.
+      // A clean start is still one tap away, which is the right way round: carrying on
+      // is what you usually want, and starting over is a decision.
       _session = _openThreads[widget.agent.slug] ?? '';
+      if (_session.isEmpty) {
+        final sessions = await widget.link
+            .reach('POST', '/api/talk/sessions', body: _body({'limit': 1}));
+        if (sessions['ok'] == true) {
+          final rows = sessions['sessions'] as List? ?? [];
+          if (rows.isNotEmpty && rows.first is Map) {
+            _session = ((rows.first as Map)['id'] ?? '').toString();
+            if (_session.isNotEmpty) {
+              _openThreads[widget.agent.slug] = _session;
+              await Store.saveThreads(_openThreads);
+            }
+          }
+        }
+      }
       setState(() {
         _ready = true;
         _error = '';
@@ -887,7 +907,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
   bool _recording = false;
   DateTime? _recordingSince;
   Timer? _tick;
-  bool _transcribing = false;
+  final bool _transcribing = false;
 
   @override
   void dispose() {
@@ -1004,34 +1024,108 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       _say(tr('Demasiado corto.'));
       return;
     }
-    setState(() => _transcribing = true);
+    await _sendVoice(note);
+  }
+
+  /// A recording becomes a message in its own right.
+  ///
+  /// It appears in the conversation straight away as a note you can play back, the way
+  /// it does in any messaging app - what you SENT was a recording, so that is what the
+  /// conversation shows. The computer does the listening, and the words it heard are
+  /// what the agent reads and what gets folded away under the note for checking.
+  Future<void> _sendVoice(PickedFile note) async {
+    final mine = <String, dynamic>{
+      'role': 'user',
+      'text': '',
+      'voice': true,
+      'audioBytes': note.bytes,
+      'files': [
+        {'name': note.name, 'kind': 'audio'}
+      ],
+      'pending': true,
+    };
+    setState(() {
+      _sending = true;
+      _msgs = [..._msgs, mine];
+    });
+    _toBottom();
     try {
-      // The computer listens, not the phone: Whisper runs on its GPU, and the words
-      // come back as the message. The recording is kept in the agent's folder too, so
-      // a misheard name can still be checked against what was actually said.
-      final res = await widget.link.reach('POST', '/api/talk/voice',
+      if (!_askedToNotify) {
+        _askedToNotify = true;
+        if (!await Native.canNotify()) await Native.askNotify();
+      }
+      await Native.waitStart(widget.agent.name);
+      // One call does both: the recording is kept in the agent's folder AND read out
+      // into words. Keeping it is the point of showing a transcript at all - a name
+      // Whisper got wrong can still be checked against what was actually said.
+      final heard = await widget.link.reach('POST', '/api/talk/voice',
           body: _body({'name': note.name, 'data': base64Encode(note.bytes)}),
           wait: Link.thinkingWait);
-      if (res['ok'] != true) {
-        _say((res['detail'] ?? tr('No pude transcribir la nota.')).toString());
-        return;
+      if (heard['ok'] != true) {
+        throw LinkError(
+            (heard['detail'] ?? tr('No pude transcribir la nota.')).toString());
       }
-      final text = (res['text'] ?? '').toString().trim();
-      if (text.isEmpty) {
-        _say(tr('No entendí nada en esa nota.'));
-        return;
-      }
-      // Into the box, not straight out: Whisper mishears names, and a word you cannot
-      // correct before it is sent is worse than typing it yourself.
+      final text = (heard['text'] ?? '').toString().trim();
+      if (text.isEmpty) throw LinkError(tr('No entendí nada en esa nota.'));
+      final rec = (heard['file'] as Map?)?.cast<String, dynamic>() ??
+          <String, dynamic>{'name': note.name, 'kind': 'audio'};
       setState(() {
-        _input.text = _input.text.isEmpty ? text : '${_input.text} $text';
-        _input.selection =
-            TextSelection.collapsed(offset: _input.text.length);
+        mine['text'] = text;
+        mine['files'] = [rec];
+        mine['pending'] = false;
+        _msgs = [..._msgs, {'role': 'assistant', 'pending': true}];
       });
+      _toBottom();
+
+      if (_session.isEmpty) {
+        final made = await widget.link.reach('POST', '/api/talk/new', body: _body());
+        if (made['ok'] != true) {
+          throw LinkError(
+              (made['detail'] ?? tr('No se pudo abrir la conversación.')).toString());
+        }
+        _session = ((made['session'] as Map?)?['id'] ?? made['id'] ?? '').toString();
+        if (_session.isEmpty) {
+          throw LinkError(tr('La computadora no abrió ninguna conversación.'));
+        }
+        _openThreads[widget.agent.slug] = _session;
+        await Store.saveThreads(_openThreads);
+      }
+      // The agent gets the words - it cannot listen - with the recording attached so
+      // its own tools can open the thing that was actually said.
+      final res = await widget.link.reach('POST', '/api/talk/send',
+          body: _body({
+            'session_id': _session,
+            'text': _withQuote(text),
+            if (rec['id'] != null) 'files': [rec['id']],
+          }),
+          wait: Link.thinkingWait);
+      if (res['ok'] != true) {
+        throw LinkError((res['detail'] ?? tr('Sin respuesta')).toString());
+      }
+      final reply = (res['reply'] ?? '').toString().trim();
+      final shown = reply.isEmpty ? tr('(sin respuesta)') : reply;
+      setState(() {
+        _replyTo = null;
+        _msgs = [
+          ..._msgs.where((m) => m['pending'] != true || m == mine),
+          {
+            'role': 'assistant',
+            'text': shown,
+            if (res['files'] is List) 'files': res['files'],
+          },
+        ];
+      });
+      _toBottom();
+      if (!_inFront) await Native.notify(widget.agent.name, shown);
     } catch (e) {
-      _say(humanError(e));
+      setState(() {
+        _msgs = _msgs.where((m) => m['pending'] != true || m == mine).toList();
+        mine['pending'] = false;
+        _error = humanError(e);
+      });
     } finally {
-      if (mounted) setState(() => _transcribing = false);
+      await Native.waitStop();
+      if (mounted) setState(() => _sending = false);
     }
   }
 
@@ -1039,6 +1133,22 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
     _tick?.cancel();
     await Native.recordCancel();
     if (mounted) setState(() => _recording = false);
+  }
+
+  /// Start a clean thread with this agent.
+  ///
+  /// No session is created here: an empty conversation nobody held is litter in the
+  /// list. The next thing said makes one.
+  void newConversation() {
+    setState(() {
+      _session = '';
+      _msgs = [];
+      _replyTo = null;
+      _attached.clear();
+      _error = '';
+    });
+    _openThreads.remove(widget.agent.slug);
+    Store.saveThreads(_openThreads);
   }
 
   // ── past conversations ───────────────────────────────────────────────────────────
@@ -1105,6 +1215,16 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
                       color: context.c.ink)),
             ]),
           ),
+          // Somebody who opens this list looking for 'a different conversation' is
+          // often after a new one.
+          ListTile(
+            leading: Icon(Icons.edit_square, color: context.c.accent),
+            title: Text(tr('Conversación nueva'),
+                style: TextStyle(
+                    color: context.c.accent, fontWeight: FontWeight.w600)),
+            onTap: () => Navigator.pop(sheet, <String, dynamic>{'new': true}),
+          ),
+          Divider(height: 1, color: context.c.line),
           Flexible(
             child: ListView.builder(
               shrinkWrap: true,
@@ -1130,6 +1250,10 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       ),
     );
     if (chosen == null || !mounted) return;
+    if (chosen['new'] == true) {
+      newConversation();
+      return;
+    }
     final id = (chosen['id'] ?? '').toString();
     if (id.isEmpty) return;
     setState(() {
@@ -1353,7 +1477,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
           itemBuilder: (c, i) {
             final m = _msgs[i];
             final mine = m['role'] == 'user';
-            if (m['pending'] == true) return _bubble(c, m, mine);
+            if (m['pending'] == true && m['voice'] != true) return _bubble(c, m, mine);
             // Telegram's gesture, because it is the one thumbs already know: drag the
             // message a little way and let go. A threshold rather than any movement at
             // all, so scrolling a long conversation does not keep arming a reply.
@@ -1394,7 +1518,9 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
                 ),
                 child: Builder(builder: (bc) {
                   final ink = mine ? context.c.accentInk : context.c.ink;
-                  if (m['pending'] == true) {
+                  // A voice note on its way up is pending too, but it is a note, not an
+                  // agent thinking - it has a recording to show and a spinner of its own.
+                  if (m['pending'] == true && m['voice'] != true) {
                     return Text(tr('escribiendo…'),
                         style: TextStyle(color: ink, fontStyle: FontStyle.italic));
                   }
@@ -1412,6 +1538,25 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
                       else
                         <String, dynamic>{'name': f.toString()},
                   ];
+                  // A message carrying exactly one recording IS a voice note: the
+                  // recording on top, and the words the computer heard folded away
+                  // underneath where they can be checked. That shape covers a note
+                  // just recorded and one read back out of a transcript months later,
+                  // because by then it is the same thing - a file and the text that
+                  // was sent with it.
+                  final audio = files.where((f) => f['kind'] == 'audio').toList();
+                  if (audio.length == 1 && files.length == 1) {
+                    return VoiceNote(
+                      link: widget.link,
+                      file: audio.first,
+                      body: _body,
+                      ink: ink,
+                      accent: context.c.accent,
+                      transcript: body,
+                      localBytes: m['audioBytes'] as Uint8List?,
+                      pending: m['pending'] == true,
+                    );
+                  }
                   final body2 = mine
                       ? Text(body, style: TextStyle(color: ink))
                       : Markdown(body,

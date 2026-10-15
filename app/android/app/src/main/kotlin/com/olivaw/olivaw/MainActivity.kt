@@ -64,6 +64,14 @@ class MainActivity : FlutterActivity() {
             "askNotify" -> askNotify(result)
             "save" -> save(call.argument<String>("name"),
                            call.argument<ByteArray>("bytes"), result)
+            "playStart" -> playStart(call.argument<ByteArray>("bytes"),
+                                     call.argument<String>("name"), result)
+            "playStop" -> playStop(result)
+            "probeDuration" -> probeDuration(call.argument<ByteArray>("bytes"),
+                                             call.argument<String>("name"), result)
+            "playPosition" -> result.success(player?.let {
+                try { if (it.isPlaying) it.currentPosition else -1 } catch (e: Exception) { -1 }
+            } ?: -1)
             "recordStart" -> recordStart(result)
             "recordStop" -> recordStop(result)
             "recordCancel" -> recordCancel(result)
@@ -296,6 +304,86 @@ class MainActivity : FlutterActivity() {
             "m4a" -> "audio/mp4"
             else -> "application/octet-stream"
         }
+    }
+
+    // ── playing a voice note ──────────────────────────────────────────────────────────
+
+    private var player: android.media.MediaPlayer? = null
+    private var playingFile: File? = null
+
+    /**
+     * Play [bytes] and report how long they last.
+     *
+     * Written to the cache first because MediaPlayer wants a file or a URI, not a byte
+     * array - and the note has to exist somewhere anyway for the system to seek in it.
+     * One at a time: starting a second note stops the first, which is what every
+     * messaging app does and what a single pair of ears expects.
+     */
+    private fun playStart(bytes: ByteArray?, name: String?, result: MethodChannel.Result) {
+        if (bytes == null || bytes.isEmpty()) {
+            result.error("empty", "Nada que reproducir.", null); return
+        }
+        stopPlayer()
+        try {
+            val f = File(cacheDir, "play-" + (name ?: "nota.m4a").takeLast(40))
+            f.writeBytes(bytes)
+            val mp = android.media.MediaPlayer()
+            mp.setDataSource(f.absolutePath)
+            mp.prepare()
+            mp.setOnCompletionListener { stopPlayer() }
+            mp.start()
+            player = mp
+            playingFile = f
+            result.success(mp.duration)
+        } catch (e: Exception) {
+            stopPlayer()
+            result.error("play", e.message, null)
+        }
+    }
+
+    /**
+     * How long a note lasts, without playing it.
+     *
+     * A bubble that says 0:00 until you press play is a bubble that looks broken. There
+     * is no way to ask the length of an encoded stream without decoding its header, so
+     * this prepares a player, reads the duration and throws it away.
+     */
+    private fun probeDuration(bytes: ByteArray?, name: String?,
+                              result: MethodChannel.Result) {
+        if (bytes == null || bytes.isEmpty()) { result.success(0); return }
+        var f: File? = null
+        try {
+            f = File(cacheDir, "probe-" + (name ?: "nota.m4a").takeLast(40))
+            f.writeBytes(bytes)
+            val mp = android.media.MediaPlayer()
+            mp.setDataSource(f.absolutePath)
+            mp.prepare()
+            val ms = mp.duration
+            mp.release()
+            result.success(ms)
+        } catch (e: Exception) {
+            result.success(0)
+        } finally {
+            try { f?.delete() } catch (e: Exception) { /* gone */ }
+        }
+    }
+
+    private fun playStop(result: MethodChannel.Result) {
+        stopPlayer()
+        result.success(true)
+    }
+
+    private fun stopPlayer() {
+        try { player?.stop() } catch (e: Exception) { /* was not playing */ }
+        try { player?.release() } catch (e: Exception) { /* already released */ }
+        player = null
+        try { playingFile?.delete() } catch (e: Exception) { /* gone */ }
+        playingFile = null
+    }
+
+    override fun onDestroy() {
+        stopPlayer()
+        super.onDestroy()
     }
 
     // ── voice notes ───────────────────────────────────────────────────────────────────

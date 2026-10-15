@@ -117,6 +117,7 @@ _MIME = {".pdf": "application/pdf", ".txt": "text/plain; charset=utf-8",
          ".json": "application/json", ".xml": "application/xml",
          ".html": "text/html; charset=utf-8", ".htm": "text/html; charset=utf-8",
          ".zip": "application/zip", ".mp3": "audio/mpeg", ".ogg": "audio/ogg",
+         ".m4a": "audio/mp4", ".opus": "audio/opus", ".aac": "audio/aac",
          ".wav": "audio/wav", ".mp4": "video/mp4", ".svg": "image/svg+xml",
          ".doc": "application/msword", ".xls": "application/vnd.ms-excel",
          ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -449,8 +450,18 @@ def _human(n):
     return "%d B" % int(n or 0)
 
 
+# A voice note is not a generic attachment: a reader should get a thing they can press
+# play on, not a filename. The phone decides what to draw from this.
+_AUDIO_EXT = (".m4a", ".mp3", ".ogg", ".oga", ".opus", ".wav", ".aac", ".amr", ".3gp")
+
+
 def kind_of(name):
-    return "image" if os.path.splitext(name or "")[1].lower() in _IMAGE_MIME else "file"
+    ext = os.path.splitext(name or "")[1].lower()
+    if ext in _IMAGE_MIME:
+        return "image"
+    if ext in _AUDIO_EXT:
+        return "audio"
+    return "file"
 
 
 def mime_of(name):

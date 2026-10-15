@@ -286,4 +286,8 @@ const Map<String, (String, String)> _table = {
     'The computer did not open the video: {0}',
     'Der Computer hat das Video nicht geöffnet: {0}'
   ),
+  'Conversación nueva': ('New conversation', 'Neues Gespräch'),
+  'Enviando…': ('Sending…', 'Senden…'),
+  'Ver transcripción': ('Show transcript', 'Transkript anzeigen'),
+  'Ocultar transcripción': ('Hide transcript', 'Transkript ausblenden'),
 };
