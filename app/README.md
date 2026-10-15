@@ -5,20 +5,15 @@ code is plain Dart and nothing in it is Android-specific, so iOS is a build targ
 away (but see *Distribution* below — that is where the two platforms stop being the
 same).
 
-> **Status: builds, analyzes clean, tests pass, never yet run on a phone.** Flutter
-> 3.47.7 and the Android SDK are installed on the development machine now. `flutter
-> analyze` reports no issues, `flutter test` passes 7/7, and `flutter build apk
-> --release` produces a signed 48 MB APK. What has *not* happened is a person holding
-> a phone: no device has been attached, so the pairing flow, the browser stream and
-> every gesture in it are unexercised. Treat the build as proof the code is coherent,
-> not proof the app works.
+> **Status: runs on a real phone.** Installed on a Galaxy Z Fold 5 (Android 16) and
+> driven end to end: it finds the computer on its own, pairs, lists the agents, holds a
+> conversation, records a voice note, attaches a file, reopens a past conversation and
+> drives the agent's Chrome. `flutter analyze` is silent, `flutter test` passes 22, and
+> `tools/test_phone.py` is at 127 checks.
 >
-> Building it found three faults that no amount of reading would have: Flutter's
-> template grants `INTERNET` **only in the debug manifest**, so the release APK could
-> not open a single connection; the template's `-Xmx8G` is more memory than the build
-> machine has free, and Gradle's daemon was killed mid-build; and `release` was signed
-> with the per-machine debug key, which can never be updated from anywhere else. All
-> three are fixed here and `tools/test_phone.py` now fails if the first two come back.
+> Still unexercised: a *successful* voice transcription from the phone's own microphone
+> (the room was quiet, so Whisper correctly found no words; the same route returns
+> correct Spanish in 13s when given real speech), and iOS, which needs a Mac.
 
 ## What it is
 
@@ -136,3 +131,32 @@ repository and must never be: whoever holds it can publish an update that Androi
 install over Olivaw without asking the person running it. Back up that folder somewhere
 safe — if it is lost, every installed copy has to be uninstalled by hand before a new
 one will go on.
+
+## What it looks like
+
+The palette is the console's, token for token — `app/lib/theme.dart` carries the same
+`--accent` (#5B5BD6 light, #8B7DFF dark) that marks an Olivaw window on the computer, so
+an agent's face is the same colour in both places. Dark mode follows the phone.
+
+The launcher icon is a white O on that accent, drawn by `tools/make_app_icon.py` with no
+image library — see the comment at the top of that file for why the O is a ring rather
+than a letter in a typeface.
+
+## The conversation
+
+| | |
+|---|---|
+| **Markdown** | headings, bold, code, fences, quotes, lists, tables, links — `app/lib/markdown.dart`, written here because `flutter_markdown` is discontinued |
+| **Files** | the system picker, uploaded while you are still typing |
+| **Voice notes** | recorded on the phone, transcribed on the computer's GPU, dropped into the box so you can fix a misheard name before sending |
+| **Swipe to reply** | Telegram's gesture; the agent is told with a quote |
+| **Past conversations** | the history button, including threads that happened on Telegram |
+
+Files, recording and opening a link go through one hand-written `MethodChannel`
+(`MainActivity.kt`) rather than three packages — which is how the app still has exactly
+one dependency.
+
+Voice notes need a transcriber on the computer: the `faster-whisper` virtualenv that
+Hermes already uses for Telegram voice notes. Without it the route says so in plain words
+rather than failing. The first note on a new machine takes about five minutes while 2 GB
+of model downloads; after that it is around thirteen seconds.
