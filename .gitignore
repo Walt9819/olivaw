@@ -86,3 +86,6 @@ app/ios/
 # these lines only catch a copy made by accident.
 *.jks
 *.keystore
+
+# The transcriber keeps a running log beside itself.
+src/stt/stt.log

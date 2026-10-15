@@ -81,6 +81,10 @@ ROUTES = {
     "talk/send": "hablar",
     "talk/file": "hablar",
     "talk/attach": "hablar",
+    # A voice note is a message like any other: the same permission, because it says the
+    # same kinds of things. The microphone is the phone's to guard, not ours.
+    "talk/voice": "hablar",
+    "talk/voice_status": "ver",
     "intercom/thread": "hablar",
     # routines, and answering what an agent asked permission for
     "cron/flags": "tareas",

@@ -1009,6 +1009,16 @@ class Handler(BaseHTTPRequestHandler):
         # they are two different moments: a file is uploaded while the owner is still
         # writing, and downloaded long after the answer arrived. Neither takes a path -
         # `attach` mints an id, `file` spends one. See wizard/talk.py.
+        # A voice note: kept as a file in the agent's folder AND read out into words,
+        # because a transcription is a reading of what was said, not a replacement.
+        if route == "talk/voice":
+            return talk.transcribe(name=body.get("name", ""),
+                                   data_b64=body.get("data", ""),
+                                   profile=_target_profile(body),
+                                   install_dir=INSTALL_DIR,
+                                   lang=(body.get("lang") or "es"))
+        if route == "talk/voice_status":
+            return talk.stt_status()
         if route == "talk/attach":
             return talk.save_upload(name=body.get("name", ""),
                                     data_b64=body.get("data", ""),

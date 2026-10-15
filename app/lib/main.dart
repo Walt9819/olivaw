@@ -18,6 +18,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'link.dart';
 import 'sha256.dart';
+import 'markdown.dart';
+import 'native.dart';
 import 'theme.dart';
 
 void main() {
@@ -688,17 +690,38 @@ class _ChatTabState extends State<ChatTab> {
     });
   }
 
+  /// What the agent is told about the message being answered.
+  ///
+  /// A quote, because that is what a person would write and what the agent already
+  /// understands - there is no 'in reply to' field in the protocol, and inventing one
+  /// would mean the agent needing to know about it.
+  String _withQuote(String text) {
+    final r = _replyTo;
+    if (r == null) return text;
+    final who = r['role'] == 'user' ? 'Yo' : widget.agent.name;
+    var quoted = (r['text'] ?? '').toString().trim().replaceAll('\n', ' ');
+    if (quoted.length > 300) quoted = '${quoted.substring(0, 300)}…';
+    return '> **$who:** $quoted\n\n$text';
+  }
+
   Future<void> _send() async {
     final text = _input.text.trim();
-    if (text.isEmpty || _sending) return;
+    // A message can be files alone - an agent that is sent a screenshot and nothing
+    // else has still been asked something.
+    if ((text.isEmpty && _attached.isEmpty) || _sending) return;
+    final files = [for (final f in _attached) f['id']];
+    final shownNames = [for (final f in _attached) (f['name'] ?? '').toString()];
+    final outgoing = _withQuote(text);
     setState(() {
       _sending = true;
       _msgs = [
         ..._msgs,
-        {'role': 'user', 'text': text},
+        {'role': 'user', 'text': outgoing, 'files': shownNames},
         {'role': 'assistant', 'pending': true},
       ];
       _input.clear();
+      _attached.clear();
+      _replyTo = null;
     });
     _toBottom();
     try {
@@ -716,7 +739,11 @@ class _ChatTabState extends State<ChatTab> {
         _openThreads[widget.agent.slug] = _session;
       }
       final res = await widget.link.reach('POST', '/api/talk/send',
-          body: _body({'session_id': _session, 'text': text}),
+          body: _body({
+            'session_id': _session,
+            'text': outgoing,
+            if (files.isNotEmpty) 'files': files,
+          }),
           wait: Link.thinkingWait);
       if (res['ok'] != true) throw LinkError((res['detail'] ?? 'Sin respuesta').toString());
       // The reply comes back on the send itself; re-reading the whole transcript to
@@ -742,6 +769,315 @@ class _ChatTabState extends State<ChatTab> {
   /// Talking is switched on for this agent, so there is somewhere for a message to go.
   /// A session is opened on the first send, not on arrival.
   bool _ready = false;
+
+  /// Files chosen but not yet sent. Uploaded as they are picked, so the wait happens
+  /// while the owner is still writing rather than after they press send.
+  final List<Map<String, dynamic>> _attached = [];
+  bool _attaching = false;
+
+  /// The message being answered, if any - Telegram's swipe, same gesture.
+  Map<String, dynamic>? _replyTo;
+
+  bool _recording = false;
+  DateTime? _recordingSince;
+  Timer? _tick;
+  bool _transcribing = false;
+
+  @override
+  void dispose() {
+    _tick?.cancel();
+    if (_recording) Native.recordCancel();
+    _input.dispose();
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  void _say(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  Future<void> _openLink(String url) async {
+    try {
+      await Native.openUrl(url);
+    } on NativeError catch (e) {
+      _say(e.message);
+    }
+  }
+
+  // ── attachments ──────────────────────────────────────────────────────────────────
+
+  Future<void> _pick(String mime) async {
+    if (_attaching) return;
+    setState(() => _attaching = true);
+    try {
+      final files = await Native.pick(mime: mime);
+      for (final f in files) {
+        if (_attached.length >= 10) {
+          _say('Diez archivos por mensaje es el máximo.');
+          break;
+        }
+        final res = await widget.link.reach('POST', '/api/talk/attach',
+            body: _body({'name': f.name, 'data': base64Encode(f.bytes)}),
+            wait: Link.thinkingWait);
+        if (res['ok'] != true) {
+          _say((res['detail'] ?? 'No pude subir ${f.name}.').toString());
+          continue;
+        }
+        final rec = (res['file'] as Map).cast<String, dynamic>();
+        setState(() => _attached.add(rec));
+      }
+    } on NativeError catch (e) {
+      _say(e.message);
+    } catch (e) {
+      _say(humanError(e));
+    } finally {
+      if (mounted) setState(() => _attaching = false);
+    }
+  }
+
+  void _attachMenu() {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (sheet) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          ListTile(
+            leading: const Icon(Icons.image_outlined),
+            title: const Text('Foto o imagen'),
+            onTap: () {
+              Navigator.pop(sheet);
+              _pick('image/*');
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.attach_file),
+            title: const Text('Archivo'),
+            onTap: () {
+              Navigator.pop(sheet);
+              _pick('*/*');
+            },
+          ),
+        ]),
+      ),
+    );
+  }
+
+  // ── voice notes ──────────────────────────────────────────────────────────────────
+
+  Future<void> _recordToggle() async {
+    if (_transcribing) return;
+    if (!_recording) {
+      try {
+        await Native.recordStart();
+      } on NativeError catch (e) {
+        _say(e.message);
+        return;
+      }
+      setState(() {
+        _recording = true;
+        _recordingSince = DateTime.now();
+      });
+      // Only to redraw the running time; the recording itself is Android's.
+      _tick = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() {});
+      });
+      return;
+    }
+    _tick?.cancel();
+    setState(() => _recording = false);
+    PickedFile? note;
+    try {
+      note = await Native.recordStop();
+    } on NativeError catch (e) {
+      _say(e.message);
+      return;
+    }
+    if (note == null) {
+      _say('Demasiado corto.');
+      return;
+    }
+    setState(() => _transcribing = true);
+    try {
+      // The computer listens, not the phone: Whisper runs on its GPU, and the words
+      // come back as the message. The recording is kept in the agent's folder too, so
+      // a misheard name can still be checked against what was actually said.
+      final res = await widget.link.reach('POST', '/api/talk/voice',
+          body: _body({'name': note.name, 'data': base64Encode(note.bytes)}),
+          wait: Link.thinkingWait);
+      if (res['ok'] != true) {
+        _say((res['detail'] ?? 'No pude transcribir la nota.').toString());
+        return;
+      }
+      final text = (res['text'] ?? '').toString().trim();
+      if (text.isEmpty) {
+        _say('No entendí nada en esa nota.');
+        return;
+      }
+      // Into the box, not straight out: Whisper mishears names, and a word you cannot
+      // correct before it is sent is worse than typing it yourself.
+      setState(() {
+        _input.text = _input.text.isEmpty ? text : '${_input.text} $text';
+        _input.selection =
+            TextSelection.collapsed(offset: _input.text.length);
+      });
+    } catch (e) {
+      _say(humanError(e));
+    } finally {
+      if (mounted) setState(() => _transcribing = false);
+    }
+  }
+
+  Future<void> _recordCancel() async {
+    _tick?.cancel();
+    await Native.recordCancel();
+    if (mounted) setState(() => _recording = false);
+  }
+
+  /// The message being answered, above the box, with a way out.
+  Widget _replyStrip() {
+    final r = _replyTo!;
+    final who = r['role'] == 'user' ? 'Tú' : widget.agent.name;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
+      color: context.c.panel2,
+      child: Row(children: [
+        Container(width: 3, height: 32, color: context.c.accent),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(who,
+                  style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: context.c.accent)),
+              Text((r['text'] ?? '').toString().replaceAll('\n', ' '),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 12, color: context.c.muted)),
+            ],
+          ),
+        ),
+        IconButton(
+          icon: const Icon(Icons.close, size: 18),
+          onPressed: () => setState(() => _replyTo = null),
+        ),
+      ]),
+    );
+  }
+
+  /// What is going with the next message.
+  Widget _attachedStrip() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(10, 6, 10, 2),
+      child: Wrap(
+        spacing: 6,
+        runSpacing: 6,
+        children: [
+          for (final f in _attached)
+            Chip(
+              avatar: Icon(
+                  (f['kind'] == 'image')
+                      ? Icons.image_outlined
+                      : (f['kind'] == 'audio')
+                          ? Icons.mic_none
+                          : Icons.insert_drive_file_outlined,
+                  size: 16),
+              label: Text((f['name'] ?? '').toString(),
+                  overflow: TextOverflow.ellipsis),
+              onDeleted: () => setState(() => _attached.remove(f)),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _composerRow() {
+    final hasText = _input.text.trim().isNotEmpty;
+    return Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+      IconButton(
+        onPressed: (_ready && !_attaching && !_sending) ? _attachMenu : null,
+        icon: _attaching
+            ? const SizedBox(
+                width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+            : const Icon(Icons.add),
+        tooltip: 'Adjuntar',
+      ),
+      Expanded(
+        child: TextField(
+          controller: _input,
+          minLines: 1,
+          maxLines: 4,
+          // A box you can type into is a promise. Without a conversation open there is
+          // nowhere for the words to go, so it does not make one.
+          enabled: _ready && !_transcribing,
+          textInputAction: TextInputAction.newline,
+          decoration: InputDecoration(
+            hintText: _transcribing
+                ? 'Transcribiendo…'
+                : _ready
+                    ? 'Escribe…'
+                    : 'No disponible',
+            isDense: true,
+          ),
+          // Redrawn on every keystroke so the mic turns into a send button the moment
+          // there is something to send.
+          onChanged: (_) => setState(() {}),
+        ),
+      ),
+      const SizedBox(width: 6),
+      if (hasText || _attached.isNotEmpty)
+        IconButton.filled(
+          onPressed: (_sending || !_ready) ? null : _send,
+          icon: const Icon(Icons.send),
+        )
+      else
+        IconButton.filled(
+          onPressed: (_ready && !_transcribing) ? _recordToggle : null,
+          icon: _transcribing
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+              : const Icon(Icons.mic),
+          tooltip: 'Nota de voz',
+        ),
+    ]);
+  }
+
+  /// While a note is being recorded the composer becomes the recorder: a way out on the
+  /// left, how long it has been running in the middle, and the button that ends it.
+  Widget _recordingRow() {
+    final secs = DateTime.now().difference(_recordingSince ?? DateTime.now()).inSeconds;
+    final mm = (secs ~/ 60).toString();
+    final ss = (secs % 60).toString().padLeft(2, '0');
+    return Row(children: [
+      IconButton(
+        onPressed: _recordCancel,
+        icon: Icon(Icons.delete_outline, color: context.c.err),
+        tooltip: 'Descartar',
+      ),
+      Expanded(
+        child: Row(children: [
+          Icon(Icons.fiber_manual_record, size: 12, color: context.c.err),
+          const SizedBox(width: 8),
+          Text('Grabando  $mm:$ss',
+              style: TextStyle(
+                  color: context.c.ink,
+                  fontWeight: FontWeight.w600,
+                  fontFeatures: const [FontFeature.tabularFigures()])),
+        ]),
+      ),
+      IconButton.filled(
+        onPressed: _recordToggle,
+        icon: const Icon(Icons.stop),
+        tooltip: 'Terminar',
+      ),
+    ]);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -774,6 +1110,33 @@ class _ChatTabState extends State<ChatTab> {
           itemBuilder: (c, i) {
             final m = _msgs[i];
             final mine = m['role'] == 'user';
+            if (m['pending'] == true) return _bubble(c, m, mine);
+            // Telegram's gesture, because it is the one thumbs already know: drag the
+            // message a little way and let go. A threshold rather than any movement at
+            // all, so scrolling a long conversation does not keep arming a reply.
+            return _SwipeToReply(
+              onReply: () {
+                setState(() => _replyTo = m);
+                HapticFeedback.selectionClick();
+              },
+              child: _bubble(c, m, mine),
+            );
+          },
+        ),
+      ),
+      if (_replyTo != null) _replyStrip(),
+      if (_attached.isNotEmpty) _attachedStrip(),
+      SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+          child: _recording ? _recordingRow() : _composerRow(),
+        ),
+      ),
+    ]);
+  }
+
+  Widget _bubble(BuildContext c, Map<String, dynamic> m, bool mine) {
             return Align(
               alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
               child: Container(
@@ -786,49 +1149,45 @@ class _ChatTabState extends State<ChatTab> {
                   borderRadius: BorderRadius.circular(16),
                   border: mine ? null : Border.all(color: context.c.line),
                 ),
-                child: Text(
-                  m['pending'] == true ? 'escribiendo…' : (m['text'] ?? '').toString(),
-                  style: TextStyle(
-                    color: mine ? context.c.accentInk : context.c.ink,
-                    fontStyle:
-                        m['pending'] == true ? FontStyle.italic : FontStyle.normal,
-                  ),
-                ),
+                child: Builder(builder: (bc) {
+                  final ink = mine ? context.c.accentInk : context.c.ink;
+                  if (m['pending'] == true) {
+                    return Text('escribiendo…',
+                        style: TextStyle(color: ink, fontStyle: FontStyle.italic));
+                  }
+                  final body = (m['text'] ?? '').toString();
+                  // Only what the agent wrote is markdown. What the owner typed is
+                  // shown exactly as typed: an asterisk in their own message is an
+                  // asterisk, and their text should never be reinterpreted back at them.
+                  final names =
+                      (m['files'] as List?)?.cast<String>() ?? const <String>[];
+                  final body2 = mine
+                      ? Text(body, style: TextStyle(color: ink))
+                      : Markdown(body,
+                          baseStyle: TextStyle(color: ink, height: 1.35),
+                          onLink: _openLink);
+                  if (names.isEmpty) return body2;
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (body.isNotEmpty) body2,
+                      if (body.isNotEmpty) const SizedBox(height: 6),
+                      for (final n in names)
+                        Row(mainAxisSize: MainAxisSize.min, children: [
+                          Icon(Icons.attach_file, size: 14, color: ink),
+                          const SizedBox(width: 4),
+                          Flexible(
+                            child: Text(n,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(fontSize: 12, color: ink)),
+                          ),
+                        ]),
+                    ],
+                  );
+                }),
               ),
             );
-          },
-        ),
-      ),
-      SafeArea(
-        top: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
-          child: Row(children: [
-            Expanded(
-              child: TextField(
-                controller: _input,
-                minLines: 1,
-                maxLines: 4,
-                // A box you can type into is a promise. Without a conversation open
-                // there is nowhere for the words to go, so it does not make one.
-                enabled: _ready,
-                decoration: InputDecoration(
-                  hintText: _ready ? 'Escribe…' : 'No disponible',
-                  border: const OutlineInputBorder(),
-                  isDense: true,
-                ),
-                onSubmitted: (_) => _send(),
-              ),
-            ),
-            const SizedBox(width: 8),
-            IconButton.filled(
-              onPressed: (_sending || !_ready) ? null : _send,
-              icon: const Icon(Icons.send),
-            ),
-          ]),
-        ),
-      ),
-    ]);
   }
 }
 
@@ -1140,5 +1499,76 @@ class _BrowserTabState extends State<BrowserTab> {
         ),
       ),
     ]);
+  }
+}
+
+/// Drag a message sideways to answer it.
+///
+/// Telegram's gesture, because it is the one thumbs already know. Two details are what
+/// make it feel right rather than twitchy: the bubble follows the finger only part of
+/// the way (so it reads as resistance, not as a thing coming loose), and it only arms
+/// past a threshold, so scrolling a long conversation does not keep catching it.
+class _SwipeToReply extends StatefulWidget {
+  const _SwipeToReply({required this.child, required this.onReply});
+
+  final Widget child;
+  final VoidCallback onReply;
+
+  @override
+  State<_SwipeToReply> createState() => _SwipeToReplyState();
+}
+
+class _SwipeToReplyState extends State<_SwipeToReply> {
+  static const _arm = 56.0;     // far enough to be meant
+  static const _drag = 0.4;     // how much of the finger the bubble follows
+
+  double _dx = 0;
+  bool _armed = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      // Horizontal only: the vertical drag belongs to the list, and taking it would
+      // make the conversation impossible to scroll.
+      onHorizontalDragUpdate: (d) {
+        setState(() {
+          _dx = (_dx + d.delta.dx * _drag).clamp(0.0, _arm);
+          if (!_armed && _dx >= _arm) {
+            _armed = true;
+            HapticFeedback.selectionClick();
+          }
+        });
+      },
+      onHorizontalDragEnd: (_) {
+        if (_armed) widget.onReply();
+        setState(() {
+          _dx = 0;
+          _armed = false;
+        });
+      },
+      onHorizontalDragCancel: () => setState(() {
+        _dx = 0;
+        _armed = false;
+      }),
+      child: Stack(children: [
+        // The arrow fades in as the bubble moves, so the gesture explains itself the
+        // first time somebody does it by accident.
+        Positioned.fill(
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Opacity(
+              opacity: (_dx / _arm).clamp(0.0, 1.0),
+              child: Padding(
+                padding: const EdgeInsets.only(left: 6),
+                child: Icon(Icons.reply,
+                    size: 18,
+                    color: _armed ? context.c.accent : context.c.muted),
+              ),
+            ),
+          ),
+        ),
+        Transform.translate(offset: Offset(_dx, 0), child: widget.child),
+      ]),
+    );
   }
 }

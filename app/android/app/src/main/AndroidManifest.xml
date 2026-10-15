@@ -7,6 +7,10 @@
          Olivaw, and that needs the local-network state permissions by name. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
+    <!-- Voice notes. Asked for at the moment the owner first presses the
+         microphone, never at install: a permission requested out of context is a
+         permission declined. Nothing records without that press. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <application
         android:label="Olivaw"
         android:name="${applicationName}"

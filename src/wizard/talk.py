@@ -88,6 +88,7 @@ import urllib.parse
 import urllib.request
 
 from . import hermes_ctl
+from . import procutil
 
 PLATFORM = "api_server"
 KEY_ENV = "API_SERVER_KEY"
@@ -830,3 +831,84 @@ def _explain(code, data):
         detail = data[:200]
     return ("El agente respondió con un error (%s)%s"
             % (code, (": " + detail) if detail else "."))
+
+
+# ── voice notes ──────────────────────────────────────────────────────────────────────
+
+# Whisper lives in its own virtualenv, not in the bridge's interpreter: it drags in
+# ctranslate2 and a CUDA runtime, which is not something to install on every machine that
+# runs Olivaw for the sake of a feature most owners may never press. We USE one if the
+# machine already has it, and say so plainly if it does not.
+_STT_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "stt", "transcribe.py")
+_STT_VENVS = [
+    os.path.join(os.path.expanduser("~"), "hermes-workspace", "stt", ".venv",
+                 "Scripts", "python.exe"),
+    os.path.join(os.path.expanduser("~"), "hermes-workspace", "stt", ".venv",
+                 "bin", "python"),
+]
+MAX_VOICE_BYTES = 8 * 1024 * 1024        # a minute of speech is about 240 KB
+# Loading the model is almost all of it and happens once per process: about 11s from
+# disk, but 300s the very first time, when faster-whisper downloads 2GB of weights. A
+# timeout shorter than that turns "the first voice note on a new machine" into "voice
+# notes are broken".
+VOICE_TIMEOUT = 420
+
+
+def stt_python():
+    """The interpreter that can run transcribe.py, or None."""
+    for p in _STT_VENVS:
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def stt_status():
+    """Whether a voice note can be turned into words on this machine."""
+    py = stt_python()
+    return {"ok": True, "ready": bool(py and os.path.exists(_STT_SCRIPT)),
+            "detail": u"" if py else
+                      u"Este ordenador no tiene instalado el transcriptor de voz."}
+
+
+def transcribe(name="", data_b64="", profile=None, install_dir=None, lang="es"):
+    """A recorded note in, the words out.
+
+    The audio is kept, in the agent's own attachments folder and under its own name. A
+    transcription is a reading of what was said, not a replacement for it: if Whisper
+    mishears a name, the owner should be able to open the thing they actually recorded.
+    """
+    py = stt_python()
+    if not py or not os.path.exists(_STT_SCRIPT):
+        return {"ok": False, "detail": stt_status()["detail"]
+                or u"No encuentro el transcriptor en este ordenador."}
+    try:
+        raw = _b64(data_b64)
+    except Exception:  # noqa: BLE001
+        return {"ok": False, "detail": u"No pude leer esa grabación."}
+    if not raw:
+        return {"ok": False, "detail": u"La grabación llegó vacía."}
+    if len(raw) > MAX_VOICE_BYTES:
+        return {"ok": False, "detail": u"Esa nota es demasiado larga (%s)." % _human(len(raw))}
+
+    folder = attach_dir(profile, install_dir)
+    fname = _unique(folder, safe_name(name or "nota.m4a"))
+    path = os.path.join(folder, fname)
+    try:
+        with io.open(path, "wb") as fh:
+            fh.write(raw)
+    except OSError as e:
+        return {"ok": False, "detail": u"No pude guardar la grabación: %s" % e}
+
+    res = procutil.run([py, _STT_SCRIPT, path, "--lang", lang], timeout=VOICE_TIMEOUT)
+    if not res.get("ok"):
+        return {"ok": False, "detail": u"El transcriptor falló: %s"
+                % (str(res.get("err") or "")[-200:] or res.get("code"))}
+    text = (res.get("out") or "").strip()
+    if not text:
+        return {"ok": False, "detail": u"No entendí nada en esa nota."}
+
+    rec = {"name": fname, "path": path, "size": len(raw),
+           "kind": "audio", "mime": "audio/mp4"}
+    rec["id"] = _remember(_UPLOADS, rec)
+    return {"ok": True, "text": text, "file": dict(rec)}

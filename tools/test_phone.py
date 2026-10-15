@@ -465,14 +465,34 @@ def through_relay(method, path, body=None, token=""):
         head.append("Authorization: Bearer %s" % token)
     s.sendall(("\r\n".join(head) + "\r\n\r\n").encode() + data)
     buf = b""
+    # Read until the body is as long as the headers said, rather than until the socket
+    # goes quiet. Treating a quiet socket as the end made this flaky on a loaded machine:
+    # the answer arrived in pieces, recv timed out between two of them, and a half-read
+    # reply came back as an empty dict - a red test for a reason that was not its subject.
+    need = None
     while True:
         try:
             chunk = s.recv(65536)
+        except socket.timeout:
+            body_so_far = buf.partition(b"\r\n\r\n")[2]
+            if need is None or len(body_so_far) < need:
+                s.close()
+                raise AssertionError(
+                    "the relay answered too slowly (%d bytes of %s)"
+                    % (len(body_so_far), need))
+            break
         except Exception:  # noqa: BLE001
             break
         if not chunk:
             break
         buf += chunk
+        head, sep, body = buf.partition(b"\r\n\r\n")
+        if sep and need is None:
+            for line in head.split(b"\r\n"):
+                if line.lower().startswith(b"content-length:"):
+                    need = int(line.split(b":", 1)[1].strip())
+        if need is not None and len(body) >= need:
+            break
     s.close()
     h, _, b = buf.partition(b"\r\n\r\n")
     return int(h.split(b" ")[1]), json.loads(b.decode("utf-8", "replace") or "{}")
@@ -591,6 +611,47 @@ from wizard import wizard_server as _ws  # noqa: E402
 _src = _inspect.getsource(_ws._target_profile)
 ok("the server resolves an agent from 'profile'", 'body.get("profile")' in _src, _src[:80])
 
+# ── voice notes ────────────────────────────────────────────────────────────────────────
+# A recording says the same kinds of things a typed message does, so it needs the same
+# permission and no more. The microphone itself is the phone's to guard.
+ok("a voice note needs 'hablar'", pairing.allowed("talk/voice", ["ver", "hablar"]))
+ok("a voice note is refused with only 'ver'", not pairing.allowed("talk/voice", ["ver"]))
+ok("whether transcription exists is readable",
+   pairing.allowed("talk/voice_status", ["ver"]))
+
+# The transcriber lives in its own virtualenv and may simply not be on a machine. That
+# is a thing to SAY, not a traceback: the route has to answer either way.
+from wizard import talk as _talk  # noqa: E402
+_st = _talk.stt_status()
+ok("stt_status always answers", _st.get("ok") is True, _st)
+ok("stt_status says ready or says why",
+   _st.get("ready") is True or bool(_st.get("detail")), _st)
+_saved_venvs = list(_talk._STT_VENVS)
+try:
+    _talk._STT_VENVS[:] = [os.path.join(SAND, "no-such-python.exe")]
+    ok("with no transcriber it is not ready", _talk.stt_status().get("ready") is False)
+    _r = _talk.transcribe(name="x.m4a", data_b64="AAAA", install_dir=SAND)
+    ok("a voice note without a transcriber fails politely",
+       _r.get("ok") is False and bool(_r.get("detail")), _r)
+finally:
+    _talk._STT_VENVS[:] = _saved_venvs
+
+# Attachments ride on the same permission as the words they come with.
+ok("attaching needs 'hablar'", pairing.allowed("talk/attach", ["ver", "hablar"]))
+ok("attaching is refused with only 'ver'", not pairing.allowed("talk/attach", ["ver"]))
+
+# ── what the app asks Android for ──────────────────────────────────────────────────────
+_KT = os.path.join(ROOT, "app", "android", "app", "src", "main", "kotlin",
+                   "com", "olivaw", "olivaw", "MainActivity.kt")
+if os.path.exists(_KT):
+    _kt = io.open(_KT, encoding="utf-8").read()
+    # A message is text written by a model. Handing any scheme it writes to
+    # startActivity would let a reply open anything on the phone that answers to it.
+    ok("only http(s) links are opened",
+       'startsWith("http://")' in _kt and 'startsWith("https://")' in _kt)
+    ok("the microphone is checked before recording",
+       "checkSelfPermission" in _kt and "RECORD_AUDIO" in _kt)
+
 # ── the app's own manifest ─────────────────────────────────────────────────────────────
 # Flutter's template grants INTERNET in the DEBUG manifest only. A release build of a
 # network client then installs, opens, and fails every connection with nothing to show
@@ -599,12 +660,16 @@ _MANIFEST = os.path.join(ROOT, "app", "android", "app", "src", "main",
                          "AndroidManifest.xml")
 if os.path.exists(_MANIFEST):
     _man = io.open(_MANIFEST, encoding="utf-8").read()
-    for _perm in ("INTERNET", "ACCESS_NETWORK_STATE", "ACCESS_WIFI_STATE"):
+    for _perm in ("INTERNET", "ACCESS_NETWORK_STATE", "ACCESS_WIFI_STATE",
+                  # Voice notes. Asked for at the moment the owner first presses the
+                  # microphone, never at install.
+                  "RECORD_AUDIO"):
         ok("the release manifest asks for %s" % _perm,
            "android.permission.%s" % _perm in _man)
-    # Nothing here needs a camera, a microphone, contacts or location. An app that holds
-    # the keys to somebody's agents should ask for the least it can.
-    for _no in ("CAMERA", "RECORD_AUDIO", "ACCESS_FINE_LOCATION", "READ_CONTACTS",
+    # Everything else stays out. Files are chosen through the system picker, which hands
+    # over one document and needs no storage permission at all; a camera, contacts or a
+    # location would each be a thing this app could do and has no reason to.
+    for _no in ("CAMERA", "ACCESS_FINE_LOCATION", "READ_CONTACTS",
                 "READ_EXTERNAL_STORAGE"):
         ok("the app does not ask for %s" % _no,
            "android.permission.%s" % _no not in _man)
