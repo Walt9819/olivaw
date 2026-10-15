@@ -611,6 +611,35 @@ from wizard import wizard_server as _ws  # noqa: E402
 _src = _inspect.getsource(_ws._target_profile)
 ok("the server resolves an agent from 'profile'", 'body.get("profile")' in _src, _src[:80])
 
+# ── files inside a conversation ────────────────────────────────────────────────────────
+# A stored turn still carries the raw `MEDIA:<path>` lines an agent wrote to hand a file
+# to the runtime. The runtime delivered the file and nothing rewrote the transcript, so
+# a reader gets an absolute path on somebody else's computer where a picture should be.
+# history() now puts every turn through the same reader a live reply gets.
+_msg = ('Aquí tienes la primera.' + chr(10) +
+        'MEDIA:' + os.path.join(SAND, 'slide-01.png') + chr(10) +
+        'MEDIA:' + os.path.join(SAND, 'falta.png'))
+with io.open(os.path.join(SAND, 'slide-01.png'), 'wb') as _fh:
+    _fh.write(bytes([0x89]) + b'PNG' + b'0' * 64)
+from wizard import talk as _tk  # noqa: E402
+_body, _files = _tk.read_files_out(_msg)
+# read_files_out keeps a line whose file is gone, on purpose: in a LIVE reply the
+# owner may still want to know what the agent tried to send. history() is the one
+# that drops it, because weeks later a dead path helps nobody.
+ok("the line for a file that IS there leaves the sentence",
+   'slide-01.png' not in _body, _body)
+ok("the sentence itself survives", 'primera' in _body, _body)
+ok("a file that exists is listed", any(f.get('name') == 'slide-01.png' for f in _files),
+   _files)
+ok("an image is recognised as one",
+   any(f.get('kind') == 'image' for f in _files), _files)
+ok("and gets an id to fetch it by",
+   any(f.get('id') for f in _files), _files)
+# A path the agent invented, or a file since deleted, must not become a broken
+# attachment: there is nothing to fetch and nothing to show.
+ok("a path that is not there is not offered",
+   not any(f.get('name') == 'falta.png' for f in _files), _files)
+
 # ── voice notes ────────────────────────────────────────────────────────────────────────
 # A recording says the same kinds of things a typed message does, so it needs the same
 # permission and no more. The microphone itself is the phone's to guard.

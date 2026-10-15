@@ -1,11 +1,13 @@
 package com.olivaw.olivaw
 
 import android.app.Activity
+import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import androidx.annotation.NonNull
 import androidx.core.app.ActivityCompat
@@ -50,6 +52,8 @@ class MainActivity : FlutterActivity() {
         when (call.method) {
             "openUrl" -> openUrl(call.argument<String>("url"), result)
             "pick" -> pick(call.argument<String>("mime") ?: "*/*", result)
+            "save" -> save(call.argument<String>("name"),
+                           call.argument<ByteArray>("bytes"), result)
             "recordStart" -> recordStart(result)
             "recordStop" -> recordStop(result)
             "recordCancel" -> recordCancel(result)
@@ -147,6 +151,66 @@ class MainActivity : FlutterActivity() {
             }
         }
         return mapOf("name" to name, "bytes" to buffer.toByteArray())
+    }
+
+    /**
+     * Put a file the agent sent into the phone's Downloads.
+     *
+     * Through MediaStore rather than a path, because since Android 10 an app cannot
+     * simply write into shared storage and asking for the permission that used to allow
+     * it would be asking for the whole of the user's files to deliver one download.
+     */
+    private fun save(name: String?, bytes: ByteArray?, result: MethodChannel.Result) {
+        if (name.isNullOrBlank() || bytes == null || bytes.isEmpty()) {
+            result.error("empty", "Nada que guardar.", null); return
+        }
+        // Both separators and the characters Windows forbids. The name came from the
+        // other machine, and a name is all this is allowed to be - never a path.
+        val safe = name.replace(Regex("""[\\/:*?"<>|]"""), "_")
+            .trimStart('.')
+            .take(120)
+            .ifBlank { "archivo" }
+        try {
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, safe)
+                put(MediaStore.Downloads.MIME_TYPE, guessMime(safe))
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(MediaStore.Downloads.IS_PENDING, 1)
+                }
+            }
+            val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI
+            else
+                MediaStore.Files.getContentUri("external")
+            val uri = contentResolver.insert(collection, values)
+                ?: throw IllegalStateException("no destination")
+            contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                values.clear()
+                values.put(MediaStore.Downloads.IS_PENDING, 0)
+                contentResolver.update(uri, values, null, null)
+            }
+            result.success("Descargas/$safe")
+        } catch (e: Exception) {
+            result.error("save", e.message, null)
+        }
+    }
+
+    private fun guessMime(name: String): String {
+        val ext = name.substringAfterLast('.', "").lowercase()
+        return when (ext) {
+            "png" -> "image/png"
+            "jpg", "jpeg" -> "image/jpeg"
+            "gif" -> "image/gif"
+            "webp" -> "image/webp"
+            "pdf" -> "application/pdf"
+            "txt", "md", "log" -> "text/plain"
+            "csv" -> "text/csv"
+            "json" -> "application/json"
+            "mp4" -> "video/mp4"
+            "m4a" -> "audio/mp4"
+            else -> "application/octet-stream"
+        }
     }
 
     // ── voice notes ───────────────────────────────────────────────────────────────────

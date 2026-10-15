@@ -732,7 +732,42 @@ def history(profile=None, hermes=None, session_id=""):
     if not ok:
         return {"ok": False, "detail": _explain(code, data)}
     rows = data.get("data") if isinstance(data, dict) else data
-    return {"ok": True, "messages": rows if isinstance(rows, list) else []}
+    if not isinstance(rows, list):
+        return {"ok": True, "messages": []}
+    # The same treatment a live reply gets. A stored turn still has its raw
+    # `MEDIA:<path>` lines in it - the runtime consumed those when it delivered the file,
+    # but nothing rewrote the transcript. Left alone they reach a reader as an absolute
+    # path on somebody else's computer; put through read_files_out they become what they
+    # always were, a file with a name and an id to fetch it by.
+    out = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        row = dict(row)
+        text = row.get("content")
+        if isinstance(text, str) and text:
+            body, files = read_files_out(text)
+            # read_files_out leaves a MEDIA line alone when the file is not there any
+            # more, which is the right call for a LIVE reply - the owner may still want
+            # to know what the agent tried to send. In a transcript it is the opposite:
+            # the file was delivered weeks ago and has since been tidied away, and an
+            # absolute path on this machine is not something a reader can do anything
+            # with. Named, and marked as gone.
+            kept = []
+            for line in body.split("\n"):
+                stripped = line.strip()
+                if stripped.startswith("MEDIA:") and len(stripped) > 6:
+                    gone = _clean_path(stripped[6:]) or stripped[6:].strip()
+                    name = os.path.basename(gone.rstrip("\\/")) or "archivo"
+                    files.append({"kind": kind_of(name), "name": name,
+                                  "missing": True, "human": ""})
+                    continue
+                kept.append(line)
+            row["content"] = "\n".join(kept).strip()
+            if files:
+                row["files"] = files
+        out.append(row)
+    return {"ok": True, "messages": out}
 
 
 def _attached_note(picked):

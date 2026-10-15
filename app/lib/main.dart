@@ -16,6 +16,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'attachment.dart';
 import 'link.dart';
 import 'sha256.dart';
 import 'markdown.dart';
@@ -673,30 +674,20 @@ class ChatTabState extends State<ChatTab> {
       // `content` is what Hermes calls it. Reading `text` here is why every bubble in
       // the first build of this screen came out blank.
       final text = (r['content'] ?? r['text'] ?? '').toString().trim();
-      if (text.isEmpty) continue;
+      // The files come from the computer already lifted out of the text, named, sized
+      // and - when they are small enough to fetch - with an id to fetch them by. The
+      // app used to pick the `MEDIA:` lines apart itself and could only ever show a
+      // name, because a path on somebody else's disk is not something a phone can open.
+      final files = [
+        for (final f in (r['files'] as List? ?? []))
+          if (f is Map) f.cast<String, dynamic>(),
+      ];
+      if (text.isEmpty && files.isEmpty) continue;
       if (text.startsWith('[CONTEXT COMPACTION')) continue;  // bookkeeping, not a turn
-      // `MEDIA:<path>` is how an agent hands a file to the runtime to deliver. By the
-      // time it is in a transcript the file HAS been delivered, so the line is a
-      // receipt, not something said - and it is an absolute path on the computer,
-      // which on a phone is nothing but noise. Shown as what it was: an attachment.
-      final sent = <String>[];
-      final kept = <String>[];
-      for (final line in text.split('\n')) {
-        final t = line.trim();
-        if (t.startsWith('MEDIA:') && t.length > 6) {
-          final path = t.substring(6).trim();
-          final name = path.split(RegExp(r'[\\/]')).last;
-          if (name.isNotEmpty) sent.add(name);
-          continue;
-        }
-        kept.add(line);
-      }
-      final body = kept.join('\n').trim();
-      if (body.isEmpty && sent.isEmpty) continue;
       out.add({
         'role': role,
-        'text': body,
-        if (sent.isNotEmpty) 'files': sent,
+        'text': text,
+        if (files.isNotEmpty) 'files': files,
       });
     }
     return out;
@@ -1324,30 +1315,34 @@ class ChatTabState extends State<ChatTab> {
                   // Only what the agent wrote is markdown. What the owner typed is
                   // shown exactly as typed: an asterisk in their own message is an
                   // asterisk, and their text should never be reinterpreted back at them.
-                  final names =
-                      (m['files'] as List?)?.cast<String>() ?? const <String>[];
+                  // Each file as the computer described it: name, kind, size, and an id
+                  // when it is small enough to fetch. An image fetches itself and shows;
+                  // anything else is a row you can tap to save.
+                  final files = [
+                    for (final f in (m['files'] as List? ?? []))
+                      if (f is Map)
+                        f.cast<String, dynamic>()
+                      else
+                        <String, dynamic>{'name': f.toString()},
+                  ];
                   final body2 = mine
                       ? Text(body, style: TextStyle(color: ink))
                       : Markdown(body,
                           baseStyle: TextStyle(color: ink, height: 1.35),
                           onLink: _openLink);
-                  if (names.isEmpty) return body2;
+                  if (files.isEmpty) return body2;
                   return Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       if (body.isNotEmpty) body2,
-                      if (body.isNotEmpty) const SizedBox(height: 6),
-                      for (final n in names)
-                        Row(mainAxisSize: MainAxisSize.min, children: [
-                          Icon(Icons.attach_file, size: 14, color: ink),
-                          const SizedBox(width: 4),
-                          Flexible(
-                            child: Text(n,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(fontSize: 12, color: ink)),
-                          ),
-                        ]),
+                      for (final f in files)
+                        Attachment(
+                          link: widget.link,
+                          file: f,
+                          body: _body,
+                          ink: ink,
+                        ),
                     ],
                   );
                 }),

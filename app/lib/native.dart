@@ -68,6 +68,21 @@ class Native {
     }
   }
 
+  /// Put [bytes] in the phone's Downloads under [name]. Returns where it landed.
+  ///
+  /// Through MediaStore on the Android side rather than a path: asking for the old
+  /// storage permission would be asking for all of the owner's files in order to
+  /// deliver one download.
+  static Future<String> save(String name, Uint8List bytes) async {
+    try {
+      final where = await _ch.invokeMethod<String>(
+          'save', {'name': name, 'bytes': bytes});
+      return where ?? 'Descargas';
+    } on PlatformException catch (e) {
+      throw NativeError(e.code, e.message ?? 'No pude guardarlo.');
+    }
+  }
+
   static Future<void> recordStart() async {
     try {
       await _ch.invokeMethod('recordStart');
