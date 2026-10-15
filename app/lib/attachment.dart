@@ -17,6 +17,7 @@ import 'package:flutter/material.dart';
 import 'link.dart';
 import 'native.dart';
 import 'theme.dart';
+import 'strings.dart';
 
 /// Fetched file bytes, by grant id. Deliberately not persisted: an id is only good while
 /// the computer still remembers granting it.
@@ -99,7 +100,7 @@ class Attachment extends StatelessWidget {
           actions: [
             IconButton(
               icon: const Icon(Icons.download),
-              tooltip: 'Guardar',
+              tooltip: tr('Guardar'),
               onPressed: () => _save(c, bytes),
             ),
           ],
@@ -119,7 +120,7 @@ class Attachment extends StatelessWidget {
     final messenger = ScaffoldMessenger.of(context);
     try {
       final where = await Native.save(_name, bytes);
-      messenger.showSnackBar(SnackBar(content: Text('Guardado en $where')));
+      messenger.showSnackBar(SnackBar(content: Text(trp('Guardado en {0}', [where]))));
     } on NativeError catch (e) {
       messenger.showSnackBar(SnackBar(content: Text(e.message)));
     }
@@ -161,12 +162,12 @@ class Attachment extends StatelessWidget {
                 if (human.isNotEmpty || !fetchable)
                   Text(
                     missing
-                        ? 'ya no está en el ordenador'
+                        ? 'ya no está en el computadora'
                         : fetchable
                             ? human
                             // Too big to come down the wire. Saying where it is beats a
                             // button that cannot work.
-                            : [human, if (folder.isNotEmpty) 'en el ordenador']
+                            : [human, if (folder.isNotEmpty) 'en el computadora']
                                 .where((s) => s.isNotEmpty)
                                 .join(' · '),
                     style: TextStyle(fontSize: 11, color: ink.withValues(alpha: 0.7)),
@@ -186,10 +187,10 @@ class Attachment extends StatelessWidget {
     final res = await link.reach('POST', '/api/talk/file',
         body: body({'id': _id}), wait: Link.thinkingWait);
     if (res['ok'] != true) {
-      throw LinkError((res['detail'] ?? 'No pude traer ese archivo.').toString());
+      throw LinkError((res['detail'] ?? tr('No pude traer ese archivo.')).toString());
     }
     final b64 = (res['data_b64'] ?? '').toString();
-    if (b64.isEmpty) throw LinkError('Ese archivo llegó vacío.');
+    if (b64.isEmpty) throw LinkError(tr('Ese archivo llegó vacío.'));
     final bytes = base64Decode(b64);
     _cache[_id] = bytes;
     return bytes;
@@ -201,7 +202,7 @@ class Attachment extends StatelessWidget {
       final bytes = await fetch();
       if (bytes == null) return;
       final where = await Native.save(_name, bytes);
-      messenger.showSnackBar(SnackBar(content: Text('Guardado en $where')));
+      messenger.showSnackBar(SnackBar(content: Text(trp('Guardado en {0}', [where]))));
     } on NativeError catch (e) {
       messenger.showSnackBar(SnackBar(content: Text(e.message)));
     } catch (e) {

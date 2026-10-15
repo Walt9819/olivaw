@@ -26,6 +26,7 @@ import 'dart:typed_data';
 
 import 'relay.dart';
 import 'sha256.dart';
+import 'strings.dart';
 
 /// A saved computer.
 class Pairing {
@@ -63,7 +64,7 @@ class Pairing {
       };
 
   static Pairing fromJson(Map<String, dynamic> j) => Pairing(
-        name: j['name'] ?? 'Mi ordenador',
+        name: j['name'] ?? 'Mi computadora',
         host: j['host'] ?? '',
         port: j['port'] ?? 8791,
         certDer: base64.decode(j['cert'] ?? ''),
@@ -107,16 +108,14 @@ String humanError(Object e) {
   if (e is LinkError) return e.message;
   if (e is HandshakeException) {
     // Never softened: this is the one error that can mean somebody else is answering.
-    return 'Ese ordenador presentó un certificado distinto. No he enviado nada. '
-        'Vuelve a enlazar el teléfono desde el ordenador.';
+    return 'Ese computadora presentó un certificado distinto. No he enviado nada. Vuelve a enlazar el teléfono desde el computadora.';
   }
-  if (e is TimeoutException) return 'El ordenador tardó demasiado en responder.';
+  if (e is TimeoutException) return 'El computadora tardó demasiado en responder.';
   if (e is SocketException) {
-    return 'No encuentro tu ordenador. Comprueba que está encendido y que Olivaw '
-        'está abierto, y que «Tu teléfono» sigue activado.';
+    return 'No encuentro tu computadora. Comprueba que está encendido y que Olivaw está abierto, y que «Tu teléfono» sigue activado.';
   }
-  if (e is FormatException) return 'El ordenador respondió algo que no entendí.';
-  return 'Algo no ha salido bien.';
+  if (e is FormatException) return 'El computadora respondió algo que no entendí.';
+  return tr('Algo no ha salido bien.');
 }
 
 /// One request/response, or one upgraded stream, against a paired computer.
@@ -211,7 +210,7 @@ class Link {
           buf.add(chunk);
         }
       } on TimeoutException {
-        throw LinkError('El ordenador tardó demasiado en responder.');
+        throw LinkError('El computadora tardó demasiado en responder.');
       }
       return _parse(buf.toBytes());
     } finally {
@@ -221,7 +220,7 @@ class Link {
 
   Map<String, dynamic> _parse(Uint8List raw) {
     final sep = _find(raw, utf8.encode('\r\n\r\n'));
-    if (sep < 0) throw LinkError('Respuesta incompleta del ordenador.');
+    if (sep < 0) throw LinkError('Respuesta incompleta del computadora.');
     final headText = utf8.decode(raw.sublist(0, sep), allowMalformed: true);
     final status = int.tryParse(headText.split(' ').elementAt(1)) ?? 0;
     final bodyText = utf8.decode(raw.sublist(sep + 4), allowMalformed: true);
@@ -229,13 +228,13 @@ class Link {
     try {
       out = jsonDecode(bodyText) as Map<String, dynamic>;
     } catch (_) {
-      out = {'ok': false, 'detail': 'Respuesta ilegible.'};
+      out = {'ok': false, 'detail': tr('Respuesta ilegible.')};
     }
     out['_status'] = status;
     if (status == 401) {
-      out['detail'] = 'Este teléfono ya no está enlazado con ese ordenador.';
+      out['detail'] = 'Este teléfono ya no está enlazado con ese computadora.';
     } else if (status == 403 && out['detail'] == null) {
-      out['detail'] = 'Ese permiso no está activado para este teléfono.';
+      out['detail'] = tr('Ese permiso no está activado para este teléfono.');
     }
     return out;
   }
@@ -265,7 +264,7 @@ class Link {
 
   Future<Socket> _relayStream() async {
     if (!hasRelay) {
-      throw LinkError('Este ordenador no tiene punto de encuentro configurado.');
+      throw LinkError('Este computadora no tiene punto de encuentro configurado.');
     }
     _relay ??= Relay(pairing.relayUrl, pairing.relayRoom);
     return _relay!.openStream();
@@ -463,7 +462,8 @@ class BrowserStream {
       if (sep < 0) return;
       final head = utf8.decode(data.sublist(0, sep), allowMalformed: true);
       if (!head.contains(' 101 ')) {
-        _close('El ordenador no abrió el vídeo: ${head.split('\r\n').first}');
+        _close(trp('La computadora no abrió el vídeo: {0}',
+            [head.split('\r\n').first]));
         return;
       }
       _upgraded = true;

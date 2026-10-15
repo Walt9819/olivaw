@@ -22,11 +22,14 @@ import 'sha256.dart';
 import 'markdown.dart';
 import 'native.dart';
 import 'theme.dart';
+import 'strings.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // A hash that is quietly wrong would make every computer look like an impostor.
   assert(sha256SelfTest(), 'SHA-256 self test failed');
+  // Before the first frame, so nothing is drawn in the wrong language and then redrawn.
+  chooseLanguage();
   await loadOpenThreads();
   runApp(const OlivawApp());
 }
@@ -239,32 +242,30 @@ class _LinkScreenState extends State<LinkScreen> {
       // words.
       await link.call('GET', '/ping', auth: false, expectDer: null);
       final cert = link.lastCertificate;
-      if (cert == null) throw LinkError('No pude ver el certificado del ordenador.');
+      if (cert == null) throw LinkError('No pude ver el certificado del computadora.');
       final der = Uint8List.fromList(cert.der);
       final words = shortCode(hex(sha256(der)));
       if (!mounted) return;
       final agreed = await showDialog<bool>(
             context: context,
             builder: (c) => AlertDialog(
-              title: const Text('¿Dice esto tu ordenador?'),
+              title: Text(tr('¿Dice esto tu computadora?')),
               content: Column(mainAxisSize: MainAxisSize.min, children: [
-                const Text('En la pantalla del ordenador, debajo del código, hay dos '
-                    'palabras. Tienen que ser exactamente estas:'),
+                const Text('En la pantalla del computadora, debajo del código, hay dos palabras. Tienen que ser exactamente estas:'),
                 const SizedBox(height: 14),
                 SelectableText(words,
                     style: const TextStyle(
                         fontSize: 22, fontWeight: FontWeight.w700, letterSpacing: 1)),
                 const SizedBox(height: 14),
-                const Text('Si no coinciden, no continúes: no estarías hablando con tu '
-                    'ordenador.', style: TextStyle(fontSize: 12)),
+                Text(tr('Si no coinciden, no continúes: no estarías hablando con tu computadora.'), style: const TextStyle(fontSize: 12)),
               ]),
               actions: [
                 TextButton(
                     onPressed: () => Navigator.pop(c, false),
-                    child: const Text('No coinciden')),
+                    child: Text(tr('No coinciden'))),
                 FilledButton(
                     onPressed: () => Navigator.pop(c, true),
-                    child: const Text('Son estas')),
+                    child: Text(tr('Son estas'))),
               ],
             ),
           ) ??
@@ -290,7 +291,7 @@ class _LinkScreenState extends State<LinkScreen> {
       }
       draft.token = res['token'] as String;
       draft.caps = (res['caps'] as List?)?.cast<String>() ?? const [];
-      draft.name = 'Mi ordenador';
+      draft.name = 'Mi computadora';
       // How to find this computer when not on its wifi. Handed over now because later is
       // too late: the moment the phone needs it is the moment it cannot ask.
       final relay = res['relay'];
@@ -303,8 +304,8 @@ class _LinkScreenState extends State<LinkScreen> {
       setState(() {
         _busy = false;
         _status = e is HandshakeException
-            ? 'El ordenador presentó otro certificado. No he seguido.'
-            : 'No pude conectar: $e';
+            ? 'El computadora presentó otro certificado. No he seguido.'
+            : trp('No pude conectar: {0}', [e]);
       });
     }
   }
@@ -312,17 +313,16 @@ class _LinkScreenState extends State<LinkScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Enlazar tu ordenador')),
+      appBar: AppBar(title: Text(tr('Enlazar tu computadora'))),
       body: ListView(padding: const EdgeInsets.all(20), children: [
-        const Text('En el ordenador, abre Olivaw y ve a «Tu teléfono» → '
-            '«Enlazar un teléfono». Te dará una dirección y un código.'),
+        const Text('En el computadora, abre Olivaw y ve a «Tu teléfono» → «Enlazar un teléfono». Te dará una dirección y un código.'),
         const SizedBox(height: 20),
         if (_scanning)
-          const Row(children: [
-            SizedBox(
+          Row(children: [
+            const SizedBox(
                 width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
-            SizedBox(width: 10),
-            Text('Buscando en tu wifi…'),
+            const SizedBox(width: 10),
+            Text(tr('Buscando en tu wifi…')),
           ])
         else if (_found.isNotEmpty)
           Wrap(
@@ -338,7 +338,7 @@ class _LinkScreenState extends State<LinkScreen> {
         TextField(
           controller: _host,
           decoration: const InputDecoration(
-            labelText: 'Dirección del ordenador',
+            labelText: 'Dirección del computadora',
             hintText: '192.168.1.40',
             border: OutlineInputBorder(),
           ),
@@ -347,9 +347,9 @@ class _LinkScreenState extends State<LinkScreen> {
         const SizedBox(height: 12),
         TextField(
           controller: _pin,
-          decoration: const InputDecoration(
-            labelText: 'Código de seis cifras',
-            border: OutlineInputBorder(),
+          decoration: InputDecoration(
+            labelText: tr('Código de seis cifras'),
+            border: const OutlineInputBorder(),
           ),
           keyboardType: TextInputType.number,
           maxLength: 6,
@@ -359,9 +359,9 @@ class _LinkScreenState extends State<LinkScreen> {
         const SizedBox(height: 8),
         FilledButton(
           onPressed: _busy ? null : _pair,
-          child: Text(_busy ? 'Enlazando…' : 'Enlazar'),
+          child: Text(_busy ? 'Enlazando…' : tr('Enlazar')),
         ),
-        TextButton(onPressed: _scanning ? null : _scan, child: const Text('Buscar otra vez')),
+        TextButton(onPressed: _scanning ? null : _scan, child: Text(tr('Buscar otra vez'))),
         if (_status.isNotEmpty)
           Padding(
             padding: const EdgeInsets.only(top: 12),
@@ -398,9 +398,9 @@ class Agent {
 
   String get emoji => (look['emoji'] ?? '').toString();
   String get state => running == true
-      ? 'encendido'
+      ? tr('encendido')
       : running == false
-          ? 'apagado'
+          ? tr('apagado')
           : 'sin saber';
 }
 
@@ -434,7 +434,7 @@ class _HomeState extends State<Home> {
     setState(() => _loading = true);
     try {
       final res = await _link.reach('POST', '/api/agents/list');
-      if (res['ok'] != true) throw LinkError((res['detail'] ?? 'Sin respuesta').toString());
+      if (res['ok'] != true) throw LinkError((res['detail'] ?? tr('Sin respuesta')).toString());
       final out = <Agent>[];
       if (res['default'] != null) {
         out.add(Agent.from((res['default'] as Map).cast<String, dynamic>()));
@@ -467,7 +467,7 @@ class _HomeState extends State<Home> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Tus agentes'),
+        title: Text(tr('Tus agentes')),
         actions: [
           IconButton(onPressed: _refresh, icon: const Icon(Icons.refresh)),
         ],
@@ -484,8 +484,7 @@ class _HomeState extends State<Home> {
                     Text(_error, textAlign: TextAlign.center),
                     const SizedBox(height: 12),
                     Text(
-                      'Si estás fuera de casa, tu ordenador necesita tener configurado '
-                      'el punto de encuentro en «Tu teléfono».',
+                      tr('Si estás fuera de casa, tu computadora necesita tener configurado el punto de encuentro en «Tu teléfono».'),
                       textAlign: TextAlign.center,
                       style: TextStyle(fontSize: 12, color: context.c.muted),
                     ),
@@ -599,7 +598,7 @@ class _AgentScreenState extends State<AgentScreen> {
           if (_tab == 0)
             IconButton(
               icon: const Icon(Icons.history),
-              tooltip: 'Conversaciones anteriores',
+              tooltip: tr('Conversaciones anteriores'),
               onPressed: () => _chat.currentState?.pickPastConversation(),
             ),
         ],
@@ -609,13 +608,13 @@ class _AgentScreenState extends State<AgentScreen> {
         selectedIndex: _tab.clamp(0, tabs.length - 1),
         onDestinationSelected: (i) => setState(() => _tab = i),
         destinations: [
-          const NavigationDestination(
-              icon: Icon(Icons.chat_bubble_outline), label: 'Hablar'),
-          const NavigationDestination(
-              icon: Icon(Icons.schedule), label: 'Rutinas'),
+          NavigationDestination(
+              icon: const Icon(Icons.chat_bubble_outline), label: tr('Hablar')),
+          NavigationDestination(
+              icon: const Icon(Icons.schedule), label: tr('Rutinas')),
           if (canBrowse)
-            const NavigationDestination(
-                icon: Icon(Icons.travel_explore), label: 'Navegador'),
+            NavigationDestination(
+                icon: const Icon(Icons.travel_explore), label: tr('Navegador')),
         ],
       ),
     );
@@ -686,7 +685,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       final st = await widget.link.reach('POST', '/api/talk/status', body: _body());
       if (st['ok'] != true || st['enabled'] != true) {
         setState(() => _error = (st['detail'] ??
-                'Todavía no está activado para este agente.')
+                tr('Todavía no está activado para este agente.'))
             .toString());
         return;
       }
@@ -748,7 +747,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
     final h = await widget.link
         .reach('POST', '/api/talk/history', body: _body({'session_id': _session}));
     if (h['ok'] != true) {
-      setState(() => _error = (h['detail'] ?? 'No se pudo leer la conversación.')
+      setState(() => _error = (h['detail'] ?? tr('No se pudo leer la conversación.'))
           .toString());
       return;
     }
@@ -805,12 +804,12 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       if (_session.isEmpty) {
         final made = await widget.link.reach('POST', '/api/talk/new', body: _body());
         if (made['ok'] != true) {
-          throw LinkError((made['detail'] ?? 'No se pudo abrir la conversación.')
+          throw LinkError((made['detail'] ?? tr('No se pudo abrir la conversación.'))
               .toString());
         }
         _session = ((made['session'] as Map?)?['id'] ?? made['id'] ?? '').toString();
         if (_session.isEmpty) {
-          throw LinkError('El ordenador no abrió ninguna conversación.');
+          throw LinkError('El computadora no abrió ninguna conversación.');
         }
         _openThreads[widget.agent.slug] = _session;
         await Store.saveThreads(_openThreads);
@@ -833,11 +832,11 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
             if (files.isNotEmpty) 'files': files,
           }),
           wait: Link.thinkingWait);
-      if (res['ok'] != true) throw LinkError((res['detail'] ?? 'Sin respuesta').toString());
+      if (res['ok'] != true) throw LinkError((res['detail'] ?? tr('Sin respuesta')).toString());
       // The reply comes back on the send itself; re-reading the whole transcript to
       // find it would also drag in every tool call the agent made on the way.
       final reply = (res['reply'] ?? '').toString().trim();
-      final shown = reply.isEmpty ? '(sin respuesta)' : reply;
+      final shown = reply.isEmpty ? tr('(sin respuesta)') : reply;
       setState(() {
         _msgs = [
           ..._msgs.where((m) => m['pending'] != true),
@@ -923,14 +922,14 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       final files = await Native.pick(mime: mime);
       for (final f in files) {
         if (_attached.length >= 10) {
-          _say('Diez archivos por mensaje es el máximo.');
+          _say(tr('Diez archivos por mensaje es el máximo.'));
           break;
         }
         final res = await widget.link.reach('POST', '/api/talk/attach',
             body: _body({'name': f.name, 'data': base64Encode(f.bytes)}),
             wait: Link.thinkingWait);
         if (res['ok'] != true) {
-          _say((res['detail'] ?? 'No pude subir ${f.name}.').toString());
+          _say((res['detail'] ?? trp('No pude subir {0}.', [f.name])).toString());
           continue;
         }
         final rec = (res['file'] as Map).cast<String, dynamic>();
@@ -952,7 +951,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           ListTile(
             leading: const Icon(Icons.image_outlined),
-            title: const Text('Foto o imagen'),
+            title: Text(tr('Foto o imagen')),
             onTap: () {
               Navigator.pop(sheet);
               _pick('image/*');
@@ -960,7 +959,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
           ),
           ListTile(
             leading: const Icon(Icons.attach_file),
-            title: const Text('Archivo'),
+            title: Text(tr('Archivo')),
             onTap: () {
               Navigator.pop(sheet);
               _pick('*/*');
@@ -1002,7 +1001,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       return;
     }
     if (note == null) {
-      _say('Demasiado corto.');
+      _say(tr('Demasiado corto.'));
       return;
     }
     setState(() => _transcribing = true);
@@ -1014,12 +1013,12 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
           body: _body({'name': note.name, 'data': base64Encode(note.bytes)}),
           wait: Link.thinkingWait);
       if (res['ok'] != true) {
-        _say((res['detail'] ?? 'No pude transcribir la nota.').toString());
+        _say((res['detail'] ?? tr('No pude transcribir la nota.')).toString());
         return;
       }
       final text = (res['text'] ?? '').toString().trim();
       if (text.isEmpty) {
-        _say('No entendí nada en esa nota.');
+        _say(tr('No entendí nada en esa nota.'));
         return;
       }
       // Into the box, not straight out: Whisper mishears names, and a word you cannot
@@ -1062,7 +1061,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       final res = await widget.link
           .reach('POST', '/api/talk/sessions', body: _body({'limit': 30}));
       if (res['ok'] != true) {
-        problem = (res['detail'] ?? 'No pude leer las conversaciones.').toString();
+        problem = (res['detail'] ?? tr('No pude leer las conversaciones.')).toString();
       } else {
         rows = [
           for (final r in (res['sessions'] as List? ?? []))
@@ -1081,7 +1080,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       return;
     }
     if (rows.isEmpty) {
-      _say('Todavía no hay conversaciones anteriores.');
+      _say(tr('Todavía no hay conversaciones anteriores.'));
       return;
     }
     final chosen = await showModalBottomSheet<Map<String, dynamic>>(
@@ -1099,7 +1098,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
           Padding(
             padding: const EdgeInsets.fromLTRB(18, 16, 18, 8),
             child: Row(children: [
-              Text('Conversaciones anteriores',
+              Text(tr('Conversaciones anteriores'),
                   style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w700,
@@ -1150,7 +1149,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
     if (t.isNotEmpty) return t;
     final p = (r['preview'] ?? '').toString().trim().replaceAll(RegExp(r'\s+'), ' ');
     if (p.isNotEmpty) return p.length > 70 ? '${p.substring(0, 70)}…' : p;
-    return 'Sin título';
+    return tr('Sin título');
   }
 
   String _sessionWhen(Map<String, dynamic> r) {
@@ -1162,15 +1161,17 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
     final ago = DateTime.now().difference(when);
     String rel;
     if (ago.inMinutes < 60) {
-      rel = 'hace ${ago.inMinutes} min';
+      rel = trp('hace {0} min', [ago.inMinutes]);
     } else if (ago.inHours < 24) {
-      rel = 'hace ${ago.inHours} h';
+      rel = trp('hace {0} h', [ago.inHours]);
     } else if (ago.inDays < 30) {
-      rel = 'hace ${ago.inDays} d';
+      rel = trp('hace {0} d', [ago.inDays]);
     } else {
       rel = '${when.day}/${when.month}/${when.year}';
     }
-    return n > 0 ? '$where · $rel · $n mensajes' : '$where · $rel';
+    return n > 0
+        ? '$where · $rel · ${trp('{0} mensajes', [n])}'
+        : '$where · $rel';
   }
 
   /// The message being answered, above the box, with a way out.
@@ -1244,7 +1245,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
             ? const SizedBox(
                 width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
             : const Icon(Icons.add),
-        tooltip: 'Adjuntar',
+        tooltip: tr('Adjuntar'),
       ),
       Expanded(
         child: TextField(
@@ -1257,10 +1258,10 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
           textInputAction: TextInputAction.newline,
           decoration: InputDecoration(
             hintText: _transcribing
-                ? 'Transcribiendo…'
+                ? tr('Transcribiendo…')
                 : _ready
-                    ? 'Escribe…'
-                    : 'No disponible',
+                    ? tr('Escribe…')
+                    : tr('No disponible'),
             isDense: true,
           ),
           // Redrawn on every keystroke so the mic turns into a send button the moment
@@ -1283,7 +1284,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
                   height: 20,
                   child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
               : const Icon(Icons.mic),
-          tooltip: 'Nota de voz',
+          tooltip: tr('Nota de voz'),
         ),
     ]);
   }
@@ -1298,13 +1299,13 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       IconButton(
         onPressed: _recordCancel,
         icon: Icon(Icons.delete_outline, color: context.c.err),
-        tooltip: 'Descartar',
+        tooltip: tr('Descartar'),
       ),
       Expanded(
         child: Row(children: [
           Icon(Icons.fiber_manual_record, size: 12, color: context.c.err),
           const SizedBox(width: 8),
-          Text('Grabando  $mm:$ss',
+          Text('${tr('Grabando')}  $mm:$ss',
               style: TextStyle(
                   color: context.c.ink,
                   fontWeight: FontWeight.w600,
@@ -1314,7 +1315,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       IconButton.filled(
         onPressed: _recordToggle,
         icon: const Icon(Icons.stop),
-        tooltip: 'Terminar',
+        tooltip: tr('Terminar'),
       ),
     ]);
   }
@@ -1337,7 +1338,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
           child: Center(
             child: Padding(
               padding: const EdgeInsets.all(32),
-              child: Text('Todavía no os habéis dicho nada.',
+              child: Text(tr('Todavía no os habéis dicho nada.'),
                   textAlign: TextAlign.center,
                   style: TextStyle(color: context.c.muted)),
             ),
@@ -1394,7 +1395,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
                 child: Builder(builder: (bc) {
                   final ink = mine ? context.c.accentInk : context.c.ink;
                   if (m['pending'] == true) {
-                    return Text('escribiendo…',
+                    return Text(tr('escribiendo…'),
                         style: TextStyle(color: ink, fontStyle: FontStyle.italic));
                   }
                   final body = (m['text'] ?? '').toString();
@@ -1484,10 +1485,10 @@ class _RoutinesTabState extends State<RoutinesTab> {
           child: Padding(padding: const EdgeInsets.all(24), child: Text(_error)));
     }
     if (_rows.isEmpty) {
-      return const Center(
+      return Center(
         child: Padding(
-          padding: EdgeInsets.all(28),
-          child: Text('Este agente no hace nada por su cuenta todavía.',
+          padding: const EdgeInsets.all(28),
+          child: Text(tr('Este agente no hace nada por su cuenta todavía.'),
               textAlign: TextAlign.center),
         ),
       );
@@ -1519,7 +1520,7 @@ class _RoutinesTabState extends State<RoutinesTab> {
             if (res['ok'] != true) {
               setState(() => r['enabled'] = !v);
               messenger.showSnackBar(SnackBar(
-                  content: Text((res['detail'] ?? 'No se pudo').toString())));
+                  content: Text((res['detail'] ?? tr('No se pudo')).toString())));
             }
           },
         );
@@ -1609,7 +1610,7 @@ class _BrowserTabState extends State<BrowserTab> {
                 });
                 _open();
               },
-              child: const Text('Reintentar'),
+              child: Text(tr('Reintentar')),
             ),
           ]),
         ),
@@ -1625,7 +1626,7 @@ class _BrowserTabState extends State<BrowserTab> {
               controller: _url,
               enabled: _armed,
               decoration: InputDecoration(
-                hintText: _armed ? 'Ir a…' : 'Toma el control para navegar',
+                hintText: _armed ? tr('Ir a…') : tr('Toma el control para navegar'),
                 border: const OutlineInputBorder(),
                 isDense: true,
               ),
@@ -1643,9 +1644,9 @@ class _BrowserTabState extends State<BrowserTab> {
         child: Container(
           color: Colors.black,   // the browser frame sits on black on purpose
           child: frame == null
-              ? const Center(
-                  child: Text('Esperando la primera imagen…',
-                      style: TextStyle(color: Colors.white70)))
+              ? Center(
+                  child: Text(tr('Esperando la primera imagen…'),
+                      style: const TextStyle(color: Colors.white70)))
               : LayoutBuilder(builder: (c, box) {
                   return GestureDetector(
                     onTapDown: (d) =>
@@ -1676,7 +1677,7 @@ class _BrowserTabState extends State<BrowserTab> {
           color: context.c.warnBg,
           padding: const EdgeInsets.all(8),
           child: const Text(
-            'La ventana está tapada en el ordenador, así que puede no refrescarse.',
+            'La ventana está tapada en el computadora, así que puede no refrescarse.',
             style: TextStyle(fontSize: 12),
           ),
         ),
@@ -1706,8 +1707,8 @@ class _BrowserTabState extends State<BrowserTab> {
                 },
                 icon: Icon(_armed ? Icons.lock_open : Icons.lock),
                 label: Text(_armed
-                    ? 'Soltar el control (${_state['armed_for'] ?? 0}s)'
-                    : 'Tomar el control'),
+                    ? trp('Soltar el control ({0}s)', [_state['armed_for'] ?? 0])
+                    : tr('Tomar el control')),
               ),
             ),
             if (_armed) ...[
@@ -1723,15 +1724,15 @@ class _BrowserTabState extends State<BrowserTab> {
                     builder: (c) {
                       final t = TextEditingController();
                       return AlertDialog(
-                        title: const Text('Escribir en la página'),
+                        title: Text(tr('Escribir en la página')),
                         content: TextField(controller: t, autofocus: true),
                         actions: [
                           TextButton(
                               onPressed: () => Navigator.pop(c),
-                              child: const Text('Cancelar')),
+                              child: Text(tr('Cancelar'))),
                           FilledButton(
                               onPressed: () => Navigator.pop(c, t.text),
-                              child: const Text('Escribir')),
+                              child: Text(tr('Escribir'))),
                         ],
                       );
                     },

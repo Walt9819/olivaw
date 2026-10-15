@@ -6,6 +6,7 @@
 // banner, so the shapes below separate "nothing happened" from "something broke".
 
 import 'package:flutter/services.dart';
+import 'strings.dart';
 
 /// One file on its way to an agent: what it is called, and what is in it.
 class PickedFile {
@@ -48,7 +49,7 @@ class Native {
     try {
       await _ch.invokeMethod('openUrl', {'url': url});
     } on PlatformException catch (e) {
-      throw NativeError(e.code, e.message ?? 'No pude abrir ese enlace.');
+      throw NativeError(e.code, e.message ?? tr('No pude abrir ese enlace.'));
     }
   }
 
@@ -64,7 +65,7 @@ class Native {
           ),
       ];
     } on PlatformException catch (e) {
-      throw NativeError(e.code, e.message ?? 'No pude abrir el selector.');
+      throw NativeError(e.code, e.message ?? tr('No pude abrir el selector.'));
     }
   }
 
@@ -79,7 +80,7 @@ class Native {
           'save', {'name': name, 'bytes': bytes});
       return where ?? 'Descargas';
     } on PlatformException catch (e) {
-      throw NativeError(e.code, e.message ?? 'No pude guardarlo.');
+      throw NativeError(e.code, e.message ?? tr('No pude guardarlo.'));
     }
   }
 
@@ -137,7 +138,7 @@ class Native {
     try {
       await _ch.invokeMethod('recordStart');
     } on PlatformException catch (e) {
-      throw NativeError(e.code, e.message ?? 'No pude grabar.');
+      throw NativeError(e.code, e.message ?? tr('No pude grabar.'));
     }
   }
 
