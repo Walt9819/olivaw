@@ -148,6 +148,15 @@ class Link {
   bool hostChanged = false;
 
   /// A JSON call. [auth] false only for /ping and /pair.
+  /// How long to wait for the computer to finish answering.
+  ///
+  /// Generous, because an agent thinking about a question legitimately takes a minute,
+  /// and 'escribiendo…' is the honest thing to show while it does. Bounded, because
+  /// the alternative is no timeout at all: a computer that goes away mid-answer leaves
+  /// the phone waiting for a reply that is never coming, with nothing to tap.
+  static const Duration replyWait = Duration(seconds: 90);
+  static const Duration thinkingWait = Duration(minutes: 10);
+
   Future<Map<String, dynamic>> call(
     String method,
     String path, {
@@ -155,6 +164,7 @@ class Link {
     bool auth = true,
     Uint8List? expectDer,
     bool viaRelay = false,
+    Duration? wait,
   }) async {
     final socket = await _open(
       expectDer: expectDer ?? (auth ? pairing.certDer : null),
@@ -174,8 +184,12 @@ class Link {
       socket.add(payload);
       await socket.flush();
       final buf = BytesBuilder();
-      await for (final chunk in socket) {
-        buf.add(chunk);
+      try {
+        await for (final chunk in socket.timeout(wait ?? replyWait)) {
+          buf.add(chunk);
+        }
+      } on TimeoutException {
+        throw LinkError('El ordenador tardó demasiado en responder.');
       }
       return _parse(buf.toBytes());
     } finally {
@@ -242,10 +256,11 @@ class Link {
     String path, {
     Map<String, dynamic>? body,
     bool auth = true,
+    Duration? wait,
   }) async {
     if (canReachDirectly) {
       try {
-        return await call(method, path, body: body, auth: auth);
+        return await call(method, path, body: body, auth: auth, wait: wait);
       } on SocketException {
         // The address we have is dead. Before giving up, look for the computer where we
         // are NOW: a laptop that moved from the study to the kitchen, a router that
@@ -253,14 +268,14 @@ class Link {
         // wifi. Without this a paired phone can never find its computer again, because
         // the sweep only ever ran on the pairing screen.
         if (await rediscover()) {
-          return await call(method, path, body: body, auth: auth);
+          return await call(method, path, body: body, auth: auth, wait: wait);
         }
         if (!hasRelay) rethrow;
       } on HandshakeException {
         rethrow; // a wrong certificate is never something to retry around
       }
     }
-    return call(method, path, body: body, auth: auth, viaRelay: true);
+    return call(method, path, body: body, auth: auth, viaRelay: true, wait: wait);
   }
 
   /// Look again for the computer this phone is paired WITH, on whatever network it is on

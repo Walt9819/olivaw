@@ -574,6 +574,11 @@ class _AgentScreenState extends State<AgentScreen> {
   }
 }
 
+/// The conversation currently open with each agent, for as long as the app is running.
+/// Deliberately not saved to disk: a new launch starts clean, the way the desktop
+/// console does. Reopening past conversations is a separate thing, with its own screen.
+final Map<String, String> _openThreads = {};
+
 class ChatTab extends StatefulWidget {
   const ChatTab({super.key, required this.link, required this.agent});
   final Link link;
@@ -607,37 +612,49 @@ class _ChatTabState extends State<ChatTab> {
 
   Future<void> _start() async {
     try {
-      final s = await widget.link.reach('POST', '/api/talk/sessions', body: _body());
-      // A refusal here is not an empty conversation, and showing it as one is the worst
-      // of the two: the composer looks ready, the agent never answers, and the reason -
-      // usually that talking is not switched on for this agent yet - is on the computer
-      // where nobody is looking. Say what the computer said.
-      if (s['ok'] != true) {
-        setState(() => _error = (s['detail'] ?? 'No se pudo abrir la conversación.')
+      // Only whether talking is switched on for this agent. No session is opened here:
+      // the desktop console starts a clean thread rather than reopening the last one,
+      // and creating one on every tap into an agent would litter the list with empty
+      // conversations nobody held. One is made when there is something to put in it.
+      final st = await widget.link.reach('POST', '/api/talk/status', body: _body());
+      if (st['ok'] != true || st['enabled'] != true) {
+        setState(() => _error = (st['detail'] ??
+                'Todavía no está activado para este agente.')
             .toString());
         return;
       }
-      final rows = (s['sessions'] as List? ?? []);
-      if (rows.isNotEmpty) {
-        _session = ((rows.first as Map)['id'] ?? '').toString();
-      }
-      if (_session.isEmpty) {
-        final made = await widget.link.reach('POST', '/api/talk/new', body: _body());
-        if (made['ok'] != true) {
-          setState(() => _error = (made['detail'] ?? 'No se pudo abrir la conversación.')
-              .toString());
-          return;
-        }
-        _session = ((made['session'] as Map?)?['id'] ?? made['id'] ?? '').toString();
-      }
-      if (_session.isEmpty) {
-        setState(() => _error = 'El ordenador no abrió ninguna conversación.');
-        return;
-      }
-      await _history();
+      // Coming back to an agent you were just talking to should find the conversation
+      // where you left it, not an empty screen - leaving the chat for the routines tab
+      // and returning is not the same as starting again.
+      _session = _openThreads[widget.agent.slug] ?? '';
+      setState(() {
+        _ready = true;
+        _error = '';
+      });
+      if (_session.isNotEmpty) await _history();
     } catch (e) {
       setState(() => _error = '$e');
     }
+  }
+
+  /// The rows the computer keeps are a transcript of everything the agent did - tool
+  /// calls, its own reasoning, the summaries written when a context window filled up.
+  /// Only what somebody actually said belongs in a conversation.
+  List<Map<String, dynamic>> _readable(List rows) {
+    final out = <Map<String, dynamic>>[];
+    for (final r in rows) {
+      if (r is! Map) continue;
+      final role = (r['role'] ?? '').toString();
+      if (role != 'user' && role != 'assistant') continue;   // tool, system: not speech
+      if (r['tool_calls'] != null) continue;                 // an action, not a sentence
+      // `content` is what Hermes calls it. Reading `text` here is why every bubble in
+      // the first build of this screen came out blank.
+      final text = (r['content'] ?? r['text'] ?? '').toString().trim();
+      if (text.isEmpty) continue;
+      if (text.startsWith('[CONTEXT COMPACTION')) continue;  // bookkeeping, not a turn
+      out.add({'role': role, 'text': text});
+    }
+    return out;
   }
 
   Future<void> _history() async {
@@ -650,14 +667,11 @@ class _ChatTabState extends State<ChatTab> {
       return;
     }
     setState(() {
-      _msgs = ((h['messages'] as List? ?? []))
-          .map((m) => (m as Map).cast<String, dynamic>())
-          .toList();
+      _msgs = _readable(h['messages'] as List? ?? []);
       _error = '';
     });
     _toBottom();
   }
-
   void _toBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scroll.hasClients) {
@@ -680,10 +694,33 @@ class _ChatTabState extends State<ChatTab> {
     });
     _toBottom();
     try {
+      // The conversation is created by the first thing said in it.
+      if (_session.isEmpty) {
+        final made = await widget.link.reach('POST', '/api/talk/new', body: _body());
+        if (made['ok'] != true) {
+          throw LinkError((made['detail'] ?? 'No se pudo abrir la conversación.')
+              .toString());
+        }
+        _session = ((made['session'] as Map?)?['id'] ?? made['id'] ?? '').toString();
+        if (_session.isEmpty) {
+          throw LinkError('El ordenador no abrió ninguna conversación.');
+        }
+        _openThreads[widget.agent.slug] = _session;
+      }
       final res = await widget.link.reach('POST', '/api/talk/send',
-          body: _body({'session_id': _session, 'text': text}));
+          body: _body({'session_id': _session, 'text': text}),
+          wait: Link.thinkingWait);
       if (res['ok'] != true) throw LinkError((res['detail'] ?? 'Sin respuesta').toString());
-      await _history();
+      // The reply comes back on the send itself; re-reading the whole transcript to
+      // find it would also drag in every tool call the agent made on the way.
+      final reply = (res['reply'] ?? '').toString().trim();
+      setState(() {
+        _msgs = [
+          ..._msgs.where((m) => m['pending'] != true),
+          {'role': 'assistant', 'text': reply.isEmpty ? '(sin respuesta)' : reply},
+        ];
+      });
+      _toBottom();
     } catch (e) {
       setState(() {
         _msgs = _msgs.where((m) => m['pending'] != true).toList();
@@ -694,8 +731,9 @@ class _ChatTabState extends State<ChatTab> {
     }
   }
 
-  /// There is somewhere for a message to go.
-  bool get _ready => _session.isNotEmpty;
+  /// Talking is switched on for this agent, so there is somewhere for a message to go.
+  /// A session is opened on the first send, not on arrival.
+  bool _ready = false;
 
   @override
   Widget build(BuildContext context) {
