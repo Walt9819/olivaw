@@ -104,6 +104,11 @@ def call_api(route, body, caps):
             rc = relay_client.config(INSTALL_DIR)
             return {"ok": True, "relay": ({"url": rc["url"], "room": rc.get("room", "")}
                                           if rc.get("on") and rc.get("url") else None),
+                    # What this phone may do, as the owner has it set NOW. The phone was
+                    # told once, at pairing, and had no way to hear about it again: a
+                    # permission granted afterwards never appeared, and one taken away
+                    # left the button on screen to be refused when pressed.
+                    "caps": list(caps),
                     "addresses": selfcert.local_ips(), "port": PORT}, 200
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "detail": str(e)}, 500

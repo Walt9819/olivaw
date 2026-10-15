@@ -432,7 +432,7 @@ class _HomeState extends State<Home> {
       }
     } catch (e) {
       setState(() {
-        _error = '$e';
+        _error = humanError(e);
         _loading = false;
       });
     }
@@ -633,7 +633,7 @@ class _ChatTabState extends State<ChatTab> {
       });
       if (_session.isNotEmpty) await _history();
     } catch (e) {
-      setState(() => _error = '$e');
+      setState(() => _error = humanError(e));
     }
   }
 
@@ -724,7 +724,7 @@ class _ChatTabState extends State<ChatTab> {
     } catch (e) {
       setState(() {
         _msgs = _msgs.where((m) => m['pending'] != true).toList();
-        _error = '$e';
+        _error = humanError(e);
       });
     } finally {
       setState(() => _sending = false);
@@ -856,7 +856,7 @@ class _RoutinesTabState extends State<RoutinesTab> {
       });
     } catch (e) {
       setState(() {
-        _error = '$e';
+        _error = humanError(e);
         _loading = false;
       });
     }
@@ -968,7 +968,7 @@ class _BrowserTabState extends State<BrowserTab> {
       });
       setState(() => _stream = s);
     } catch (e) {
-      setState(() => _error = '$e');
+      setState(() => _error = humanError(e));
     }
   }
 

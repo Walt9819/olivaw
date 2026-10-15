@@ -97,6 +97,28 @@ class LinkError implements Exception {
   String toString() => message;
 }
 
+/// What to put on screen when something fails.
+///
+/// The raw exception is for a log, not for a person: "SocketException: Connection timed
+/// out, host: 10.91.84.141, port: 8791 (OS Error: Connection timed out, errno = 110)"
+/// tells the owner of this phone nothing they can act on, and tells them it in a
+/// language they did not choose. Everything here is something they could do next.
+String humanError(Object e) {
+  if (e is LinkError) return e.message;
+  if (e is HandshakeException) {
+    // Never softened: this is the one error that can mean somebody else is answering.
+    return 'Ese ordenador presentó un certificado distinto. No he enviado nada. '
+        'Vuelve a enlazar el teléfono desde el ordenador.';
+  }
+  if (e is TimeoutException) return 'El ordenador tardó demasiado en responder.';
+  if (e is SocketException) {
+    return 'No encuentro tu ordenador. Comprueba que está encendido y que Olivaw '
+        'está abierto, y que «Tu teléfono» sigue activado.';
+  }
+  if (e is FormatException) return 'El ordenador respondió algo que no entendí.';
+  return 'Algo no ha salido bien.';
+}
+
 /// One request/response, or one upgraded stream, against a paired computer.
 class Link {
   Link(this.pairing);
@@ -363,13 +385,22 @@ class Link {
         pairing.relayUrl = '';
         pairing.relayRoom = '';
       }
+      // Permissions as the owner has them NOW. Granting `navegador` on the computer
+      // should make the browser appear on the phone, and revoking it should take the
+      // button away rather than leave it to be refused when pressed.
+      final caps = (res['caps'] as List?)?.cast<String>();
+      var capsChanged = false;
+      if (caps != null && caps.join(',') != pairing.caps.join(',')) {
+        pairing.caps = caps;
+        capsChanged = true;
+      }
       // The house may also have moved to another address on the same wifi.
       final addrs = (res['addresses'] as List?)?.cast<String>() ?? const [];
       if (addrs.isNotEmpty && !addrs.contains(pairing.host)) {
         pairing.host = addrs.first;
         return true;
       }
-      return changed;
+      return changed || capsChanged;
     } catch (_) {
       return false;
     }
