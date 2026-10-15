@@ -548,11 +548,14 @@ class AgentScreen extends StatefulWidget {
 class _AgentScreenState extends State<AgentScreen> {
   int _tab = 0;
 
+  /// Held so the app bar's history button can reach into the open conversation.
+  final GlobalKey<ChatTabState> _chat = GlobalKey<ChatTabState>();
+
   @override
   Widget build(BuildContext context) {
     final canBrowse = widget.pairing.caps.contains('navegador');
     final tabs = <Widget>[
-      ChatTab(link: widget.link, agent: widget.agent),
+      ChatTab(key: _chat, link: widget.link, agent: widget.agent),
       RoutinesTab(link: widget.link, agent: widget.agent),
       if (canBrowse) BrowserTab(link: widget.link, agent: widget.agent),
     ];
@@ -565,6 +568,16 @@ class _AgentScreenState extends State<AgentScreen> {
           Expanded(
               child: Text(widget.agent.name, overflow: TextOverflow.ellipsis)),
         ]),
+        actions: [
+          // Only over the conversation: on the routines or the browser it would be a
+          // button about a screen you are not looking at.
+          if (_tab == 0)
+            IconButton(
+              icon: const Icon(Icons.history),
+              tooltip: 'Conversaciones anteriores',
+              onPressed: () => _chat.currentState?.pickPastConversation(),
+            ),
+        ],
       ),
       body: tabs[_tab.clamp(0, tabs.length - 1)],
       bottomNavigationBar: NavigationBar(
@@ -595,10 +608,10 @@ class ChatTab extends StatefulWidget {
   final Agent agent;
 
   @override
-  State<ChatTab> createState() => _ChatTabState();
+  State<ChatTab> createState() => ChatTabState();
 }
 
-class _ChatTabState extends State<ChatTab> {
+class ChatTabState extends State<ChatTab> {
   final _input = TextEditingController();
   final _scroll = ScrollController();
   List<Map<String, dynamic>> _msgs = [];
@@ -662,7 +675,29 @@ class _ChatTabState extends State<ChatTab> {
       final text = (r['content'] ?? r['text'] ?? '').toString().trim();
       if (text.isEmpty) continue;
       if (text.startsWith('[CONTEXT COMPACTION')) continue;  // bookkeeping, not a turn
-      out.add({'role': role, 'text': text});
+      // `MEDIA:<path>` is how an agent hands a file to the runtime to deliver. By the
+      // time it is in a transcript the file HAS been delivered, so the line is a
+      // receipt, not something said - and it is an absolute path on the computer,
+      // which on a phone is nothing but noise. Shown as what it was: an attachment.
+      final sent = <String>[];
+      final kept = <String>[];
+      for (final line in text.split('\n')) {
+        final t = line.trim();
+        if (t.startsWith('MEDIA:') && t.length > 6) {
+          final path = t.substring(6).trim();
+          final name = path.split(RegExp(r'[\\/]')).last;
+          if (name.isNotEmpty) sent.add(name);
+          continue;
+        }
+        kept.add(line);
+      }
+      final body = kept.join('\n').trim();
+      if (body.isEmpty && sent.isEmpty) continue;
+      out.add({
+        'role': role,
+        'text': body,
+        if (sent.isNotEmpty) 'files': sent,
+      });
     }
     return out;
   }
@@ -931,6 +966,136 @@ class _ChatTabState extends State<ChatTab> {
     _tick?.cancel();
     await Native.recordCancel();
     if (mounted) setState(() => _recording = false);
+  }
+
+  // ── past conversations ───────────────────────────────────────────────────────────
+
+  /// Offer the conversations this agent has already had, and open the chosen one.
+  ///
+  /// A new thread is still what you get by default - an agent's memory is not the
+  /// transcript, and starting clean is what the desktop console does. This is for the
+  /// other case: picking up something from yesterday, or reading back a thread that
+  /// happened on Telegram, which appears here because it is the same agent.
+  Future<void> pickPastConversation() async {
+    final loading = showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+    List<Map<String, dynamic>> rows = [];
+    String problem = '';
+    try {
+      final res = await widget.link
+          .reach('POST', '/api/talk/sessions', body: _body({'limit': 30}));
+      if (res['ok'] != true) {
+        problem = (res['detail'] ?? 'No pude leer las conversaciones.').toString();
+      } else {
+        rows = [
+          for (final r in (res['sessions'] as List? ?? []))
+            (r as Map).cast<String, dynamic>(),
+        ];
+      }
+    } catch (e) {
+      problem = humanError(e);
+    }
+    if (!mounted) return;
+    Navigator.of(context, rootNavigator: true).pop();
+    await loading.then((_) {});
+    if (!mounted) return;
+    if (problem.isNotEmpty) {
+      _say(problem);
+      return;
+    }
+    if (rows.isEmpty) {
+      _say('Todavía no hay conversaciones anteriores.');
+      return;
+    }
+    final chosen = await showModalBottomSheet<Map<String, dynamic>>(
+      context: context,
+      isScrollControlled: true,
+      // Capped, and not merely 'as tall as it needs': a scrollable sheet with thirty
+      // conversations in it grows to the full height of the screen and puts its own
+      // heading under the clock.
+      constraints: BoxConstraints(
+          maxHeight: MediaQuery.of(context).size.height * 0.72),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(22))),
+      builder: (sheet) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 16, 18, 8),
+            child: Row(children: [
+              Text('Conversaciones anteriores',
+                  style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      color: context.c.ink)),
+            ]),
+          ),
+          Flexible(
+            child: ListView.builder(
+              shrinkWrap: true,
+              itemCount: rows.length,
+              itemBuilder: (c, i) {
+                final r = rows[i];
+                final telegram = (r['source'] ?? '') == 'telegram';
+                return ListTile(
+                  leading: Icon(
+                      telegram ? Icons.send : Icons.chat_bubble_outline,
+                      color: context.c.muted),
+                  title: Text(_sessionTitle(r),
+                      maxLines: 1, overflow: TextOverflow.ellipsis),
+                  subtitle: Text(_sessionWhen(r),
+                      style: TextStyle(fontSize: 12, color: context.c.muted)),
+                  onTap: () => Navigator.pop(sheet, r),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 8),
+        ]),
+      ),
+    );
+    if (chosen == null || !mounted) return;
+    final id = (chosen['id'] ?? '').toString();
+    if (id.isEmpty) return;
+    setState(() {
+      _session = id;
+      _msgs = [];
+      _replyTo = null;
+      _error = '';
+    });
+    _openThreads[widget.agent.slug] = id;
+    await _history();
+  }
+
+  /// What to call a conversation nobody named.
+  String _sessionTitle(Map<String, dynamic> r) {
+    final t = (r['title'] ?? '').toString().trim();
+    if (t.isNotEmpty) return t;
+    final p = (r['preview'] ?? '').toString().trim().replaceAll(RegExp(r'\s+'), ' ');
+    if (p.isNotEmpty) return p.length > 70 ? '${p.substring(0, 70)}…' : p;
+    return 'Sin título';
+  }
+
+  String _sessionWhen(Map<String, dynamic> r) {
+    final secs = (r['last_active'] ?? r['started_at']);
+    final n = (r['message_count'] as num?)?.toInt() ?? 0;
+    final where = (r['source'] ?? '') == 'telegram' ? 'Telegram' : 'Olivaw';
+    if (secs is! num) return where;
+    final when = DateTime.fromMillisecondsSinceEpoch((secs * 1000).round());
+    final ago = DateTime.now().difference(when);
+    String rel;
+    if (ago.inMinutes < 60) {
+      rel = 'hace ${ago.inMinutes} min';
+    } else if (ago.inHours < 24) {
+      rel = 'hace ${ago.inHours} h';
+    } else if (ago.inDays < 30) {
+      rel = 'hace ${ago.inDays} d';
+    } else {
+      rel = '${when.day}/${when.month}/${when.year}';
+    }
+    return n > 0 ? '$where · $rel · $n mensajes' : '$where · $rel';
   }
 
   /// The message being answered, above the box, with a way out.
