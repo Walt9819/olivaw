@@ -337,6 +337,53 @@ def main():
             setattr(L, k, v)
         shutil.rmtree(tmp, ignore_errors=True)
 
+    section("which asset on the release is the update")
+    # A release carries more than the payload: a phone APK, an installer, and - the one
+    # that bites - a Mac installer that is itself a .zip. "The first zip" picked whatever
+    # GitHub happened to list first, and the wrong zip has no .sha256 beside it, which
+    # the applier refuses outright. Every install would stop updating at once, silently.
+    import urllib.request as _ur
+    _real_open = _ur.urlopen
+
+    class _Fake(object):
+        def __init__(self, payload):
+            self._p = payload
+
+        def read(self):
+            return json.dumps(self._p).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def _release(names):
+        return {"tag_name": "v9.9.9", "body": "",
+                "assets": [{"name": n, "browser_download_url": "u/" + n} for n in names]}
+
+    try:
+        # The Mac installer listed FIRST, which is the order that used to break it.
+        _ur.urlopen = lambda *a, **k: _Fake(_release([
+            "Olivaw-Instalar-Mac.zip", "hermes-bridge-9.9.9.zip",
+            "hermes-bridge-9.9.9.zip.sha256", "Olivaw.apk"]))
+        rel = L.latest_release("x/y")
+        check("the payload is chosen, not whichever zip is listed first",
+              rel["zip_name"] == "hermes-bridge-9.9.9.zip", rel["zip_name"])
+        check("and its checksum is found, so the update can actually be applied",
+              rel["sha_url"] == "u/hermes-bridge-9.9.9.zip.sha256", rel["sha_url"])
+
+        # A release that names its payload something else still updates.
+        _ur.urlopen = lambda *a, **k: _Fake(_release(["olivaw-9.9.9.zip"]))
+        check("an unrecognised name still falls back to the only zip there is",
+              L.latest_release("x/y")["zip_name"] == "olivaw-9.9.9.zip")
+
+        _ur.urlopen = lambda *a, **k: _Fake(_release(["Olivaw.apk"]))
+        check("and a release with no zip at all asks for nothing",
+              L.latest_release("x/y")["zip_url"] is None)
+    finally:
+        _ur.urlopen = _real_open
+
     print("\n%d passed, %d failed" % (len(PASSED), len(FAILED)))
     for f in FAILED:
         print("  - " + f)

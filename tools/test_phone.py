@@ -11,6 +11,7 @@ Chrome is not required: the parts that need a browser are measured by hand in th
 scratchpad harness. What is tested here of screencast.py is the part that decides what a
 remote tap is allowed to reach, which must hold whether or not a browser is running.
 """
+import atexit
 import hashlib
 import io
 import re
@@ -39,7 +40,6 @@ os.environ["OLIVAW_BRIDGE_JS"] = os.path.join(SAND, "bridge.js")
 from wizard import pairing, relay_client, remote, screencast, selfcert  # noqa: E402
 
 PORT = 8893
-RELAY_PORT = 8094
 passed = failed = 0
 
 
@@ -175,6 +175,13 @@ class FakeApi(object):
 remote._shim = FakeApi()
 _real_port_of = screencast.port_of   # kept: the last block in this file tests it
 screencast.port_of = lambda agent, install_dir=None: 9876   # nothing is listening there
+
+# Decided here, before a phone is ever paired, because pairing now turns the rendezvous
+# ON by default - and a default means the shipped address, which is on the internet. A
+# test suite that quietly dials Cloudflare when somebody runs it is not something to
+# leave lying around. Saying 'off' is a decision, so pairing leaves it alone; the
+# rendezvous section further down turns it on against a relay of our own.
+relay_client.save_config(SAND, url="ws://127.0.0.1:1", on=False)
 
 pairing.set_enabled(SAND, True)
 st = remote.start(SAND, logger=lambda m: None, port=PORT)
@@ -345,10 +352,27 @@ ok("and nothing was sent to Chrome", not cold.sent, cold.sent)
 # ── the rendezvous ─────────────────────────────────────────────────────────────────────
 section("the rendezvous")
 
+# A relay of our own, on a port nobody else is on.
+#
+# Found rather than fixed, and killed through atexit rather than at the end of the
+# file, because a run that dies half way used to leave the relay listening - and the
+# NEXT run would bind beside it (SO_REUSEADDR lets them both), attach the host to one
+# instance and the guest to another, and fail with 'refused' while the relay it asked
+# swore it had no rooms. Five of them had piled up before anybody noticed.
+def _free_port():
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+RELAY_PORT = _free_port()
 relay_proc = subprocess.Popen(
     [sys.executable, "-I", os.path.join(ROOT, "relay", "relay.py"),
      "--port", str(RELAY_PORT)],
     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+atexit.register(lambda: relay_proc.kill())
 time.sleep(1.5)
 cfg = relay_client.save_config(SAND, url="ws://127.0.0.1:%d" % RELAY_PORT, on=True)
 relay_client.start(SAND, PORT, logger=lambda m: None)
@@ -548,6 +572,44 @@ ok("a host with no key at all is refused",
    b" 101 " not in head.split(b"\r\n", 1)[0], head[:60])
 s.close()
 
+# Moving the rendezvous, which used to do nothing at all.
+#
+# start() is called on a tick and was idempotent on ANY live thread, so once attached it
+# never looked at the address again: the console would save a new one, report 'connected'
+# - because it WAS connected, to the old one - and nobody could be met anywhere until the
+# next restart. Two relays, because the only honest way to ask 'did it move' is to see it
+# arrive somewhere else.
+PORT2 = _free_port()
+relay2 = subprocess.Popen(
+    [sys.executable, "-I", os.path.join(ROOT, "relay", "relay.py"),
+     "--port", str(PORT2)],
+    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+atexit.register(lambda: relay2.kill())
+time.sleep(1.5)
+relay_client.save_config(SAND, url="ws://127.0.0.1:%d" % PORT2, on=True)
+relay_client.start(SAND, PORT, logger=lambda m: None)
+for _ in range(60):
+    if relay_client.state(SAND)["connected"] and relay_client.state(SAND).get("url", "").endswith(":%d" % PORT2):
+        break
+    time.sleep(0.2)
+ok("a new address is attached to, not just saved",
+   relay_client.state(SAND).get("url", "").endswith(":%d" % PORT2), relay_client.state(SAND))
+try:
+    _met = Guest(PORT2, cfg["room"]) is not None
+except OSError as e:  # the room is not there: nothing moved
+    _met = False
+ok("and the phone can be met there", _met)
+
+# Back home, because everything after this is addressed at the first relay.
+relay_client.save_config(SAND, url="ws://127.0.0.1:%d" % RELAY_PORT, on=True)
+relay_client.start(SAND, PORT, logger=lambda m: None)
+for _ in range(60):
+    st2 = relay_client.state(SAND)
+    if st2["connected"] and st2.get("url", "").endswith(":%d" % RELAY_PORT):
+        break
+    time.sleep(0.2)
+ok("and it can move back", relay_client.state(SAND)["connected"], relay_client.state(SAND))
+
 # ── the way home ───────────────────────────────────────────────────────────────────────
 # A phone that was paired before the rendezvous existed has to be able to learn about it,
 # and the only moment it can is while it can still reach the house.
@@ -657,6 +719,36 @@ _recv = _src[_src.index('def recv(self)'):]
 ok("the timeout is caught before the generic failure",
    _recv.index('except socket.timeout:') < (_recv.index('except OSError')
                                             if 'except OSError' in _recv else 1 << 30))
+
+# ── a rendezvous out of the box ────────────────────────────────────────────────────────
+# A phone that only works in the same room as the computer is not the thing anybody
+# asked for, and an address nobody can be expected to paste in is not a default. An
+# install that has never chosen one follows the shipped address.
+_fresh = tempfile.mkdtemp()
+_cfg = relay_client.config(_fresh)
+ok("a fresh install has somewhere to meet",
+   _cfg.get('url') == relay_client.DEFAULT_URL, _cfg.get('url'))
+ok("the default is a wss address", str(_cfg.get('url')).startswith('wss://'))
+ok("but it is NOT attached until somebody asks", _cfg.get('on') is None, _cfg)
+
+# Filled in rather than written down, so a default that moves reaches installs that
+# never chose for themselves - and never overwrites one that did.
+relay_client.save_config(_fresh, url='wss://propio.example')
+ok("an owner's own address wins",
+   relay_client.config(_fresh)['url'] == 'wss://propio.example')
+
+# Pairing is the moment the owner says they want a phone, so that is when it attaches.
+# An owner who said no stays no: this is a default, not an override.
+_said_no = tempfile.mkdtemp()
+relay_client.save_config(_said_no, on=False)
+ok("'off' survives, because it was a decision",
+   relay_client.config(_said_no).get('on') is False)
+_remote_src = io.open(os.path.join(ROOT, 'src', 'wizard', 'remote.py'),
+                      encoding='utf-8').read()
+ok("pairing only turns it on when nothing was decided",
+   'rc.get("on") is None' in _remote_src, 'the guard is missing')
+shutil.rmtree(_fresh, ignore_errors=True)
+shutil.rmtree(_said_no, ignore_errors=True)
 
 # ── getting past whatever sits in front of the rendezvous ──────────────────────────────
 # A relay may well be behind a CDN. Cloudflare answers a WebSocket handshake with no

@@ -239,7 +239,15 @@ def latest_release(repo):
         d = json.loads(r.read())
     tag = (d.get("tag_name") or "").lstrip("v")
     assets = {a["name"]: a["browser_download_url"] for a in d.get("assets", [])}
-    zip_name = next((n for n in assets if n.endswith(".zip")), None)
+    # The payload by NAME, not "the first zip on the release". Releases carry other
+    # zips - the Mac installer is one - and picking one of those means downloading
+    # something with no .sha256 beside it, which this refuses to apply: updates would
+    # stop dead, quietly, on every install at once, and the only sign would be a
+    # maintainer note nobody reads. The old rule survives as a fallback, so a release
+    # that names its payload differently still updates.
+    zips = [n for n in assets if n.endswith(".zip")]
+    zip_name = (next((n for n in zips if n.startswith("hermes-bridge-")), None)
+                or next(iter(zips), None))
     return {"version": tag, "changelog": d.get("body") or "",
             "zip_name": zip_name,
             "zip_url": assets.get(zip_name) if zip_name else None,

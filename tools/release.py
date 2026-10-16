@@ -139,6 +139,39 @@ def build_launchers():
     return out
 
 
+def stage_apk():
+    """The phone app, if it has been built. Returns [path] or [].
+
+    Picked up rather than built here, because building it needs Flutter and the signing
+    key, and a release of the computer half must not be blocked by a machine that has
+    neither. Built with: cd app && flutter build apk --release
+
+    It is checked for staleness instead, which is the mistake actually worth catching:
+    an APK left over from last month installs cleanly, looks right, and is simply the
+    old app - and nobody finds out until a phone is in somebody's hand.
+    """
+    built = os.path.join(ROOT, "app", "build", "app", "outputs", "flutter-apk",
+                         "app-release.apk")
+    if not os.path.isfile(built):
+        print("  note: no phone app in this release (app/ was never built)")
+        return []
+    newest = 0.0
+    for tree in ("lib", "android"):
+        for root, dirs, files in os.walk(os.path.join(ROOT, "app", tree)):
+            dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS and d != "build"]
+            for f in files:
+                try:
+                    newest = max(newest, os.path.getmtime(os.path.join(root, f)))
+                except OSError:
+                    pass
+    if newest > os.path.getmtime(built):
+        sys.exit("app/ has changed since the APK was built - run: cd app && "
+                 "flutter build apk --release")
+    dst = os.path.join(DIST, "Olivaw.apk")
+    shutil.copy2(built, dst)
+    return [dst]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("spec", help="patch | minor | major | X.Y.Z")
@@ -161,9 +194,12 @@ def main():
         fh.write(new + "\n")
     zip_path, digest = build_zip(new, a.message, migrations)
     launchers = build_launchers()
+    apk = stage_apk()
     print(f"built {os.path.basename(zip_path)}  (v{cur} -> v{new})")
     print(f"  sha256: {digest}")
     print(f"  assets: {zip_path}  and  {zip_path}.sha256")
+    for p in apk:
+        print(f"  phone app: {p}")
     for p in launchers:
         print(f"  double-click: {p}")
 
@@ -171,7 +207,10 @@ def main():
         if not shutil.which("gh"):
             sys.exit("`gh` CLI not found. Install it, or create the release manually (below).")
         subprocess.run(["gh", "release", "create", f"v{new}", zip_path, zip_path + ".sha256",
-                        *launchers,
+                        # Launchers are left off deliberately when the release is the
+                        # first one a given updater will see: see the note in
+                        # launcher.latest_release about a second .zip on a release.
+                        *apk, *launchers,
                         "-t", f"v{new}", "-n", a.message or f"Release v{new}"], check=True)
         print(f"published GitHub release v{new}")
     else:

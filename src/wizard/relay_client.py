@@ -306,14 +306,33 @@ QUIET_PINGS = 4
 # without it, not to pretend to be a browser.
 USER_AGENT = "Olivaw/1.0 (+https://github.com/Walt9819/olivaw)"
 
+# The rendezvous an install uses when its owner has not named another one.
+#
+# It is the Worker in relay/worker/, running on the free tier. Pointing every install
+# at it is only acceptable because of what it is: a byte pipe. The phone does TLS
+# against the COMPUTER's certificate and those records cross this address as noise, so
+# whoever runs it - including us - sees that two machines met and how many bytes went
+# through, and cannot see a message, a name, or a screen.
+#
+# An owner who would rather not meet on somebody else's address can put their own here
+# from the console; relay/OPTIONS.md lists what else works. Running out of free quota
+# fails the attachment rather than charging anybody, which is the right failure.
+DEFAULT_URL = "wss://olivaw-relay.olivaw.workers.dev"
+
 
 def config(install_dir):
     try:
         with open(os.path.join(install_dir, CONF), "r", encoding="utf-8") as fh:
             got = json.load(fh)
-        return got if isinstance(got, dict) else {}
+        if not isinstance(got, dict):
+            got = {}
     except Exception:  # noqa: BLE001
-        return {}
+        got = {}
+    # Filled in rather than written down, so an install that never chose an address
+    # follows the default if the default ever moves. An owner who named one keeps it.
+    if not got.get("url"):
+        got["url"] = DEFAULT_URL
+    return got
 
 
 def save_config(install_dir, url="", room="", key="", on=None):
@@ -357,10 +376,22 @@ def start(install_dir, local_port, logger=None):
         _thread = None
         log("detaching from the rendezvous")
         return {"on": False}
+    # An attachment to the WRONG address is worse than none: it reports itself as
+    # connected while the phone cannot be met anywhere. So a live thread only counts if
+    # it is attached to the address and room the owner currently has configured -
+    # otherwise it is stopped and replaced. Without this, changing the rendezvous in
+    # the console did nothing until the next restart, and said it was connected
+    # throughout.
+    if alive and (_state.get("url") != got["url"]
+                  or _state.get("room") != got["room"]):
+        _stop.set()
+        _thread = None
+        alive = False
+        log("the rendezvous changed; attaching to the new one")
     if alive or not want:
         return {"on": want, "connected": bool(_state.get("connected"))}
     _stop.clear()
-    _state.update({"on": True, "url": got["url"]})
+    _state.update({"on": True, "url": got["url"], "room": got["room"]})
     _thread = threading.Thread(target=_loop, name="olivaw-relay",
                                args=(got["url"], got["room"], got["key"], local_port))
     _thread.daemon = True

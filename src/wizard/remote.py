@@ -297,6 +297,20 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 from . import relay_client
                 rc = relay_client.config(INSTALL_DIR)
+                # Pairing a phone IS the owner saying they want to use one, and a
+                # phone that only works in the same room as the computer is not the
+                # thing they asked for. So the rendezvous comes on here, at the moment
+                # the intent is expressed - not silently at install, which would have
+                # every machine dialling out whether or not anybody wanted a phone.
+                #
+                # Only when nothing has been decided. An owner who turned it OFF stays
+                # off; this is a default, not an override.
+                if rc.get("on") is None:
+                    rc = relay_client.save_config(INSTALL_DIR, on=True)
+                    try:
+                        relay_client.start(INSTALL_DIR, PORT, logger=log)
+                    except Exception:  # noqa: BLE001
+                        pass   # the supervisor will attach on its next tick
                 if rc.get("on") and rc.get("url"):
                     res["relay"] = {"url": rc["url"], "room": rc.get("room", "")}
             except Exception:  # noqa: BLE001

@@ -8,8 +8,9 @@ same).
 > **Status: runs on a real phone.** Installed on a Galaxy Z Fold 5 (Android 16) and
 > driven end to end: it finds the computer on its own, pairs, lists the agents, holds a
 > conversation, records a voice note, attaches a file, reopens a past conversation and
-> drives the agent's Chrome. `flutter analyze` is silent, `flutter test` passes 22, and
-> `tools/test_phone.py` is at 127 checks.
+> drives the agent's Chrome — and then did all of it again **on mobile data alone**,
+> tether unplugged, with the computer not answering a ping. `flutter analyze` is silent,
+> `flutter test` passes 28, and `tools/test_phone.py` is at 150 checks.
 >
 > Still unexercised: a *successful* voice transcription from the phone's own microphone
 > (the room was quiet, so Whisper correctly found no words; the same route returns
@@ -63,8 +64,17 @@ CA system, which vouches for a name and lets in anyone who fools a CA.
 
 `Link.reach()` tries the local address first and falls back to the rendezvous. Same TLS,
 same pinned certificate, same token, same permissions: the rendezvous forwards bytes it
-has no key for. Set it up on the computer under **Tu teléfono → Fuera de casa** and see
-`relay/README.md` for where to run one.
+has no key for.
+
+There is one running already, so this works out of the box: pairing a phone turns the
+rendezvous on and the computer attaches to the shipped address. Change it or turn it
+off on the computer under **Tu teléfono → Fuera de casa**; `relay/README.md` and
+`relay/OPTIONS.md` cover running your own.
+
+The one thing it cannot do is *start* away from home: pairing is where the phone learns
+the certificate to pin and where to meet, so it has to see the computer on the same wifi
+once. A phone paired before any of this existed learns the address from `net/home` the
+next time it is on that wifi.
 
 ## Building
 
@@ -92,9 +102,14 @@ security config. Do *not* add `usesCleartextTraffic`: nothing here is ever clear
 
 ## Distribution
 
-The APK goes on GitHub Releases, next to the Olivaw zip that is already published there —
-no Play Store account, no third party, no cost. Android asks the person to allow
-installing from that source once.
+The APK goes on GitHub Releases as `Olivaw.apk`, next to the Olivaw zip that is already
+published there — no Play Store account, no third party, no cost. Android asks the person
+to allow installing from that source once.
+
+It is signed with a key kept outside this repository (see *The signing key*), which is
+what lets one version install over the last. Lose that key and there is no recovery
+worth the name: a replacement key means every phone has to uninstall first, and
+uninstalling takes the pairing and the stored conversations with it.
 
 iOS cannot be distributed this way: without the App Store an app has to be re-signed
 every seven days. That is a real limit, not an oversight, and it is why Android is first.

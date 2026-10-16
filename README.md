@@ -791,7 +791,13 @@ The always-on process is the supervisor, so `wizard/remote.py` runs there and
   from it, both dial *out* to a rendezvous (`relay/relay.py`, ~200 lines, stdlib only)
   that forwards bytes it has no key for — the TLS session is still phone-to-computer, so
   whoever runs the relay sees ciphertext and nothing else. That is what makes hosting it
-  a question of cost rather than trust.
+  a question of cost rather than trust. An install that has never named one follows a
+  default (`relay/worker/`, a Cloudflare Worker on the free tier), which is only
+  acceptable *because* of that: it learns that two machines met and how many bytes
+  crossed, and cannot learn a message, a name or a screen. Owners who would rather not
+  meet on somebody else's address can put their own in the console — `relay/OPTIONS.md`
+  lists what works. The rendezvous comes on when the first phone is paired, because that
+  is the moment somebody says they want one; an owner who turns it off stays off.
 - **Windows firewall**: a covered port fails as silence, so the console asks and can fix
   it, scoped to the *private* profile — the wifi at home, not every café the laptop joins.
 
@@ -846,10 +852,22 @@ a camera package and verifies no more than the two words a person compares. It i
 distributed as an APK on the same GitHub Releases page as everything else: no store, no
 account, no cost.
 
-**It has never been compiled** — there is no Flutter SDK on the development machine. The
-Python half is tested end to end (`tools/test_phone.py`, 90 checks: a real TLS handshake
-against the hand-rolled certificate, a real rendezvous in its own process, and every
-forbidden route attempted and refused). The Dart half is not.
+**Installing it.** Download `Olivaw.apk` from the latest release onto the phone and open
+it; Android asks once whether that browser may install apps. It is signed with a key that
+lives outside this repository, so each later version installs over the top of the last
+one. An APK signed with a *different* key cannot — the only way out of that is to
+uninstall first, which throws away everything the app has stored.
+
+**It has to meet the computer once on the same wifi.** Pairing is where the phone learns
+the certificate to pin and the address of the rendezvous. After that it works from
+anywhere.
+
+Both halves are tested: `tools/test_phone.py` (150 checks — a real TLS handshake against
+the hand-rolled certificate, a real rendezvous in its own process, every forbidden route
+attempted and refused, and the rendezvous moved between two of them) and `flutter test`
+in `app/` (28). Beyond the suites it has been run on a Galaxy Z Fold 5: paired, chatted,
+opened a routine, drove the browser, and — with the tether unplugged and the computer
+not answering a ping — loaded the roster and opened a file over nothing but mobile data.
 
 ## Publishing an update (maintainer)
 
@@ -862,6 +880,11 @@ Then, for every update:
 ```bash
 python tools/release.py patch -m "Ahora puede ver imágenes que le mandes" --publish
 # bumps VERSION, builds + checksums the release zip, creates the GitHub Release via gh.
+```
+If the phone app changed, build it *first* — the release picks up the APK that is there
+and refuses to ship one older than `app/`:
+```bash
+cd app && flutter build apk --release
 ```
 Every installed supervisor picks it up and applies it when idle. Config changes ship as idempotent
 `--migration` steps in the release manifest.
