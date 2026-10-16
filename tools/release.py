@@ -155,18 +155,26 @@ def stage_apk():
     if not os.path.isfile(built):
         print("  note: no phone app in this release (app/ was never built)")
         return []
+    # Gradle writes its own lock and cache files a second AFTER the APK it just
+    # produced, so a tree walk that counts those finds the build stale the instant it
+    # finishes - every time, for the rest of the day.
+    skip = EXCLUDE_DIRS | {"build", ".gradle", ".dart_tool", ".idea", ".cxx"}
     newest = 0.0
     for tree in ("lib", "android"):
         for root, dirs, files in os.walk(os.path.join(ROOT, "app", tree)):
-            dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS and d != "build"]
+            dirs[:] = [d for d in dirs if d not in skip]
             for f in files:
                 try:
                     newest = max(newest, os.path.getmtime(os.path.join(root, f)))
                 except OSError:
                     pass
+    pub = os.path.join(ROOT, "app", "pubspec.yaml")
+    if os.path.isfile(pub):
+        newest = max(newest, os.path.getmtime(pub))
     if newest > os.path.getmtime(built):
         sys.exit("app/ has changed since the APK was built - run: cd app && "
                  "flutter build apk --release")
+    os.makedirs(DIST, exist_ok=True)
     dst = os.path.join(DIST, "Olivaw.apk")
     shutil.copy2(built, dst)
     return [dst]
@@ -190,11 +198,16 @@ def main():
         except Exception as e:
             sys.exit(f"bad --migration JSON: {e}")
 
+    # Everything that can refuse runs BEFORE the version is written. A release that
+    # stopped half way used to leave VERSION bumped anyway, so the next attempt built
+    # a different number than the one that failed, and the skipped version existed
+    # nowhere but this machine.
+    apk = stage_apk()
+
     with open(VERSION_FILE, "w", encoding="utf-8") as fh:
         fh.write(new + "\n")
     zip_path, digest = build_zip(new, a.message, migrations)
     launchers = build_launchers()
-    apk = stage_apk()
     print(f"built {os.path.basename(zip_path)}  (v{cur} -> v{new})")
     print(f"  sha256: {digest}")
     print(f"  assets: {zip_path}  and  {zip_path}.sha256")
