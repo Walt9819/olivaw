@@ -191,6 +191,21 @@ class _Link(object):
             if len(self.streams) >= MAX_STREAMS:
                 self.ws.send(self._frame(CLOSE, sid))
                 return
+            # A stream number already in use is refused rather than taken. This used
+            # to be `self.streams[sid] = s` further down, which dropped the existing
+            # socket on the floor - still open, still being drained by its thread,
+            # into a conversation whose other end had just been replaced. Phones pick
+            # a random starting point now, so this should never fire; it is here
+            # because a phone that has not updated yet still starts at 1.
+            #
+            # Silently, and that is deliberate: a CLOSE goes to every guest in the
+            # room, so answering the newcomer would tear down the established
+            # stream of whoever legitimately holds that number. The newcomer's
+            # handshake times out instead, which costs it a retry and costs the
+            # phone already working nothing.
+            if sid in self.streams:
+                log("refusing stream %d: already in use" % sid)
+                return
         try:
             s = socket.create_connection(("127.0.0.1", self.local_port), timeout=10)
         except OSError as e:

@@ -535,6 +535,57 @@ ok("and use the API", through_relay("POST", "/api/agents/list", {}, away)[0] == 
 ok("with exactly the permissions it has at home",
    through_relay("POST", "/api/provider/install", {}, away)[0] == 403)
 
+# A stream number that is already somebody's.
+#
+# The room belongs to the COMPUTER, so every phone paired to it meets in that one
+# room, and the rendezvous hands whatever the house says to every guest in it. Both
+# ends used to number their streams from 1, so a second phone - or this one
+# reconnecting before its old socket was noticed as dead - opened stream 1 while
+# stream 1 was already live. The house took the number: it replaced the socket in
+# the table without closing it, leaving a connection open with a thread draining it
+# into a conversation whose other end had just been swapped out, and handing the
+# established session's bytes to a socket that had never done a handshake.
+#
+# Handshake first, so there IS something to steal, then the duplicate, then ask the
+# established session a question: under the old code the answer went to the wrong
+# socket and nothing came back.
+_raw = guest.tunnel()
+_dup = guest.next - 1
+_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+_ctx.check_hostname = False
+_ctx.verify_mode = ssl.CERT_NONE
+_held = _ctx.wrap_socket(_raw)
+guest._ws_send(struct.pack("!BI", 1, _dup))      # the same number, again
+time.sleep(0.5)
+_body = json.dumps({}).encode()
+_held.sendall(("\r\n".join([
+    "POST /api/agents/list HTTP/1.1", "Host: olivaw",
+    "Authorization: Bearer %s" % away,
+    "Content-Length: %d" % len(_body), "Connection: close"]).encode()
+    + b"\r\n\r\n" + _body))
+_held.settimeout(8)
+try:
+    _answer = _held.recv(400)
+except Exception:  # noqa: BLE001
+    _answer = b""
+ok("a repeated stream number does not take over the live one",
+   b" 200 " in _answer, _answer[:60])
+try:
+    _held.close()
+except OSError:
+    pass
+
+# And the phone does not pick the colliding number in the first place.
+_dart = io.open(os.path.join(ROOT, 'app', 'lib', 'relay.dart'), encoding='utf-8').read()
+ok("the phone starts its streams somewhere nobody else will be",
+   'int _next = 1 + Random.secure()' in _dart)
+
+# The rendezvous hashes before it reads the room, so the claim cannot be raced:
+# input gates hold across a STORAGE call, and an await on crypto.subtle is not one.
+_wk = io.open(os.path.join(ROOT, 'relay', 'worker', 'worker.js'), encoding='utf-8').read()
+ok("the rendezvous hashes the key before it reads the room",
+   _wk.index('const hash =') < _wk.index("storage.get(\"key\")"))
+
 raw = guest.tunnel()
 raw.sendall(b"GET /ping HTTP/1.1\r\nHost: x\r\n\r\n")
 time.sleep(0.5)

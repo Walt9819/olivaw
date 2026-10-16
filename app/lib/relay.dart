@@ -31,7 +31,14 @@ class Relay {
   ServerSocket? _loop;
   final Map<int, Socket> _streams = {};
   final List<Completer<Socket>> _waiting = [];
-  int _next = 1;
+  // Not 1. The room belongs to the COMPUTER, and every phone paired to it meets
+  // there - so a second phone, or this one reconnecting before the rendezvous has
+  // noticed the old socket is dead, would be opening stream 1 while stream 1 is
+  // already somebody else's. The house keys its streams by this number alone and
+  // would hand the second one the first one's socket. Starting at a random point
+  // in a 32-bit space makes two live phones collide about as often as they collide
+  // on the pairing words, and costs nothing.
+  int _next = 1 + Random.secure().nextInt(0x3fffffff);
   final BytesBuilder _buf = BytesBuilder();
   bool _handshook = false;
   Future<void>? _connecting;

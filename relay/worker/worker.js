@@ -38,7 +38,6 @@ export default {
 
     const role = url.searchParams.get("role") || "";
     const room = (url.searchParams.get("room") || "").slice(0, ROOM_MAX);
-    const key = url.searchParams.get("key") || "";
     if ((role !== "host" && role !== "guest") || !room) {
       return new Response("bad request", { status: 400 });
     }
@@ -52,10 +51,11 @@ export default {
 export class Room {
   constructor(state) {
     this.state = state;
-    // Hibernation: the sockets survive the object going to sleep, so an attached house
-    // that nobody is using costs nothing. Without it, an idle connection would be billed
-    // for every second it stayed open.
-    this.sessions = state.getWebSockets();
+    // Hibernation - the reason acceptWebSocket is used below rather than ws.accept():
+    // the sockets survive this object going to sleep, so an attached house that nobody
+    // is using costs nothing. The live sockets are asked for where they are needed
+    // (getWebSockets) rather than cached here, because a woken object runs this
+    // constructor again and anything kept here would just be a stale copy.
   }
 
   async fetch(request) {
@@ -63,10 +63,17 @@ export class Room {
     const role = url.searchParams.get("role");
     const key = url.searchParams.get("key") || "";
 
+    // Hashed BEFORE the room is read, which is the whole point of the order.
+    // Cloudflare's input gates stop other events interleaving *during a storage
+    // call*; an await on anything else - crypto.subtle here - is an ordinary gap.
+    // With the hash computed in that gap, two hosts racing a fresh room could both
+    // read `undefined`, both hash, and both write: the second would take a room the
+    // first already owned. Hash first and there is no await left between the read
+    // and the write, so the gate holds and the first claim stands.
+    const hash = key ? await sha256hex(key) : "";
     const claimed = await this.state.storage.get("key");
     if (role === "host") {
       if (!key) return new Response("a host needs a key", { status: 403 });
-      const hash = await sha256hex(key);
       if (claimed === undefined) {
         await this.state.storage.put("key", hash);
       } else if (!timingSafeEqual(claimed, hash)) {
