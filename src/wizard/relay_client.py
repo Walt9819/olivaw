@@ -389,6 +389,10 @@ def start(install_dir, local_port, logger=None):
     if alive and not want:
         _stop.set()
         _thread = None
+        # Said here rather than left to the old thread to notice. Until it does, it
+        # is still holding the socket, and anybody asking would be told this machine
+        # is connected - to a rendezvous it is in the middle of leaving.
+        _state["connected"] = False
         log("detaching from the rendezvous")
         return {"on": False}
     # An attachment to the WRONG address is worse than none: it reports itself as
@@ -402,6 +406,7 @@ def start(install_dir, local_port, logger=None):
         _stop.set()
         _thread = None
         alive = False
+        _state["connected"] = False
         log("the rendezvous changed; attaching to the new one")
     if alive or not want:
         return {"on": want, "connected": bool(_state.get("connected"))}

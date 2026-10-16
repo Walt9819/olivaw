@@ -1617,6 +1617,15 @@ def main():
             # onboarding wizard) is picked up without needing a restart.
             cfg = load_config()
             beat(cfg)
+            # Before the agents, not after them. This used to sit further down, past
+            # the bridge keep-alive and _reconcile_extras, which start six gateways
+            # with a sleep between each - so on a machine that had just booted, the
+            # phone's door and the rendezvous came up around three minutes late. A
+            # phone picked up in that window is told there is no computer, which is
+            # the one moment the answer most needs to be true. Both calls are cheap
+            # when nothing changed, and the console that turns the phone on is
+            # another process, so this is also how its switch becomes true here.
+            _ensure_remote()
             poll = max(300, int(cfg.get("poll_minutes", 45)) * 60)
             # keep-alive: the question is "is the bridge serving?", not "is our handle
             # alive?" - an adopted bridge has no handle, and a dead handle whose port still
@@ -1657,10 +1666,6 @@ def main():
             # update poll. `stamp=False` keeps this pass to one socket probe per agent -
             # the colour is read by Chrome at startup and does not need re-deciding four
             # times a minute.
-            _ensure_browser_labels(stamp=False)
-            # Same cadence, same reason: the console that turns the phone on is another
-            # process, so this is how its switch becomes true here.
-            _ensure_remote()
             # The owner pressed "update now" in the UI. Checked every loop, not on the
             # poll interval, so the button feels like a button (~15s) instead of like a
             # setting that might take three quarters of an hour to do anything.

@@ -52,6 +52,10 @@ IDLE_CLOSE = 15 * 60               # a viewer nobody is looking at
 PROTOCOL = 1
 
 _server = None
+# The thread running serve_forever. Held because `_server is not None` was being read
+# as 'the door is open', and those are different things: if that thread ever stops,
+# the object stays, every tick says 'already listening', and the door never reopens.
+_serving = None
 _lock = threading.Lock()
 _log = lambda *a: None             # noqa: E731  - replaced by start()
 
@@ -498,6 +502,42 @@ class _Server(ThreadingHTTPServer):
     # wait for TIME_WAIT to clear or a restart of the supervisor takes a minute.
     allow_reuse_address = True
 
+    # The same bad mobile data, one layer down, and this one was much worse.
+    #
+    # TLS used to be put on the LISTENING socket, which reads naturally enough and is
+    # wrong: ssl wraps every accepted connection with do_handshake_on_connect, so the
+    # handshake happened INSIDE accept() - on the one thread that accepts. A phone
+    # that opened a connection and then went through a tunnel held that thread, and
+    # with no timeout on it, held it for as long as it liked. Nothing else could be
+    # accepted. The backlog filled, and Windows then refuses new connections outright,
+    # so the machine looked like it had no door at all - to the relay, which logged
+    # 'could not reach the local door', and to the phone, which said the computer had
+    # presented a different certificate. Nothing in the log said the door had stopped.
+    #
+    # Now the listening socket stays plain, the handshake happens in the connection's
+    # own thread, and it has a clock on it. A connection that says nothing costs one
+    # daemon thread for twenty seconds and costs everybody else nothing.
+    HANDSHAKE_TIMEOUT = 20
+    tls = None
+
+    def get_request(self):
+        sock, addr = self.socket.accept()
+        sock.settimeout(self.HANDSHAKE_TIMEOUT)
+        return sock, addr
+
+    def process_request_thread(self, request, client_address):
+        try:
+            request = self.tls.wrap_socket(request, server_side=True)
+        except Exception:  # noqa: BLE001
+            # Deliberately not handle_error: a scanner that connects without speaking
+            # TLS, or a phone that lost signal, is not worth a line of log each time.
+            self.shutdown_request(request)
+            return
+        # Back to blocking once the handshake is done: what runs on top of this is a
+        # streamed screen, which is allowed to be quiet for as long as it likes.
+        request.settimeout(None)
+        ThreadingHTTPServer.process_request_thread(self, request, client_address)
+
     def handle_error(self, request, client_address):
         exc = traceback.format_exc().strip().splitlines()[-1]
         # Not a stack trace in the supervisor log: a scanner probing an open port with
@@ -541,12 +581,15 @@ def start(install_dir, logger=None, port=PORT):
     Called on every supervisor tick, so it has to be cheap and idempotent: already
     running and still wanted is the common case and does nothing.
     """
-    global _server, _log, INSTALL_DIR
+    global _server, _serving, _log, INSTALL_DIR
     if logger:
         _log = logger
     INSTALL_DIR = install_dir
     want = pairing.enabled(install_dir) or pairing.offer_open(install_dir)
     with _lock:
+        if _server and not (_serving and _serving.is_alive()):
+            log("the door stopped answering; opening it again")
+            _stop_locked()
         if _server and not want:
             log("turned off; closing the door")
             _stop_locked()
@@ -568,11 +611,11 @@ def start(install_dir, logger=None, port=PORT):
             ctx.minimum_version = ssl.TLSVersion.TLSv1_2
             ctx.load_cert_chain(got["cert"], got["key"])
             srv = _Server(("0.0.0.0", port), Handler)
-            srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+            srv.tls = ctx
             t = threading.Thread(target=srv.serve_forever, name="olivaw-remote")
             t.daemon = True
             t.start()
-            _server = srv
+            _server, _serving = srv, t
             log("listening on %s:%d (%s)"
                 % (", ".join(selfcert.local_ips()) or "0.0.0.0", port,
                    got["fingerprint"][:16]))
@@ -583,9 +626,9 @@ def start(install_dir, logger=None, port=PORT):
 
 
 def _stop_locked():
-    global _server
+    global _server, _serving
     srv = _server
-    _server = None
+    _server = _serving = None
     if srv:
         try:
             srv.shutdown()

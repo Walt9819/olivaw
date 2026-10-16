@@ -278,6 +278,34 @@ ok("an invented token, no API",
 ok("the paired phone may look", p.request("POST", "/api/agents/list", {})[0] == 200)
 ok("and talk", p.request("POST", "/api/talk/send", {"text": "hola"})[0] == 200)
 ok("but not rename", p.request("POST", "/api/agent/rename", {})[0] == 403)
+
+# A connection that opens and then says nothing.
+#
+# TLS used to be put on the LISTENING socket, which reads naturally and is wrong:
+# ssl wraps each accepted connection with do_handshake_on_connect, so the handshake
+# ran INSIDE accept(), on the one thread that accepts. A phone that opened a
+# connection and then went through a tunnel held that thread for as long as it
+# liked, the backlog filled, and Windows then refuses new connections outright. The
+# machine looked like it had no door at all - the rendezvous logged 'could not reach
+# the local door' and the phone blamed the certificate - and nothing said otherwise.
+#
+# Three of them, silent, while a real phone asks a real question.
+_mute = []
+for _ in range(3):
+    try:
+        _mute.append(socket.create_connection(("127.0.0.1", PORT), timeout=5))
+    except OSError:
+        pass
+try:
+    _code = p.request("POST", "/api/agents/list", {})[0]
+except Exception as e:  # noqa: BLE001 - the old code timed out here
+    _code = repr(e)
+ok("a connection that never speaks TLS does not shut the door", _code == 200, _code)
+for _m in _mute:
+    try:
+        _m.close()
+    except OSError:
+        pass
 ok("nor install anything", p.request("POST", "/api/provider/install", {})[0] == 403)
 ok("nor pair another phone", p.request("POST", "/api/phone/offer", {})[0] == 403)
 ok("and nothing forbidden ever reached the console",
