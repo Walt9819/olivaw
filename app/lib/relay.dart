@@ -58,14 +58,19 @@ class Relay {
     final key = base64.encode(
       List<int>.generate(16, (_) => Random.secure().nextInt(256)),
     );
-    final path = '${u.path.isEmpty ? '' : u.path}/attach'
-        '?role=guest&room=${Uri.encodeComponent(room)}';
+    final path = '${u.path.isEmpty ? '' : u.path}/attach';
     sock.add(utf8.encode([
       'GET $path HTTP/1.1',
       'Host: ${u.host}',
       'Upgrade: websocket',
       'Connection: Upgrade',
       'Sec-WebSocket-Key: $key',
+      // In headers rather than the query string. A URL is the part of a request
+      // that everything logs, and the room id is the one thing that says which
+      // computer this is. The rendezvous still reads the old query form, so a
+      // phone older than this one keeps working.
+      'X-Olivaw-Role: guest',
+      'X-Olivaw-Room: $room',
       // A CDN in front of the rendezvous may refuse a handshake that carries no
       // User-Agent. Cloudflare answers one with 530 and a body of "error code: 1010",
       // and the only symptom at this end is a rendezvous that will not let the phone

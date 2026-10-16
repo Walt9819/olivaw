@@ -798,6 +798,14 @@ The always-on process is the supervisor, so `wizard/remote.py` runs there and
   meet on somebody else's address can put their own in the console — `relay/OPTIONS.md`
   lists what works. The rendezvous comes on when the first phone is paired, because that
   is the moment somebody says they want one; an owner who turns it off stays off.
+- **And what it writes down**, which is a separate question from what it can see. The
+  room id and the key that proves a machine owns it travel in headers rather than the
+  query string, because a URL is the part of a request that everything logs — 
+  Cloudflare's own trace span records `url.full`. The Worker's own logs carry a role,
+  an outcome and a count, never an id; the automatic per-request log is off, and traces
+  stay off until no install is old enough to put a key in a URL. A room also takes a
+  household rather than a crowd: eight phones, and the newcomer is the one refused, so
+  that whoever guesses a room id cannot push the owner's own phone out of it.
 - **Windows firewall**: a covered port fails as silence, so the console asks and can fix
   it, scoped to the *private* profile — the wifi at home, not every café the laptop joins.
 

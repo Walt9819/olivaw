@@ -64,7 +64,7 @@ class WSClient(object):
     reassembled - a 40KB JPEG is routinely split by whatever is in the middle.
     """
 
-    def __init__(self, url, timeout=20.0):
+    def __init__(self, url, timeout=20.0, headers=()):
         u = urlparse(url)
         secure = u.scheme == "wss"
         port = u.port or (443 if secure else 80)
@@ -83,12 +83,13 @@ class WSClient(object):
         # of "error code: 1010" - its browser-integrity check - and the only symptom at
         # this end is a relay that will not take the attachment, with nothing said about
         # why. Named rather than browser-shaped: the point is to HAVE one.
+        extra = "".join("%s: %s\r\n" % (k, v) for k, v in (headers or ()))
         self.sock.sendall((
             "GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\n"
             "Connection: Upgrade\r\nSec-WebSocket-Key: %s\r\n"
-            "User-Agent: %s\r\n"
+            "User-Agent: %s\r\n%s"
             "Sec-WebSocket-Version: 13\r\n\r\n"
-            % (path, u.netloc, key, USER_AGENT)).encode())
+            % (path, u.netloc, key, USER_AGENT, extra)).encode())
         buf = b""
         while b"\r\n\r\n" not in buf:
             chunk = self.sock.recv(4096)
@@ -264,7 +265,19 @@ class _Link(object):
 
 
 def _serve_once(url, room, key, local_port):
-    ws = WSClient("%s?role=host&room=%s&key=%s" % (url.rstrip("/") + "/attach", room, key))
+    # In headers, not in the URL.
+    #
+    # The key is what proves this machine owns its room, and it used to ride in the
+    # query string - the one part of a request that everything along the way writes
+    # down. Cloudflare's own trace span records url.full, so simply turning on the
+    # observability its guidance asks for would have filed every house's key in a
+    # dashboard. A header is not secret either, but it is not the thing that gets
+    # logged by default, and now there is nothing in the URL worth hiding.
+    ws = WSClient(url.rstrip("/") + "/attach", headers=(
+        ("X-Olivaw-Role", "host"),
+        ("X-Olivaw-Room", room),
+        ("X-Olivaw-Key", key),
+    ))
     link = _Link(ws, local_port)
     _state.update({"connected": True, "detail": "", "since": time.time()})
     log("attached to the rendezvous as %s" % room[:8])

@@ -43,6 +43,8 @@ MAX_FRAME = 8 << 20
 MAX_ROOMS = 500
 ROOM_IDLE = 30 * 60
 ROOM_RE_MAX = 64
+# How many phones may be in one room at once; see the note where it is enforced.
+MAX_GUESTS = 8
 
 _rooms = {}
 _lock = threading.Lock()
@@ -147,9 +149,25 @@ class Handler(BaseHTTPRequestHandler):
         if u.path != "/attach":
             return self._json({"ok": False}, 404)
         q = parse_qs(u.query)
-        role = (q.get("role") or [""])[0]
-        room_id = (q.get("room") or [""])[0][:ROOM_RE_MAX]
-        key = (q.get("key") or [""])[0]
+
+        def pick(name):
+            """Header first, query string second.
+
+            They moved out of the URL because a URL is the part of a request that
+            everything logs, and one of these is the key that proves a machine owns
+            its room. The old place is still read, so a house that has not updated
+            yet still gets in.
+            """
+            return (self.headers.get("X-Olivaw-" + name.capitalize())
+                    or (q.get(name) or [""])[0]).strip()
+
+        role = pick("role")
+        room_id = pick("room")
+        key = pick("key")
+        # Refused, not shortened: truncating the id that decides WHICH computer you
+        # reach quietly merges two rooms that happen to share a prefix.
+        if len(room_id) > ROOM_RE_MAX:
+            return self._json({"ok": False, "detail": "room id too long"}, 400)
         if role not in ("host", "guest") or not room_id:
             return self._json({"ok": False, "detail": "bad request"}, 400)
         ws_key = self.headers.get("Sec-WebSocket-Key", "")
@@ -203,6 +221,14 @@ class Handler(BaseHTTPRequestHandler):
             # a guest needs no key: the room id IS the secret, and even a guest who
             # guesses one meets a TLS endpoint that will not talk to it.
             if room is None or room.host is None:
+                return None
+            # The same cap the Worker has, for the same reason and kept deliberately
+            # identical: the id is all that stands between a stranger and an
+            # attachment, and without a cap they could sit here in numbers and have
+            # every frame the house sends copied to each of them. The NEWCOMER is
+            # refused rather than the oldest evicted - evicting would let whoever
+            # guessed the id push the owner's own phone out of its room.
+            if len(room.guests) >= MAX_GUESTS:
                 return None
             room.touched = _now()
             return room

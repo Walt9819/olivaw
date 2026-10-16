@@ -689,6 +689,105 @@ for _ in range(60):
     time.sleep(0.2)
 ok("and it can move back", relay_client.state(SAND)["connected"], relay_client.state(SAND))
 
+# ── what the rendezvous is allowed to know, and how many may ask ────────────────
+
+# The room and its key used to ride in the query string, which is the part of a
+# request that everything along the way writes down - Cloudflare's own handler span
+# records url.full. The house sends headers now; the old place is still read so an
+# install that has not updated yet still gets in.
+_rc = io.open(os.path.join(ROOT, 'src', 'wizard', 'relay_client.py'),
+              encoding='utf-8').read()
+ok("the house does not put its room in a URL",
+   '?role=host&room=' not in _rc and 'X-Olivaw-Room' in _rc)
+ok("nor its key", 'X-Olivaw-Key' in _rc and 'key=%s' not in _rc)
+_dart2 = io.open(os.path.join(ROOT, 'app', 'lib', 'relay.dart'), encoding='utf-8').read()
+ok("and neither does the phone",
+   '?role=guest&room=' not in _dart2 and 'X-Olivaw-Room' in _dart2)
+
+# Both forms reach the same room. The host above attached with headers; this guest
+# uses the old query string, and they have to meet.
+_old_style = Guest(RELAY_PORT, cfg["room"])
+ok("a guest still attaches the old way", _old_style is not None)
+try:
+    _old_style.sock.close()
+except OSError:
+    pass
+
+
+def _attach_raw(headers):
+    """Attach with whatever headers are given; return the status line."""
+    s = socket.create_connection(("127.0.0.1", RELAY_PORT), timeout=5)
+    k = _b64.b64encode(os.urandom(16)).decode()
+    s.sendall(("GET /attach HTTP/1.1\r\nHost: r\r\nUpgrade: websocket\r\n"
+               "Connection: Upgrade\r\nSec-WebSocket-Key: %s\r\n%s"
+               "Sec-WebSocket-Version: 13\r\n\r\n"
+               % (k, "".join("%s: %s\r\n" % h for h in headers))).encode())
+    head = s.recv(200).split(b"\r\n", 1)[0]
+    return s, head
+
+
+_s, _head = _attach_raw((("X-Olivaw-Role", "guest"), ("X-Olivaw-Room", cfg["room"])))
+ok("and a guest attaches the new way, by header", b" 101 " in _head, _head[:60])
+try:
+    _s.close()
+except OSError:
+    pass
+
+# Refused, not shortened. Truncating the id that decides WHICH computer you reach
+# quietly merges two rooms that share a prefix.
+_s, _head = _attach_raw((("X-Olivaw-Role", "guest"), ("X-Olivaw-Room", "z" * 200)))
+ok("a room id that is too long is refused, not cut down",
+   b" 400 " in _head, _head[:60])
+try:
+    _s.close()
+except OSError:
+    pass
+
+# A room holds a household's phones, not a crowd. Whoever knows the id could
+# otherwise sit here in numbers and have every frame the house sends copied to each.
+_relay_src = io.open(os.path.join(ROOT, 'relay', 'relay.py'), encoding='utf-8').read()
+_MAXG = int(re.search(r'MAX_GUESTS = (\d+)', _relay_src).group(1))
+_crowd = []
+for _ in range(_MAXG + 2):
+    try:
+        _crowd.append(Guest(RELAY_PORT, cfg["room"]))
+    except OSError:
+        break
+ok("a room takes a household, not a crowd",
+   len(_crowd) <= _MAXG, len(_crowd))
+ok("and the phone already in it is the one kept",
+   through_relay("POST", "/api/agents/list", {}, away)[0] == 200)
+for _g in _crowd:
+    try:
+        _g.sock.close()
+    except OSError:
+        pass
+time.sleep(0.6)
+
+# The Worker says the same things as the relay beside it.
+_wk2 = io.open(os.path.join(ROOT, 'relay', 'worker', 'worker.js'), encoding='utf-8').read()
+ok("the Worker caps a room too", 'GUEST_MAX' in _wk2 and 'room-full' in _wk2)
+# Comments stripped first: the comment explaining what this used to do necessarily
+# contains the thing the code must no longer do.
+_code2 = re.sub(r'//.*', '', _wk2)
+ok("the Worker refuses a long room id rather than cutting it",
+   'room.length > ROOM_MAX' in _code2 and '.slice(0, ROOM_MAX)' not in _code2)
+ok("the Worker reads the identifiers from headers", 'x-olivaw-' in _wk2)
+
+# And what it writes down. A log that could answer 'who met here' would be the same
+# leak as reading the traffic, arriving by a more respectable route.
+_said = [L for L in _code2.split('\n') if 'say(' in L and 'function say' not in L]
+# The VALUES, not the words: "wrong-key" is a reason, `key` would be the secret. So
+# the string literals come out and what is left is only identifiers.
+_bare = [re.sub(r'"[^"]*"', '', L) for L in _said]
+ok("nothing it logs carries a room or a key",
+   bool(_said) and not any(re.search(r'\\b(room|key)\\b', L) for L in _bare),
+   _bare)
+_toml = io.open(os.path.join(ROOT, 'relay', 'worker', 'wrangler.toml'),
+                encoding='utf-8').read()
+ok("its own logs are on", '[observability]' in _toml and 'enabled = true' in _toml)
+ok("but not the one that would record the URL", 'invocation_logs = false' in _toml)
+
 # ── the way home ───────────────────────────────────────────────────────────────────────
 # A phone that was paired before the rendezvous existed has to be able to learn about it,
 # and the only moment it can is while it can still reach the house.

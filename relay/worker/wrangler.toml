@@ -17,3 +17,30 @@ class_name = "Room"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Room"]
+
+# Observability, and the two deliberate holes in it.
+#
+# A rendezvous that cannot be asked who met here is the entire proposition, so the
+# usual advice - turn everything on - needs reading against that. What is on: our own
+# structured logs, which carry a role, an outcome and a count, and never an id.
+#
+# invocation_logs = false, because the automatic per-request log records the URL, and
+# an install that has not updated yet still puts its room id and its room KEY in the
+# query string. Those would sit in the dashboard for three days. Nothing is lost: for
+# a byte pipe, 'a request arrived' is exactly the line that says nothing useful.
+#
+# traces are off for the same reason and no other: the fetch handler span records
+# url.full, which is the whole URL, query string included. Turn them on - with a low
+# head_sampling_rate - once no install is old enough to put a key in a URL, which
+# means every house running a build with X-Olivaw-Key. Then there is nothing in a URL
+# worth hiding and traces are worth having.
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+invocation_logs = false
+head_sampling_rate = 1
+
+[observability.traces]
+enabled = false

@@ -22,6 +22,30 @@
 
 const ROOM_MAX = 64;
 
+// How many phones may be in one room at once. The room belongs to the computer, so
+// every phone paired to it meets here, and a household with three is ordinary. The
+// cap is there because the room id is the only thing standing between a stranger and
+// an attachment: they still meet a TLS endpoint that will not talk to them, but with
+// no cap they could sit here in numbers and have every frame the house sends copied
+// to each of them, which is somebody else's quota. The NEWCOMER is refused rather
+// than the oldest evicted - evicting would let whoever guessed the id push the
+// owner's own phone out of its room.
+const GUEST_MAX = 8;
+
+// Where role, room and key travel.
+//
+// They used to be query parameters, which is the worst place to put a secret: the URL
+// is the part of a request that everything logs. Cloudflare's own handler span records
+// `url.full`, so enabling traces would have written every house's room key into the
+// dashboard - see the note in wrangler.toml. They are headers now.
+//
+// The query string is still read, because an install that has not updated yet is still
+// an install that should work. That fallback is exactly why invocation logs stay off.
+function pick(request, url, name) {
+  return (request.headers.get("x-olivaw-" + name)
+          || url.searchParams.get(name) || "").trim();
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -36,10 +60,17 @@ export default {
       return new Response("websocket only", { status: 400 });
     }
 
-    const role = url.searchParams.get("role") || "";
-    const room = (url.searchParams.get("room") || "").slice(0, ROOM_MAX);
+    const role = pick(request, url, "role");
+    const room = pick(request, url, "room");
     if ((role !== "host" && role !== "guest") || !room) {
       return new Response("bad request", { status: 400 });
+    }
+    // Refused, not shortened. This used to be .slice(0, ROOM_MAX), which silently
+    // merges two rooms that happen to share a prefix - and the thing being truncated
+    // is the identifier that decides which computer you reach. Ids are about twenty
+    // characters, so nothing legitimate is anywhere near this.
+    if (room.length > ROOM_MAX) {
+      return new Response("room id too long", { status: 400 });
     }
     // One Durable Object per room: the room id IS the name, so both ends of the same
     // pairing land in the same object wherever in the world they dial from.
@@ -60,8 +91,8 @@ export class Room {
 
   async fetch(request) {
     const url = new URL(request.url);
-    const role = url.searchParams.get("role");
-    const key = url.searchParams.get("key") || "";
+    const role = pick(request, url, "role");
+    const key = pick(request, url, "key");
 
     // Hashed BEFORE the room is read, which is the whole point of the order.
     // Cloudflare's input gates stop other events interleaving *during a storage
@@ -78,6 +109,7 @@ export class Room {
         await this.state.storage.put("key", hash);
       } else if (!timingSafeEqual(claimed, hash)) {
         // A room belongs to whoever registered it first, and only to them.
+        say("refused", { role, reason: "wrong-key" });
         return new Response("room refused", { status: 403 });
       }
       // A reconnecting house replaces the old one: a laptop that slept leaves a socket
@@ -88,15 +120,24 @@ export class Room {
     } else {
       // A guest needs no key - the room id is the secret, and a guest who guesses one
       // still meets a TLS endpoint that will not talk to it.
-      if (claimed === undefined) return new Response("no host here", { status: 403 });
+      if (claimed === undefined) {
+        say("refused", { role, reason: "no-such-room" });
+        return new Response("no host here", { status: 403 });
+      }
       if (this.state.getWebSockets("host").length === 0) {
+        say("refused", { role, reason: "computer-not-attached" });
         return new Response("the computer is not attached", { status: 409 });
+      }
+      if (this.state.getWebSockets("guest").length >= GUEST_MAX) {
+        say("refused", { role, reason: "room-full", guests: GUEST_MAX });
+        return new Response("too many phones in this room", { status: 429 });
       }
     }
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     this.state.acceptWebSocket(server, [role]);
+    say("attached", { role, guests: this.state.getWebSockets("guest").length });
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -127,6 +168,18 @@ export class Room {
   webSocketError(ws) {
     try { ws.close(1011, "error"); } catch (e) { /* gone */ }
   }
+}
+
+// What this is allowed to write down.
+//
+// Structured so it can be queried, and deliberately thin: a role, an outcome, a
+// count. No room id, no key, no address. The point of this rendezvous is that it
+// cannot tell you who met here, and a log that answered that question would be the
+// same leak as reading the traffic, arriving by a more respectable route.
+function say(event, fields) {
+  try {
+    console.log(JSON.stringify({ event, ...fields }));
+  } catch (e) { /* a log must never be the reason a phone cannot connect */ }
 }
 
 async function sha256hex(text) {
