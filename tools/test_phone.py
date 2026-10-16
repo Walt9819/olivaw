@@ -658,6 +658,37 @@ ok("the timeout is caught before the generic failure",
    _recv.index('except socket.timeout:') < (_recv.index('except OSError')
                                             if 'except OSError' in _recv else 1 << 30))
 
+# ── getting past whatever sits in front of the rendezvous ──────────────────────────────
+# A relay may well be behind a CDN. Cloudflare answers a WebSocket handshake with no
+# User-Agent with 530 and a body of 'error code: 1010' - its browser-integrity check -
+# and the only symptom at either end is a rendezvous that will not take the connection,
+# with nothing said about why.
+_rc = io.open(os.path.join(ROOT, 'src', 'wizard', 'relay_client.py'),
+              encoding='utf-8').read()
+ok("the computer names itself to the rendezvous",
+   'USER_AGENT' in _rc and 'User-Agent: %s' in _rc)
+_dart_relay = os.path.join(ROOT, 'app', 'lib', 'relay.dart')
+if os.path.exists(_dart_relay):
+    _dr = io.open(_dart_relay, encoding='utf-8').read()
+    ok("and so does the phone", 'User-Agent: Olivaw' in _dr)
+
+# A stale address is not an impostor. An address written down on one network can belong
+# to something else entirely on another - a tether address is routable again the moment
+# the phone is on mobile data - and reporting that as 'your computer presented a
+# different certificate' accuses the wrong machine AND hides the rendezvous.
+_link = os.path.join(ROOT, 'app', 'lib', 'link.dart')
+if os.path.exists(_link):
+    _lk = io.open(_link, encoding='utf-8').read()
+    _reach = _lk[_lk.index('Future<Map<String, dynamic>> reach'):]
+    _reach = _reach[:_reach.index('Future<bool> rediscover')]
+    ok("a handshake failure on a direct address falls back",
+       'rediscover()' in _reach.split('on HandshakeException')[1])
+    ok("and only gives up when there is no rendezvous to try",
+       _reach.split('on HandshakeException')[1].count('if (!hasRelay) rethrow;') == 1)
+    # Sweeping 254 carrier addresses on a metered connection, for a machine that cannot
+    # be there.
+    ok("the sweep stays on private networks", 'bool _private(String ip)' in _lk)
+
 # ── voice notes ────────────────────────────────────────────────────────────────────────
 # A recording says the same kinds of things a typed message does, so it needs the same
 # permission and no more. The microphone itself is the phone's to guard.

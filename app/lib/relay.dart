@@ -59,6 +59,12 @@ class Relay {
       'Upgrade: websocket',
       'Connection: Upgrade',
       'Sec-WebSocket-Key: $key',
+      // A CDN in front of the rendezvous may refuse a handshake that carries no
+      // User-Agent. Cloudflare answers one with 530 and a body of "error code: 1010",
+      // and the only symptom at this end is a rendezvous that will not let the phone
+      // in, with nothing said about why. Named rather than browser-shaped: the point is
+      // to have one, not to pretend to be Chrome.
+      'User-Agent: Olivaw/1.0 (Android)',
       'Sec-WebSocket-Version: 13',
       '',
       '',

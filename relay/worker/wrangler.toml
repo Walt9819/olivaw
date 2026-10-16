@@ -1,5 +1,6 @@
 name = "olivaw-relay"
-main = "src/index.js"
+# The worker itself, not a copy of it under src/. One file, one place.
+main = "worker.js"
 compatibility_date = "2026-09-01"
 
 # The free plan. Nothing here needs a paid one: a Durable Object sleeps while nobody is

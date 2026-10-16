@@ -78,11 +78,17 @@ class WSClient(object):
         self.lock = threading.Lock()
         key = base64.b64encode(os.urandom(16)).decode()
         path = (u.path or "/") + (("?" + u.query) if u.query else "")
+        # A User-Agent, because a rendezvous may well sit behind a CDN that refuses a
+        # request without one. Cloudflare answers a bare handshake with 530 and a body
+        # of "error code: 1010" - its browser-integrity check - and the only symptom at
+        # this end is a relay that will not take the attachment, with nothing said about
+        # why. Named rather than browser-shaped: the point is to HAVE one.
         self.sock.sendall((
             "GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\n"
             "Connection: Upgrade\r\nSec-WebSocket-Key: %s\r\n"
+            "User-Agent: %s\r\n"
             "Sec-WebSocket-Version: 13\r\n\r\n"
-            % (path, u.netloc, key)).encode())
+            % (path, u.netloc, key, USER_AGENT)).encode())
         buf = b""
         while b"\r\n\r\n" not in buf:
             chunk = self.sock.recv(4096)
@@ -294,6 +300,11 @@ CONF = "relay.json"
 # the socket timeout is over a minute of silence with no pong, which is long enough to
 # ride out a slow network and short enough to reconnect before anybody notices.
 QUIET_PINGS = 4
+
+# What this machine calls itself to the rendezvous. Named rather than browser-shaped:
+# the point is to HAVE one, because a CDN in front of the relay may refuse a request
+# without it, not to pretend to be a browser.
+USER_AGENT = "Olivaw/1.0 (+https://github.com/Walt9819/olivaw)"
 
 
 def config(install_dir):

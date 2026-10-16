@@ -293,10 +293,38 @@ class Link {
         }
         if (!hasRelay) rethrow;
       } on HandshakeException {
-        rethrow; // a wrong certificate is never something to retry around
+        // NOT an impostor - just not the computer. An address this phone wrote down on
+        // one network can belong to something else entirely on another: a stale tether
+        // address is routable again the moment the phone is on mobile data, and
+        // whatever answers there is some carrier box that fails the pinned check, as it
+        // should. Reporting that as "your computer presented a different certificate"
+        // accuses the wrong machine AND hides the rendezvous, which is sitting right
+        // there and is addressed by room rather than by IP.
+        //
+        // The pinned certificate still protects us: nothing was said to that host, and
+        // nothing will be. A handshake failure on the RELAY path is a different matter
+        // and is left to propagate - that one really is the computer answering wrongly.
+        if (await rediscover()) {
+          return await call(method, path, body: body, auth: auth, wait: wait);
+        }
+        if (!hasRelay) rethrow;
       }
     }
     return call(method, path, body: body, auth: auth, viaRelay: true, wait: wait);
+  }
+
+  /// The private ranges, where a computer on the same network as this phone lives.
+  /// Anything else is the carrier's, or the internet's, and not somewhere to go looking.
+  static bool _private(String ip) {
+    final p = ip.split('.');
+    if (p.length != 4) return false;
+    final a = int.tryParse(p[0]) ?? -1;
+    final b = int.tryParse(p[1]) ?? -1;
+    if (a == 10) return true;
+    if (a == 192 && b == 168) return true;
+    if (a == 172 && b >= 16 && b <= 31) return true;
+    if (a == 169 && b == 254) return true;   // link-local, which a USB tether uses
+    return false;
   }
 
   /// Look again for the computer this phone is paired WITH, on whatever network it is on
@@ -312,6 +340,11 @@ class Link {
     for (final ni in await NetworkInterface.list(type: InternetAddressType.IPv4)) {
       for (final a in ni.addresses) {
         if (a.isLoopback) continue;
+        // Only the ranges a home computer can actually be on. On mobile data the
+        // phone's own addresses are the carrier's, and sweeping 254 of those is a
+        // couple of hundred pointless connections to somebody else's network - on a
+        // metered connection, looking for a machine that cannot be there.
+        if (!_private(a.address)) continue;
         final parts = a.address.split('.');
         if (parts.length == 4) bases.add('${parts[0]}.${parts[1]}.${parts[2]}');
       }
