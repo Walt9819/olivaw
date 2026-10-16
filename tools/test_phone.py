@@ -640,6 +640,24 @@ ok("and gets an id to fetch it by",
 ok("a path that is not there is not offered",
    not any(f.get('name') == 'falta.png' for f in _files), _files)
 
+# ── a rendezvous nobody is using ───────────────────────────────────────────────────────
+# The normal state of an attachment is SILENCE: the phone is in a pocket. The socket
+# timeout is a heartbeat interval, not a death, and reading it as one made this machine
+# attach, drop twenty seconds later and back off - forever, without ever being
+# reachable. The fix is that a timeout at a frame boundary sends a ping and waits again.
+_src = io.open(os.path.join(ROOT, 'src', 'wizard', 'relay_client.py'),
+               encoding='utf-8').read()
+ok("a quiet attachment is not treated as a dead one",
+   'except socket.timeout:' in _src and 'QUIET_PINGS' in _src)
+ok("and it pings rather than just waiting forever",
+   "self.send(b'', op=0x9)" in _src)
+# socket.timeout IS TimeoutError IS OSError, so the order of the handlers decides
+# whether this works at all.
+_recv = _src[_src.index('def recv(self)'):]
+ok("the timeout is caught before the generic failure",
+   _recv.index('except socket.timeout:') < (_recv.index('except OSError')
+                                            if 'except OSError' in _recv else 1 << 30))
+
 # ── voice notes ────────────────────────────────────────────────────────────────────────
 # A recording says the same kinds of things a typed message does, so it needs the same
 # permission and no more. The microphone itself is the phone's to guard.

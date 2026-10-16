@@ -1065,6 +1065,28 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
     });
   }
 
+  /// What the selection toolbar offers for one message, beyond copy and select-all.
+  ///
+  /// Partial selection is the default and stays the default: a long press selects, and
+  /// copying half an answer is the thing people actually do with an agent's reply.
+  /// These are the message-level actions, in the menu that is already open.
+  List<(String, VoidCallback)> _actionsFor(Map<String, dynamic> m, bool mine) {
+    final text = (m['text'] ?? '').toString();
+    return [
+      (tr('Copiar todo'), () async {
+        await Clipboard.setData(ClipboardData(text: text));
+        _say(tr('Copiado'));
+      }),
+      (tr('Responder'), () => setState(() => _replyTo = m)),
+      if (mine && _ready)
+        (tr('Volver a enviar'), () {
+          _input.text = text;
+          _input.selection = TextSelection.collapsed(offset: text.length);
+          setState(() {});
+        }),
+    ];
+  }
+
   /// Is this the match the arrows are currently pointing at?
   bool _isCurrentHit(Map<String, dynamic> m) {
     final hits = _hits;
@@ -1741,10 +1763,14 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
                     );
                   }
                   final body2 = mine
-                      ? Text(body, style: TextStyle(color: ink))
+                      ? SelectableText(body,
+                          style: TextStyle(color: ink),
+                          contextMenuBuilder: menuFor(_actionsFor(m, mine)))
                       : Markdown(body,
                           baseStyle: TextStyle(color: ink, height: 1.35),
-                          onLink: _openLink);
+                          onLink: _openLink,
+                          highlight: _query.trim(),
+                          actions: _actionsFor(m, mine));
                   if (files.isEmpty) return body2;
                   return Column(
                     crossAxisAlignment: CrossAxisAlignment.start,

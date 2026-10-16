@@ -53,6 +53,18 @@
             android:name=".WaitingService"
             android:exported="false"
             android:foregroundServiceType="dataSync"/>
+        <!-- How a file reaches the app that can open it. Scoped to one cache folder:
+             a provider over the whole data directory would hand the pairing token and
+             the pinned certificate to whatever opened a PDF. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths"/>
+        </provider>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

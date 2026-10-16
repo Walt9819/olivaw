@@ -120,8 +120,27 @@ class WSClient(object):
     def recv(self):
         """One complete message, fragments joined. None for a control frame."""
         parts = []
+        quiet = 0
         while True:
-            b1, b2 = self._exact(2)
+            # A rendezvous with nobody on the other end of it is SILENT, and silence is
+            # the normal state: the phone is in a pocket. The socket timeout is a
+            # heartbeat interval, not a death. Treating it as one made this machine
+            # attach, drop twenty seconds later, and back off - forever, without ever
+            # being reachable.
+            #
+            # Only at a frame boundary. Once a frame has started, a timeout means the
+            # far side stopped mid-message, which IS broken.
+            try:
+                b1, b2 = self._exact(2)
+            except socket.timeout:
+                quiet += 1
+                if quiet > QUIET_PINGS:
+                    raise OSError('the relay stopped answering')
+                # Ours to send: it keeps the path open through whatever NAT and proxies
+                # are between here and there, and proves the far side is still there.
+                self.send(b'', op=0x9)
+                continue
+            quiet = 0
             fin, op = b1 & 0x80, b1 & 0x0F
             n = b2 & 0x7F
             if n == 126:
@@ -269,6 +288,12 @@ def _loop(url, room, key, local_port):
 # ── configuration ──────────────────────────────────────────────────────────────────────
 
 CONF = "relay.json"
+
+
+# How many quiet heartbeats before an attachment is considered dead. Four of them at
+# the socket timeout is over a minute of silence with no pong, which is long enough to
+# ride out a slow network and short enough to reconnect before anybody notices.
+QUIET_PINGS = 4
 
 
 def config(install_dir):

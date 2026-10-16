@@ -332,4 +332,16 @@ const Map<String, (String, String)> _table = {
   'No pude leer ese archivo.': ('I could not read that file.', 'Ich konnte diese Datei nicht lesen.'),
   'No encontré un puerto libre para hablar con el agente.': ('I could not find a free port to talk to the agent.', 'Ich habe keinen freien Port gefunden, um mit dem Agenten zu sprechen.'),
   'Este ordenador no tiene instalado el transcriptor de voz.': ('This computer does not have the voice transcriber installed.', 'Auf diesem Computer ist der Transkriptor nicht installiert.'),
+  'Copiar todo': ('Copy all', 'Alles kopieren'),
+  'Copiado': ('Copied', 'Kopiert'),
+  'Responder': ('Reply', 'Antworten'),
+  'Volver a enviar': ('Send again', 'Erneut senden'),
+  'Ese tipo de archivo no se abre desde aquí.': (
+    'That kind of file is not opened from here.',
+    'Diese Art von Datei wird hier nicht geöffnet.'
+  ),
+  'No hay ninguna app para abrir eso.': (
+    'There is no app to open that.',
+    'Es gibt keine App, die das öffnen kann.'
+  ),
 };

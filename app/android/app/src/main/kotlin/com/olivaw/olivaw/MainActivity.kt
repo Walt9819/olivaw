@@ -62,6 +62,8 @@ class MainActivity : FlutterActivity() {
                                call.argument<String>("body"), result)
             "canNotify" -> result.success(canNotify())
             "askNotify" -> askNotify(result)
+            "openFile" -> openFile(call.argument<String>("name"),
+                                   call.argument<ByteArray>("bytes"), result)
             "save" -> save(call.argument<String>("name"),
                            call.argument<ByteArray>("bytes"), result)
             "playStart" -> playStart(call.argument<ByteArray>("bytes"),
@@ -289,6 +291,53 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    /**
+     * Hand a file to whatever app can open it - an HTML page to the browser, a PDF to
+     * a reader - without it going through Downloads first.
+     *
+     * Written to a cache folder the FileProvider can serve, and shared read-only for
+     * the life of the intent. Saving is still there for keeping a copy; this is for
+     * looking at the thing, which is what most files are for.
+     *
+     * Some types are refused outright. The file came from an agent, which is a model
+     * writing to disk, and an .apk handed to ACTION_VIEW is an install prompt - a long
+     * way from 'open the deck he sent me'.
+     */
+    private fun openFile(name: String?, bytes: ByteArray?, result: MethodChannel.Result) {
+        if (name.isNullOrBlank() || bytes == null || bytes.isEmpty()) {
+            result.error("empty", "Nada que abrir.", null); return
+        }
+        val safe = name.replace(Regex("""[\/:*?"<>|]"""), "_")
+            .trimStart('.').take(120).ifBlank { "archivo" }
+        val ext = safe.substringAfterLast('.', "").lowercase()
+        if (ext in setOf("apk", "exe", "msi", "bat", "cmd", "sh", "jar", "dll")) {
+            result.error("kind", "Ese tipo de archivo no se abre desde aquí.", null)
+            return
+        }
+        try {
+            val dir = File(cacheDir, "compartidos")
+            dir.mkdirs()
+            // One at a time: the folder is a staging area, not a store, and a phone
+            // should not accumulate every file anybody ever looked at.
+            dir.listFiles()?.forEach { try { it.delete() } catch (e: Exception) { } }
+            val f = File(dir, safe)
+            f.writeBytes(bytes)
+            val uri = androidx.core.content.FileProvider.getUriForFile(
+                this, "$packageName.files", f)
+            val view = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, guessMime(safe))
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(view)
+            result.success(true)
+        } catch (e: android.content.ActivityNotFoundException) {
+            result.error("noapp", "No hay ninguna app para abrir eso.", null)
+        } catch (e: Exception) {
+            result.error("open", e.message, null)
+        }
+    }
+
     private fun guessMime(name: String): String {
         val ext = name.substringAfterLast('.', "").lowercase()
         return when (ext) {
@@ -296,6 +345,8 @@ class MainActivity : FlutterActivity() {
             "jpg", "jpeg" -> "image/jpeg"
             "gif" -> "image/gif"
             "webp" -> "image/webp"
+            "html", "htm" -> "text/html"
+            "md" -> "text/markdown"
             "pdf" -> "application/pdf"
             "txt", "md", "log" -> "text/plain"
             "csv" -> "text/csv"

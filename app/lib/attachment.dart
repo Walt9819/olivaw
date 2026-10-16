@@ -151,6 +151,7 @@ class Attachment extends StatelessWidget {
       padding: const EdgeInsets.only(top: 4),
       child: InkWell(
         onTap: fetchable ? () => _download(context) : null,
+        onLongPress: fetchable ? () => saveCopy(context) : null,
         child: Row(mainAxisSize: MainAxisSize.min, children: [
           Icon(
               missing
@@ -210,7 +211,41 @@ class Attachment extends StatelessWidget {
     return bytes;
   }
 
+  /// Tapping a file OPENS it. Saving is the long press.
+  ///
+  /// An HTML page is the case that made this obvious: downloading it, finding it in
+  /// Downloads and picking a browser is four steps to read a thing somebody sent you,
+  /// and three of them are about file management rather than about the page.
   Future<void> _download(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final bytes = await fetch();
+      if (bytes == null) return;
+      await Native.openFile(_name, bytes);
+    } on NativeError catch (e) {
+      // Nothing on the phone can open it: saving it is the next best thing, and the
+      // owner still ends up with the file.
+      if (e.code == 'noapp' || e.code == 'kind') {
+        try {
+          final bytes = await fetch();
+          if (bytes == null) return;
+          final where = await Native.save(_name, bytes);
+          messenger.showSnackBar(
+              SnackBar(content: Text(trp('Guardado en {0}', [where]))));
+          return;
+        } on NativeError catch (e2) {
+          messenger.showSnackBar(SnackBar(content: Text(e2.message)));
+          return;
+        }
+      }
+      messenger.showSnackBar(SnackBar(content: Text(e.message)));
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(humanError(e))));
+    }
+  }
+
+  /// Keep a copy, from the long press.
+  Future<void> saveCopy(BuildContext context) async {
     final messenger = ScaffoldMessenger.of(context);
     try {
       final bytes = await fetch();

@@ -26,11 +26,25 @@ import 'theme.dart';
 
 /// Renders [source] as a column of blocks.
 class Markdown extends StatelessWidget {
-  const Markdown(this.source, {super.key, this.baseStyle, this.onLink});
+  const Markdown(this.source,
+      {super.key,
+      this.baseStyle,
+      this.onLink,
+      this.highlight = '',
+      this.actions = const []});
 
   final String source;
   final TextStyle? baseStyle;
   final void Function(String url)? onLink;
+
+  /// What a search is looking for, marked wherever it appears. Empty for no search.
+  final String highlight;
+
+  /// Extra entries for the selection toolbar: copy the whole message, reply to it,
+  /// ask it again. They live there rather than behind a long press of their own
+  /// because a long press already means 'select', and taking that away would make it
+  /// impossible to copy half of an answer - which is the thing people actually do.
+  final List<(String, VoidCallback)> actions;
 
   @override
   Widget build(BuildContext context) {
@@ -42,26 +56,53 @@ class Markdown extends StatelessWidget {
       children: [
         for (var i = 0; i < blocks.length; i++) ...[
           if (i > 0) SizedBox(height: blocks[i].gapBefore),
-          blocks[i].build(context, base, onLink),
+          blocks[i].build(context, base, onLink, highlight, actions),
         ],
       ],
     );
   }
 }
 
+/// The selection toolbar, with this message's own actions added to it.
+///
+/// Flutter's defaults (copy, select all, share) stay exactly where they were: the
+/// point is to ADD to the menu a thumb already knows, not to replace it.
+Widget Function(BuildContext, EditableTextState) menuFor(
+    List<(String, VoidCallback)> actions) {
+  return (BuildContext context, EditableTextState state) {
+    return AdaptiveTextSelectionToolbar.buttonItems(
+      anchors: state.contextMenuAnchors,
+      buttonItems: [
+        ...state.contextMenuButtonItems,
+        for (final (label, run) in actions)
+          ContextMenuButtonItem(
+            label: label,
+            onPressed: () {
+              ContextMenuController.removeAny();
+              run();
+            },
+          ),
+      ],
+    );
+  };
+}
+
 // ── blocks ────────────────────────────────────────────────────────────────────────────
 
 abstract class _Block {
   double get gapBefore => 8;
-  Widget build(BuildContext c, TextStyle base, void Function(String)? onLink);
+  Widget build(BuildContext c, TextStyle base, void Function(String)? onLink,
+      String hl, List<(String, VoidCallback)> actions);
 }
 
 class _Paragraph extends _Block {
   _Paragraph(this.text);
   final String text;
   @override
-  Widget build(BuildContext c, TextStyle base, void Function(String)? onLink) =>
-      SelectableText.rich(TextSpan(children: _inline(c, text, base, onLink)));
+  Widget build(BuildContext c, TextStyle base, void Function(String)? onLink,
+          String hl, List<(String, VoidCallback)> actions) =>
+      SelectableText.rich(TextSpan(children: _inline(c, text, base, onLink, hl)),
+          contextMenuBuilder: menuFor(actions));
 }
 
 class _Heading extends _Block {
@@ -71,7 +112,8 @@ class _Heading extends _Block {
   @override
   double get gapBefore => level <= 2 ? 16 : 12;
   @override
-  Widget build(BuildContext c, TextStyle base, void Function(String)? onLink) {
+  Widget build(BuildContext c, TextStyle base, void Function(String)? onLink,
+      String hl, List<(String, VoidCallback)> actions) {
     // Four sizes for six levels: past h4 the difference stops being legible on a phone
     // and starts being noise.
     const scale = [1.5, 1.32, 1.16, 1.06, 1.0, 1.0];
@@ -80,7 +122,8 @@ class _Heading extends _Block {
       fontWeight: FontWeight.w700,
       height: 1.25,
     );
-    return SelectableText.rich(TextSpan(children: _inline(c, text, style, onLink)));
+    return SelectableText.rich(TextSpan(children: _inline(c, text, style, onLink, hl)),
+        contextMenuBuilder: menuFor(actions));
   }
 }
 
@@ -89,7 +132,8 @@ class _Code extends _Block {
   final String code;
   final String language;
   @override
-  Widget build(BuildContext c, TextStyle base, void Function(String)? onLink) {
+  Widget build(BuildContext c, TextStyle base, void Function(String)? onLink,
+      String hl, List<(String, VoidCallback)> actions) {
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.symmetric(vertical: 2),
@@ -133,14 +177,17 @@ class _Quote extends _Block {
   _Quote(this.text);
   final String text;
   @override
-  Widget build(BuildContext c, TextStyle base, void Function(String)? onLink) {
+  Widget build(BuildContext c, TextStyle base, void Function(String)? onLink,
+      String hl, List<(String, VoidCallback)> actions) {
     return Container(
       padding: const EdgeInsets.only(left: 10),
       decoration: BoxDecoration(
         border: Border(left: BorderSide(color: c.c.accent, width: 3)),
       ),
-      child: SelectableText.rich(TextSpan(
-          children: _inline(c, text, base.copyWith(color: c.c.muted), onLink))),
+      child: SelectableText.rich(
+          TextSpan(
+              children: _inline(c, text, base.copyWith(color: c.c.muted), onLink, hl)),
+          contextMenuBuilder: menuFor(actions)),
     );
   }
 }
@@ -153,7 +200,8 @@ class _ListItem extends _Block {
   @override
   double get gapBefore => 4;
   @override
-  Widget build(BuildContext c, TextStyle base, void Function(String)? onLink) {
+  Widget build(BuildContext c, TextStyle base, void Function(String)? onLink,
+      String hl, List<(String, VoidCallback)> actions) {
     return Padding(
       padding: EdgeInsets.only(left: 4.0 + depth * 16),
       child: Row(
@@ -166,7 +214,9 @@ class _ListItem extends _Block {
                     color: c.c.muted, fontFeatures: const [FontFeature.tabularFigures()])),
           ),
           Expanded(
-            child: SelectableText.rich(TextSpan(children: _inline(c, text, base, onLink))),
+            child: SelectableText.rich(
+                TextSpan(children: _inline(c, text, base, onLink, hl)),
+                contextMenuBuilder: menuFor(actions)),
           ),
         ],
       ),
@@ -176,7 +226,8 @@ class _ListItem extends _Block {
 
 class _Rule extends _Block {
   @override
-  Widget build(BuildContext c, TextStyle base, void Function(String)? onLink) =>
+  Widget build(BuildContext c, TextStyle base, void Function(String)? onLink,
+          String hl, List<(String, VoidCallback)> actions) =>
       Padding(
         padding: const EdgeInsets.symmetric(vertical: 4),
         child: Divider(color: c.c.line, height: 1),
@@ -188,7 +239,8 @@ class _Table extends _Block {
   final List<List<String>> rows;
   final bool hasHeader;
   @override
-  Widget build(BuildContext c, TextStyle base, void Function(String)? onLink) {
+  Widget build(BuildContext c, TextStyle base, void Function(String)? onLink,
+      String hl, List<(String, VoidCallback)> actions) {
     // Scrolls sideways instead of squeezing: three columns of numbers crushed into a
     // phone's width are not a table any more.
     return SingleChildScrollView(
@@ -225,7 +277,8 @@ class _Table extends _Block {
                                 hasHeader && r == 0
                                     ? base.copyWith(fontWeight: FontWeight.w700)
                                     : base,
-                                onLink))),
+                                onLink,
+                                hl))),
                       ),
                   ],
                 ),
@@ -354,14 +407,49 @@ List<_Block> _parseBlocks(String src) {
 /// ambiguous, and the failure that matters here is not "an edge case nested wrongly" but
 /// "an asterisk the agent meant literally ate the rest of the message". Anything that
 /// does not close is emitted as the text that was written.
-List<InlineSpan> _inline(
-    BuildContext c, String text, TextStyle base, void Function(String)? onLink) {
+List<InlineSpan> _inline(BuildContext c, String text, TextStyle base,
+    void Function(String)? onLink, String hl) {
   final spans = <InlineSpan>[];
   final buf = StringBuffer();
 
+  /// Emit [t] in [style], with every occurrence of the search term marked.
+  ///
+  /// Done at the point the text is finally emitted rather than up front, so a term
+  /// that straddles a `**bold**` boundary marks the part inside each piece instead of
+  /// not matching at all - and so the marking survives whatever styling is around it.
+  void emit(String t, TextStyle style) {
+    if (t.isEmpty) return;
+    if (hl.isEmpty) {
+      spans.add(TextSpan(text: t, style: style));
+      return;
+    }
+    final hay = t.toLowerCase();
+    final needle = hl.toLowerCase();
+    var from = 0;
+    while (true) {
+      final at = hay.indexOf(needle, from);
+      if (at < 0) {
+        spans.add(TextSpan(text: t.substring(from), style: style));
+        return;
+      }
+      if (at > from) {
+        spans.add(TextSpan(text: t.substring(from, at), style: style));
+      }
+      spans.add(TextSpan(
+        text: t.substring(at, at + needle.length),
+        style: style.copyWith(
+          backgroundColor: c.c.warn.withValues(alpha: 0.45),
+          color: c.c.ink,
+          fontWeight: FontWeight.w700,
+        ),
+      ));
+      from = at + needle.length;
+    }
+  }
+
   void flush() {
     if (buf.isEmpty) return;
-    spans.add(TextSpan(text: buf.toString(), style: base));
+    emit(buf.toString(), base);
     buf.clear();
   }
 
@@ -402,7 +490,7 @@ List<InlineSpan> _inline(
         style = style.copyWith(fontWeight: FontWeight.w700);
         if (mark == '***') style = style.copyWith(fontStyle: FontStyle.italic);
       }
-      spans.addAll(_inline(c, text.substring(i + mark.length, end), style, onLink));
+      spans.addAll(_inline(c, text.substring(i + mark.length, end), style, onLink, hl));
       i = end + mark.length;
       matched = true;
       break;
@@ -420,7 +508,7 @@ List<InlineSpan> _inline(
           !text.substring(i + 1, end).contains('\n')) {
         flush();
         spans.addAll(_inline(c, text.substring(i + 1, end),
-            base.copyWith(fontStyle: FontStyle.italic), onLink));
+            base.copyWith(fontStyle: FontStyle.italic), onLink, hl));
         i = end + 1;
         continue;
       }

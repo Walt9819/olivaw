@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The one folder another app may be handed a file from.
+
+  Only the cache, and only the subfolder this app writes shared files into. A provider
+  that exposed the app's whole data directory would be handing the pairing token and the
+  pinned certificate to whatever opened a PDF.
+-->
+<paths>
+    <cache-path name="compartidos" path="compartidos/"/>
+</paths>

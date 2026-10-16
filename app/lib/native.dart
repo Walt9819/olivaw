@@ -69,6 +69,19 @@ class Native {
     }
   }
 
+  /// Hand a file to whatever app opens that kind - an HTML page to the browser, a PDF
+  /// to a reader - without it going through Downloads first.
+  ///
+  /// Saving is still there for keeping a copy. This is for looking at the thing, which
+  /// is what most files are actually for.
+  static Future<void> openFile(String name, Uint8List bytes) async {
+    try {
+      await _ch.invokeMethod('openFile', {'name': name, 'bytes': bytes});
+    } on PlatformException catch (e) {
+      throw NativeError(e.code, e.message ?? 'No pude abrir ese archivo.');
+    }
+  }
+
   /// Put [bytes] in the phone's Downloads under [name]. Returns where it landed.
   ///
   /// Through MediaStore on the Android side rather than a path: asking for the old
