@@ -1589,6 +1589,15 @@ def main():
     log(f"supervisor up. install={INSTALL_DIR} version={read_version()} "
         f"repo={cfg.get('repo')} auto_update={cfg.get('auto_update')}")
     _ensure_app_shortcut()
+    # The phone's door first, before anything that starts a gateway.
+    #
+    # Moving this to the top of the TICK was not enough: the loop does not begin
+    # until the startup pass below has started every agent, one at a time with a
+    # pause between each, which measured 85 seconds on this machine. A phone picked
+    # up in that window is told there is no computer - and the window is the minute
+    # after a laptop is opened, which is exactly when somebody picks up a phone. It
+    # binds a socket and dials out; nothing here depends on an agent being up.
+    _ensure_remote()
     if _registry:
         # Same repair from the other side: whichever process starts first fixes it.
         try:
