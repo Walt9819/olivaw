@@ -95,5 +95,7 @@ firebase-debug.log
 
 # wrangler's own cache. It holds the Cloudflare account id and name - not a
 # secret, but not this repository's business either.
+# wrangler writes this wherever it is run from, so both places are named.
+.wrangler/
 relay/worker/.wrangler/
 relay/worker/node_modules/
