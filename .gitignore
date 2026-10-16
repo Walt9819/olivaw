@@ -89,3 +89,6 @@ app/ios/
 
 # The transcriber keeps a running log beside itself.
 src/stt/stt.log
+
+# Left behind by a firebase CLI call; nothing to do with this project.
+firebase-debug.log
