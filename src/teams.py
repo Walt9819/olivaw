@@ -131,6 +131,12 @@ MAX_PENDING = 20
 MAX_TEAMS = 24
 MAX_TEAM_NAME = 40
 
+# One emoji, which is what a team icon is: a mark small enough to sit beside a name
+# in a list and still be recognised at twelve pixels. Clipped rather than validated,
+# because an emoji is one to eight code points depending on skin tone and joiners,
+# and a regex that tried to be exact about that would reject half of them.
+MAX_TEAM_ICON = 8
+
 
 def _norm(s):
     return (s or "").strip().lower()
@@ -215,6 +221,7 @@ def _clean(data):
                 members.append(slug)
             out["teams"].append({"id": gid,
                                  "name": _clip(g.get("name"), MAX_TEAM_NAME) or gid,
+                                 "icon": _clip(g.get("icon"), MAX_TEAM_ICON),
                                  "members": members})
 
     links = data.get("links")
@@ -619,7 +626,7 @@ def set_link(frm, to, why=None, why_back=None, both=None, max_turns=None,
     return save(data, install_dir)
 
 
-def set_team(team_id=None, name="", roster=None, install_dir=None):
+def set_team(team_id=None, name="", roster=None, install_dir=None, icon=None):
     """Create a team, or rename one. Never touches a link.
 
     The legacy case is the same trap `set_card` documents, and it has bitten once already:
@@ -647,6 +654,10 @@ def set_team(team_id=None, name="", roster=None, install_dir=None):
             if g["id"] == team_id:
                 if name:
                     g["name"] = name
+                # None means 'not mentioned' and "" means 'take it off', which are
+                # different requests: renaming a team must not silently drop its icon.
+                if icon is not None:
+                    g["icon"] = _clip(icon, MAX_TEAM_ICON)
                 return dict(save(data, install_dir), id=team_id, adopted=adopted)
         raise ValueError("No existe un equipo «%s»." % team_id)
 
@@ -655,7 +666,8 @@ def set_team(team_id=None, name="", roster=None, install_dir=None):
     if len(data["teams"]) >= MAX_TEAMS:
         raise ValueError("Ya hay %d equipos." % MAX_TEAMS)
     new_id = _team_slug(name, set(g["id"] for g in data["teams"]))
-    data["teams"].append({"id": new_id, "name": name, "members": []})
+    data["teams"].append({"id": new_id, "name": name,
+                          "icon": _clip(icon, MAX_TEAM_ICON), "members": []})
     return dict(save(data, install_dir), id=new_id, adopted=adopted)
 
 
@@ -824,6 +836,7 @@ def state(roster=None, install_dir=None):
     for g in teams_of(data):
         members = [m for m in g["members"] if m in here]
         groups.append({"id": g["id"], "name": g["name"], "members": members,
+                       "icon": g.get("icon", ""),
                        "count": len(members),
                        "stale": len(members) != len(g["members"])})
     # The bucket that makes the map drawable at all. An agent in no team - which is every

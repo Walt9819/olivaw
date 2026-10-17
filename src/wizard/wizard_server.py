@@ -335,6 +335,28 @@ def agents_snapshot():
     # every agent on every repaint, and a second round trip per agent would make the
     # list arrive in pieces. It is four short keys, not the image.
     default["look"] = avatars.look("default", default["name"], INSTALL_DIR)
+    # Which team each one is in, from the same read for all of them. It rides with
+    # the row for the reason the face does: a list that draws every agent should not
+    # need a second call per agent to say the one thing that groups them.
+    try:
+        _tstatus, _tdata = teams.read(INSTALL_DIR)
+    except Exception:  # noqa: BLE001
+        _tdata = None
+
+    def _team_badge(slug):
+        """{id, name, icon} for the team this agent is in, or None."""
+        if not _tdata:
+            return None
+        try:
+            g = teams.team_of(_tdata, slug)
+        except Exception:  # noqa: BLE001
+            return None
+        if not g:
+            return None
+        return {"id": g.get("id", ""), "name": g.get("name", ""),
+                "icon": g.get("icon", "")}
+
+    default["team"] = _team_badge("default")
     extra = []
     for a in _rows:
         slug = a.get("slug")
@@ -352,6 +374,7 @@ def agents_snapshot():
         # Left on this thread on purpose: look() may assign and write a face, and the
         # point of the pool above is the waiting, not the bookkeeping.
         row["look"] = avatars.look(slug, row.get("name") or slug, INSTALL_DIR)
+        row["team"] = _team_badge(slug)
         extra.append(row)
     return {"default": default, "extra": extra}
 
@@ -1296,8 +1319,12 @@ class Handler(BaseHTTPRequestHandler):
         elif what == "group":
             # Create or rename. `roster` travels so a legacy machine can adopt its live
             # mesh in the same write - see teams.set_team for why that is not optional.
+            # `icon` is passed through only when the caller mentioned it: None means
+            # "leave it alone" and "" means "take it off", and renaming a team must
+            # not quietly drop its mark.
             wrote = teams.set_team(body.get("id") or None, name=body.get("name", ""),
-                                   roster=roster, install_dir=INSTALL_DIR)
+                                   roster=roster, install_dir=INSTALL_DIR,
+                                   icon=body.get("icon"))
             if wrote.get("adopted"):
                 extra["adopted"] = True
             # NOT "team": that key already holds the entire map this reply repaints the

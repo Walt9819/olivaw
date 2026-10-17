@@ -2402,6 +2402,13 @@
     var rows = teams.map(function (g, gi) {
       return '<div class="tmgrp"><div class="row" style="align-items:center;gap:8px">' +
         '<span class="tmdot c' + (gi % 6) + '"></span>' +
+        // A mark for the team, which the phone shows beside every agent in it. One
+        // emoji wide: it has to be legible at twelve pixels in a list, and anything
+        // longer stops being a mark and becomes a second name.
+        '<input type="text" class="tmGIcon" data-g="' + esc(g.id) + '" maxlength="8" ' +
+        'value="' + esc(g.icon || "") + '" title="Un emoji para el equipo" ' +
+        'placeholder="🙂" aria-label="S\u00edmbolo del equipo" ' +
+        'style="width:3.2em;text-align:center">' +
         '<input type="text" class="tmGName" data-g="' + esc(g.id) + '" maxlength="40" ' +
         'value="' + esc(g.name) + '" aria-label="Nombre del equipo">' +
         '<span class="muted small">' + g.count +
@@ -3026,6 +3033,15 @@
     each(".tmGName", function (inp) {
       inp.onchange = function () {
         teamSave(null, { id: inp.getAttribute("data-g"), name: inp.value },
+                 "teams/group");
+      };
+    });
+    each(".tmGIcon", function (inp) {
+      inp.onchange = function () {
+        // `icon` is sent on its own: the server leaves it alone when it is not
+        // mentioned, so renaming a team never drops its mark and clearing the box
+        // is how you take one off.
+        teamSave(null, { id: inp.getAttribute("data-g"), icon: inp.value },
                  "teams/group");
       };
     });

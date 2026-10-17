@@ -198,12 +198,12 @@ class Attachment extends StatelessWidget {
                 else if (human.isNotEmpty || !fetchable)
                   Text(
                     missing
-                        ? 'ya no está en el computadora'
+                        ? 'ya no está en la computadora'
                         : fetchable
                             ? human
                             // Too big to come down the wire. Saying where it is beats a
                             // button that cannot work.
-                            : [human, if (folder.isNotEmpty) 'en el computadora']
+                            : [human, if (folder.isNotEmpty) 'en la computadora']
                                 .where((s) => s.isNotEmpty)
                                 .join(' · '),
                     style: TextStyle(fontSize: 11, color: ink.withValues(alpha: 0.7)),

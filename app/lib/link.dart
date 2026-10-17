@@ -108,7 +108,7 @@ String humanError(Object e) {
   if (e is LinkError) return e.message;
   if (e is HandshakeException) {
     // Never softened: this is the one error that can mean somebody else is answering.
-    return 'Ese computadora presentó un certificado distinto. No he enviado nada. Vuelve a enlazar el teléfono desde el computadora.';
+    return 'Esa computadora presentó un certificado distinto. No he enviado nada. Vuelve a enlazar el teléfono desde la computadora.';
   }
   if (e is TimeoutException) return 'El computadora tardó demasiado en responder.';
   if (e is SocketException) {
@@ -220,7 +220,7 @@ class Link {
 
   Map<String, dynamic> _parse(Uint8List raw) {
     final sep = _find(raw, utf8.encode('\r\n\r\n'));
-    if (sep < 0) throw LinkError('Respuesta incompleta del computadora.');
+    if (sep < 0) throw LinkError('Respuesta incompleta de la computadora.');
     final headText = utf8.decode(raw.sublist(0, sep), allowMalformed: true);
     final status = int.tryParse(headText.split(' ').elementAt(1)) ?? 0;
     final bodyText = utf8.decode(raw.sublist(sep + 4), allowMalformed: true);

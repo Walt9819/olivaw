@@ -103,6 +103,36 @@ class Store {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_threadsKey, jsonEncode(threads));
   }
+
+  static const _rosterKey = 'olivaw.roster.v1';
+
+  /// The last roster, so the first screen has something to draw immediately.
+  ///
+  /// Asking the computer for seven agents means seven CLI calls on the other side,
+  /// and away from home a round trip on top. Doing that from a blank screen EVERY
+  /// time you came back from a conversation is the thing this avoids: the names and
+  /// faces barely change, so showing the last ones and quietly correcting them is
+  /// both faster and more honest than a spinner that hides what you already know.
+  ///
+  /// Names, colours and faces only - nothing anybody said. A phone that is lost
+  /// should not be carrying a copy of the conversations, and it does not.
+  static Future<List<Map<String, dynamic>>> loadRoster() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_rosterKey);
+    if (raw == null || raw.isEmpty) return [];
+    try {
+      return (jsonDecode(raw) as List)
+          .map((j) => (j as Map).cast<String, dynamic>())
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  static Future<void> saveRoster(List<Map<String, dynamic>> rows) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_rosterKey, jsonEncode(rows));
+  }
 }
 
 class Boot extends StatefulWidget {
@@ -246,7 +276,7 @@ class _LinkScreenState extends State<LinkScreen> {
       // words.
       await link.call('GET', '/ping', auth: false, expectDer: null);
       final cert = link.lastCertificate;
-      if (cert == null) throw LinkError('No pude ver el certificado del computadora.');
+      if (cert == null) throw LinkError('No pude ver el certificado de la computadora.');
       final der = Uint8List.fromList(cert.der);
       final words = shortCode(hex(sha256(der)));
       if (!mounted) return;
@@ -255,7 +285,7 @@ class _LinkScreenState extends State<LinkScreen> {
             builder: (c) => AlertDialog(
               title: Text(tr('¿Dice esto tu computadora?')),
               content: Column(mainAxisSize: MainAxisSize.min, children: [
-                const Text('En la pantalla del computadora, debajo del código, hay dos palabras. Tienen que ser exactamente estas:'),
+                const Text('En la pantalla de la computadora, debajo del código, hay dos palabras. Tienen que ser exactamente estas:'),
                 const SizedBox(height: 14),
                 SelectableText(words,
                     style: const TextStyle(
@@ -319,7 +349,7 @@ class _LinkScreenState extends State<LinkScreen> {
     return Scaffold(
       appBar: AppBar(title: Text(tr('Enlazar tu computadora'))),
       body: ListView(padding: const EdgeInsets.all(20), children: [
-        const Text('En el computadora, abre Olivaw y ve a «Tu teléfono» → «Enlazar un teléfono». Te dará una dirección y un código.'),
+        const Text('En la computadora, abre Olivaw y ve a «Tu teléfono» → «Enlazar un teléfono». Te dará una dirección y un código.'),
         const SizedBox(height: 20),
         if (_scanning)
           Row(children: [
@@ -342,7 +372,7 @@ class _LinkScreenState extends State<LinkScreen> {
         TextField(
           controller: _host,
           decoration: const InputDecoration(
-            labelText: 'Dirección del computadora',
+            labelText: 'Dirección de la computadora',
             hintText: '192.168.1.40',
             border: OutlineInputBorder(),
           ),
@@ -379,12 +409,19 @@ class _LinkScreenState extends State<LinkScreen> {
 // ── the roster ────────────────────────────────────────────────────────────────────────
 
 class Agent {
-  Agent(this.slug, this.name, this.running, this.look, this.isDefault);
+  Agent(this.slug, this.name, this.running, this.look, this.isDefault, this.team);
   final String slug;
   final String name;
   final bool? running;
   final Map<String, dynamic> look;
   final bool isDefault;
+
+  /// {id, name, icon} for the team this agent belongs to, or null. It rides with the
+  /// roster rather than being asked for per agent, for the same reason the face does.
+  final Map<String, dynamic>? team;
+
+  String get teamName => (team?['name'] ?? '').toString();
+  String get teamIcon => (team?['icon'] ?? '').toString();
 
   static Agent from(Map<String, dynamic> row) => Agent(
         (row['slug'] ?? 'default').toString(),
@@ -392,6 +429,7 @@ class Agent {
         row['gateway_running'] as bool?,
         (row['look'] as Map?)?.cast<String, dynamic>() ?? const {},
         row['is_default'] == true,
+        (row['team'] as Map?)?.cast<String, dynamic>(),
       );
 
   String get initials => (look['initials'] ?? '?').toString();
@@ -425,7 +463,18 @@ class _HomeState extends State<Home> {
   @override
   void initState() {
     super.initState();
+    _showLast();
     _refresh();
+  }
+
+  /// Whatever was on this screen last time, drawn before anybody is asked anything.
+  Future<void> _showLast() async {
+    final rows = await Store.loadRoster();
+    if (!mounted || rows.isEmpty || _agents.isNotEmpty) return;
+    setState(() {
+      _agents = rows.map(Agent.from).toList();
+      _loading = false;
+    });
   }
 
   @override
@@ -435,7 +484,12 @@ class _HomeState extends State<Home> {
   }
 
   Future<void> _refresh() async {
-    setState(() => _loading = true);
+    // Only a BLANK screen waits visibly. Coming back from a conversation used to
+    // empty the list and start again from 'Buscando tu computadora…', which made a
+    // roster you were looking at a second ago feel like it had to be fetched from
+    // nothing - and on mobile data that is several seconds of staring at a screen
+    // that has the answer cached.
+    if (_agents.isEmpty) setState(() => _loading = true);
     try {
       final res = await _link.reach('POST', '/api/agents/list');
       if (res['ok'] != true) throw LinkError(tr((res['detail'] ?? tr('Sin respuesta')).toString()));
@@ -451,6 +505,12 @@ class _HomeState extends State<Home> {
         _error = '';
         _loading = false;
       });
+      // Kept for the next time this screen opens. Names, colours and faces only.
+      await Store.saveRoster([
+        if (res['default'] != null) (res['default'] as Map).cast<String, dynamic>(),
+        for (final e in (res['extra'] as List? ?? []))
+          (e as Map).cast<String, dynamic>(),
+      ]);
       // A rendezvous configured after this phone was paired, or a computer that moved to
       // another address on the wifi, both arrive here. _link.hostChanged covers the
       // third case: reach() had to go looking for the computer and found it elsewhere.
@@ -461,9 +521,17 @@ class _HomeState extends State<Home> {
       }
     } catch (e) {
       setState(() {
-        _error = humanError(e);
+        // A refresh that failed behind a list that is already drawn does not wipe
+        // it: the names are still the names, and saying so beats replacing seven
+        // agents with an apology. Only an empty screen gets the error.
+        _error = _agents.isEmpty ? humanError(e) : '';
         _loading = false;
       });
+      if (_agents.isNotEmpty && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(humanError(e))),
+        );
+      }
     }
   }
 
@@ -510,7 +578,7 @@ class _HomeState extends State<Home> {
                         leading: Face(agent: a, link: _link),
                         title: Text(a.name,
                             style: const TextStyle(fontWeight: FontWeight.w600)),
-                        subtitle: Text(a.state),
+                        subtitle: _AgentLine(agent: a),
                         trailing: const Icon(Icons.chevron_right),
                         // A new name or a new face comes back as `true`, and the
                         // roster behind has to be asked again: the look it is holding
@@ -545,6 +613,68 @@ class _HomeState extends State<Home> {
 /// Keyed by slug AND version, which is what makes a changed picture appear: a new
 /// version is a different key, so the old bytes are never shown and never have to be
 /// explicitly thrown away.
+/// What an agent is, in one line: whether it is up, and whose team it is on.
+///
+/// The team is the thing a roster of seven most needs and did not have - the names
+/// alone say nothing about who works with whom, and that grouping is the owner's own
+/// and lives in the team map. Drawn as a small chip rather than more text, so the
+/// line still reads as a status and not as a sentence.
+class _AgentLine extends StatelessWidget {
+  const _AgentLine({required this.agent});
+
+  final Agent agent;
+
+  @override
+  Widget build(BuildContext context) {
+    final team = agent.teamName;
+    if (team.isEmpty) return Text(agent.state);
+    return Row(children: [
+      Flexible(child: Text(agent.state, overflow: TextOverflow.ellipsis)),
+      const SizedBox(width: 8),
+      Flexible(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+          decoration: BoxDecoration(
+            color: context.c.panel2,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: context.c.line),
+          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            // The mark, when the team has one. A circle rather than a bare glyph so
+            // an emoji and a letter take the same room and the chips line up.
+            Container(
+              width: 15,
+              height: 15,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: context.c.accent.withValues(alpha: 0.18),
+                shape: BoxShape.circle,
+              ),
+              child: Text(
+                agent.teamIcon.isNotEmpty
+                    ? agent.teamIcon
+                    : team.characters.first.toUpperCase(),
+                style: TextStyle(
+                    fontSize: 9,
+                    height: 1.1,
+                    fontWeight: FontWeight.w700,
+                    color: context.c.accent),
+              ),
+            ),
+            const SizedBox(width: 5),
+            Flexible(
+              child: Text(team,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 11, color: context.c.muted)),
+            ),
+          ]),
+        ),
+      ),
+    ]);
+  }
+}
+
 class Faces {
   static final Map<String, Uint8List?> _got = {};
   static final Map<String, Future<Uint8List?>> _busy = {};
@@ -687,6 +817,16 @@ class AgentScreen extends StatefulWidget {
 class _AgentScreenState extends State<AgentScreen> {
   int _tab = 0;
 
+  /// The agent as this screen currently knows it. A rename or a new face has to show
+  /// in the title straight away, and `widget.agent` is whatever the roster held when
+  /// this screen opened.
+  late Agent _agent = widget.agent;
+
+  /// Something was changed here, so the roster behind is out of date. Carried back
+  /// on the way out rather than acted on immediately: closing the conversation the
+  /// moment somebody renames an agent is not what 'back' means anywhere else.
+  bool _dirty = false;
+
   /// Held so the app bar's history button can reach into the open conversation.
   final GlobalKey<ChatTabState> _chat = GlobalKey<ChatTabState>();
 
@@ -737,27 +877,60 @@ class _AgentScreenState extends State<AgentScreen> {
     final changed = await Navigator.of(context).push<bool>(MaterialPageRoute(
       builder: (_) => AgentSettings(
         link: widget.link,
-        slug: widget.agent.slug,
-        name: widget.agent.name,
-        isDefault: widget.agent.isDefault,
+        slug: _agent.slug,
+        name: _agent.name,
+        isDefault: _agent.isDefault,
         canEdit: widget.pairing.caps.contains('config'),
         onOpenFiles: _chat.currentState == null ? null : () => _menu('media'),
       ),
     ));
-    // A rename or a new face changes the roster behind this screen, and the title at
-    // the top of it.
-    if (changed == true && mounted) Navigator.pop(context, true);
+    if (changed != true || !mounted) return;
+    // In place. This used to pop the whole conversation and land back at the roster,
+    // which is not what 'back' means anywhere else: you came from the chat, so you
+    // go back to the chat. The roster is told on the way out instead.
+    _dirty = true;
+    await _reloadAgent();
+  }
+
+  /// The agent's own row, after it was changed from the profile screen.
+  Future<void> _reloadAgent() async {
+    try {
+      final res = await widget.link.reach('POST', '/api/agents/list', body: {});
+      if (res['ok'] != true || !mounted) return;
+      final rows = <Map<String, dynamic>>[
+        if (res['default'] != null) (res['default'] as Map).cast<String, dynamic>(),
+        for (final e in (res['extra'] as List? ?? []))
+          (e as Map).cast<String, dynamic>(),
+      ];
+      for (final r in rows) {
+        final got = Agent.from(r);
+        if (got.slug == _agent.slug) {
+          setState(() => _agent = got);
+          return;
+        }
+      }
+    } catch (_) {
+      // The title keeps the name it had. Worth nothing more than that: the change
+      // itself already succeeded, this is only the label catching up.
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final canBrowse = widget.pairing.caps.contains('navegador');
     final tabs = <Widget>[
-      ChatTab(key: _chat, link: widget.link, agent: widget.agent),
-      RoutinesTab(link: widget.link, agent: widget.agent),
-      if (canBrowse) BrowserTab(link: widget.link, agent: widget.agent),
+      ChatTab(key: _chat, link: widget.link, agent: _agent),
+      RoutinesTab(link: widget.link, agent: _agent),
+      if (canBrowse) BrowserTab(link: widget.link, agent: _agent),
     ];
-    return Scaffold(
+    return PopScope(
+      canPop: false,
+      // The roster behind is only told on the way out. Doing it the moment something
+      // changed meant closing the conversation somebody was in the middle of.
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) Navigator.pop(context, _dirty);
+      },
+      child: Scaffold(
       appBar: _searching
           ? AppBar(
               titleSpacing: 0,
@@ -807,11 +980,11 @@ class _AgentScreenState extends State<AgentScreen> {
               title: InkWell(
                 onTap: _openSettings,
                 child: Row(children: [
-                  Face(agent: widget.agent, size: 30, link: widget.link),
+                  Face(agent: _agent, size: 30, link: widget.link),
                   const SizedBox(width: 10),
                   Expanded(
                       child:
-                          Text(widget.agent.name, overflow: TextOverflow.ellipsis)),
+                          Text(_agent.name, overflow: TextOverflow.ellipsis)),
                 ]),
               ),
               actions: [
@@ -860,6 +1033,7 @@ class _AgentScreenState extends State<AgentScreen> {
             NavigationDestination(
                 icon: const Icon(Icons.travel_explore), label: tr('Navegador')),
         ],
+      ),
       ),
     );
   }
@@ -2572,7 +2746,7 @@ class _BrowserTabState extends State<BrowserTab> {
           color: context.c.warnBg,
           padding: const EdgeInsets.all(8),
           child: const Text(
-            'La ventana está tapada en el computadora, así que puede no refrescarse.',
+            'La ventana está tapada en la computadora, así que puede no refrescarse.',
             style: TextStyle(fontSize: 12),
           ),
         ),

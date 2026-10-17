@@ -1124,6 +1124,42 @@ _hist = _hist[:_hist.index(chr(10) + 'def ', 10)]
 ok('and only the owner\'s own turns are read that way',
    'read_files_in(' in _hist and '== "user"' in _hist)
 
+# ── whose team an agent is on ────────────────────────────────────────
+# Seven names say nothing about who works with whom, and that grouping is the owner's
+# own. It rides with the roster for the same reason the face does: a list that draws
+# every agent should not need a second call per agent to say the one thing that
+# groups them.
+import teams as teams_mod  # noqa: E402
+
+_td = tempfile.mkdtemp()
+teams_mod.set_team(None, name='Pruebas', install_dir=_td,
+                   roster=[{'slug': 'default', 'name': 'x'}])
+_st, _data = teams_mod.read(_td)
+_gid = teams_mod.teams_of(_data)[0]['id']
+teams_mod.set_team(_gid, install_dir=_td, icon='🏥')
+_st, _data = teams_mod.read(_td)
+ok('a team can be given a mark',
+   teams_mod.teams_of(_data)[0].get('icon') == '🏥')
+# None means 'not mentioned' and '' means 'take it off'. Collapsing the two would
+# make renaming a team quietly erase its mark.
+teams_mod.set_team(_gid, name='Pruebas 2', install_dir=_td)
+_st, _data = teams_mod.read(_td)
+ok('and renaming it does not drop the mark',
+   teams_mod.teams_of(_data)[0].get('icon') == '🏥')
+teams_mod.set_team(_gid, install_dir=_td, icon='')
+_st, _data = teams_mod.read(_td)
+ok('but clearing it on purpose does',
+   teams_mod.teams_of(_data)[0].get('icon') == '')
+shutil.rmtree(_td, ignore_errors=True)
+
+_srv2 = io.open(os.path.join(ROOT, 'src', 'wizard', 'wizard_server.py'),
+                encoding='utf-8').read()
+ok('the roster says which team each agent is on',
+   '_team_badge(' in _srv2 and 'row["team"]' in _srv2)
+_m2 = io.open(os.path.join(ROOT, 'app', 'lib', 'main.dart'), encoding='utf-8').read()
+ok('and the app draws it under the name',
+   'class _AgentLine' in _m2 and 'teamIcon' in _m2)
+
 # ── routines, and the shape they come back in ─────────────────────────────
 # cron/list answers the console, which asks about the MACHINE and gets
 # {agents: [...]}. The phone asks about the agent whose screen is open and got the
@@ -1172,9 +1208,11 @@ ok('the app draws a photo wherever it draws a face',
    'class Faces {' in _app_main and 'ClipOval(' in _app_main)
 ok('keyed by version, so a changed picture is a different picture',
    "'${a.slug}@${a.look['v'] ?? 0}'" in _app_main)
+# The open chat draws the agent the SCREEN is holding, not the one the roster handed
+# it: a rename or a new face has to show in the title straight away.
 ok('the roster and the open chat both get one',
    'Face(agent: a, link: _link)' in _app_main
-   and 'Face(agent: widget.agent, size: 30, link: widget.link)' in _app_main)
+   and 'Face(agent: _agent, size: 30, link: widget.link)' in _app_main)
 # A face that did not change on the screen you came from looks exactly like one that
 # was not saved.
 ok('and the roster is asked again after a change',
