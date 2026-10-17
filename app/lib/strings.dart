@@ -432,4 +432,27 @@ const Map<String, (String, String)> _table = {
   'Alejar': ('Zoom out', 'Verkleinern'),
   'Acercar': ('Zoom in', 'Vergrößern'),
   'Ver en la conversación': ('See it in the conversation', 'Im Gespräch ansehen'),
+
+  // ── what a wait says while it waits ──
+  'Buscando tu computadora…': ('Looking for your computer…', 'Dein Computer wird gesucht…'),
+  'Preguntando por tus agentes…': ('Asking about your agents…', 'Deine Agenten werden abgefragt…'),
+  'Tarda un poco la primera vez. Sigue en ello.': (
+    'The first time takes a moment. Still going.',
+    'Beim ersten Mal dauert es etwas. Läuft noch.'
+  ),
+  'Conectando con el agente…': ('Connecting to the agent…', 'Verbindung zum Agenten…'),
+  'Viendo dónde os quedasteis…': ('Finding where you left off…', 'Wo ihr aufgehört habt…'),
+  'Sigue en ello. Fuera de casa tarda un poco más.': (
+    'Still going. Away from home it takes a little longer.',
+    'Läuft noch. Unterwegs dauert es etwas länger.'
+  ),
+  'Abriendo la conversación…': ('Opening the conversation…', 'Das Gespräch wird geöffnet…'),
+  'Trayendo lo que os dijisteis…': (
+    'Fetching what you said to each other…',
+    'Was ihr euch gesagt habt, wird geholt…'
+  ),
+  'Esta computadora todavía no sabe contarme sobre el agente.': (
+    'This computer cannot tell me about the agent yet.',
+    'Dieser Computer kann mir noch nichts über den Agenten sagen.'
+  ),
 };

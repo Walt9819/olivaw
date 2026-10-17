@@ -384,6 +384,27 @@ def main():
     finally:
         _ur.urlopen = _real_open
 
+    section("an update to the supervisor's own code")
+    # The supervisor is not just a watchdog: it RUNS the phone's door and the
+    # rendezvous, out of wizard/remote.py and wizard/relay_client.py, imported once
+    # at startup. Python does not reload a module because its file changed - so an
+    # update that touched only wizard/ swapped the code on disk and left the process
+    # serving the old one for as long as the machine stayed up.
+    #
+    # It was found from the far end: a phone asking for a route added that morning
+    # got nothing back from a supervisor running since before it existed, while
+    # VERSION, the console and the log all said the update had been applied.
+    _src = io.open(os.path.join(ROOT, 'src', 'launcher.py'), encoding='utf-8').read()
+    _apply = _src[_src.index('launcher_changed = _sha256'):]
+    _apply = _apply[:_apply.index('stopping bridges before the swap')]
+    check('an update is checked against wizard/, not just launcher.py',
+          'wizard' in _apply and 'launcher_changed = True' in _apply)
+    check('and a comparison that cannot run restarts anyway',
+          'except OSError' in _apply)
+    # Restarting the bridges was never enough, because the door is not in a bridge.
+    check('the door really does live in the supervisor',
+          '_remote.start(' in _src and '_relay.start(' in _src)
+
     print("\n%d passed, %d failed" % (len(PASSED), len(FAILED)))
     for f in FAILED:
         print("  - " + f)

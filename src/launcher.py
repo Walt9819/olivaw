@@ -746,6 +746,38 @@ def apply_update(cfg, state, rel):
     launcher_changed = _sha256(os.path.join(new_src, "launcher.py")) != _sha256(SELF) \
         if os.path.isfile(os.path.join(new_src, "launcher.py")) else False
 
+    # ...and everything else this process has already imported.
+    #
+    # The supervisor is not just a watchdog: it RUNS the phone's door and the
+    # rendezvous, out of wizard/remote.py and wizard/relay_client.py, which it
+    # imported once at startup. Python does not reload a module because its file
+    # changed, so an update that touched only wizard/ swapped the code on disk and
+    # left this process serving the old one - for as long as the machine stayed up.
+    #
+    # It was found from the far end: a phone asking for a route added that morning
+    # got 'unknown route' from a supervisor that had been running since before it
+    # existed, while VERSION, the console and the log all said the update was
+    # applied. Restarting the bridges was never enough, because the door is not in
+    # a bridge.
+    if not launcher_changed:
+        try:
+            wiz_new = os.path.join(new_src, "wizard")
+            wiz_old = os.path.join(SRC_DIR, "wizard")
+            for name in sorted(os.listdir(wiz_new)):
+                if not name.endswith(".py"):
+                    continue
+                if _sha256(os.path.join(wiz_new, name)) != _sha256(
+                        os.path.join(wiz_old, name)):
+                    log(f"update {ver}: wizard/{name} changed; the supervisor has to "
+                        f"restart to run it")
+                    launcher_changed = True
+                    break
+        except OSError as e:
+            # Cannot tell: restart anyway. A needless handover costs a second; the
+            # other way round costs a feature that looks shipped and is not.
+            log(f"update {ver}: could not compare wizard/ ({e}); restarting to be sure")
+            launcher_changed = True
+
     # stop ALL bridges (primary + every extra agent) so the shared src/ swap is safe.
     # free_ports because an ADOPTED extra bridge has no handle to stop: left running, it
     # keeps executing the old code while reporting the new version out of the rewritten

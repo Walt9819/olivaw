@@ -180,6 +180,19 @@ class _AgentSettingsState extends State<AgentSettings> {
       final res = await widget.link
           .reach('POST', '/api/agent/info', body: _profileBody());
       if (!mounted) return;
+      // An answer that says no is not an answer with nothing in it. Without this,
+      // a refusal - or an older computer that has never heard of this route -
+      // painted an agent with no purpose, no skills and no colleagues, which is a
+      // confident lie about an agent that has all three.
+      if (res['ok'] != true) {
+        setState(() {
+          _loading = false;
+          _error = tr((res['detail'] ??
+                  tr('Esta computadora todavía no sabe contarme sobre el agente.'))
+              .toString());
+        });
+        return;
+      }
       final talk = (res['talk'] as Map?) ?? const {};
       final purpose = (res['purpose'] as Map?) ?? const {};
       final peers = (res['peers'] as Map?) ?? const {};
@@ -202,9 +215,16 @@ class _AgentSettingsState extends State<AgentSettings> {
         _howName = (peers['how_name'] ?? '').toString();
       });
     } catch (e) {
-      // Not knowing is not an error worth a banner; the switches stay blank and the
-      // rest of the screen says nothing rather than something wrong.
-      if (mounted) setState(() => _loading = false);
+      // Said out loud. This used to fail silently on the grounds that not knowing is
+      // not worth a banner - and the screen then showed an agent with no purpose, no
+      // skills and no colleagues, which is not 'nothing', it is a confident lie about
+      // an agent that has all three.
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = humanError(e);
+        });
+      }
     }
   }
 

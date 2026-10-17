@@ -1138,6 +1138,15 @@ for _name in sorted(os.listdir(_lib)):
         _key = ''.join(x[1:-1] for x in re.findall(_LIT, _m.group(1)))
         if _key and _key not in _have:
             _untranslated.append('%s: %s' % (_name, _key[:60]))
+    # And the sentences handed to a widget that translates them later. Reading only
+    # tr() call sites missed every one of these, and the loading screens went out
+    # speaking Spanish on a German phone - which is exactly what this check exists
+    # to prevent, and exactly what it failed to see.
+    for _m in re.finditer(r'lines:\s*(?:const\s*)?\[(.*?)\]', _src, re.S):
+        for _lit in re.findall(_LIT, _m.group(1)):
+            _key = _lit[1:-1]
+            if _key and _key not in _have:
+                _untranslated.append('%s (lines): %s' % (_name, _key[:60]))
 ok('every sentence the app says has English and German',
    not _untranslated, _untranslated[:4])
 
