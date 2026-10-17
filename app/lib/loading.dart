@@ -76,11 +76,21 @@ class _WaitingState extends State<Waiting> with SingleTickerProviderStateMixin {
     final dots = _Pulse(controller: _c, color: context.c.accent);
     if (widget.compact) {
       return Row(mainAxisSize: MainAxisSize.min, children: [
-        SizedBox(width: 34, height: 10, child: dots),
+        // 44, not 34: each dot swells to 10 at the top of its cycle and there are
+        // two 6-pixel gaps, so the row needs 42 at its widest. Sized for the resting
+        // state, it painted overflow stripes on every beat.
+        SizedBox(width: 44, height: 12, child: dots),
         if (widget.lines.isNotEmpty) ...[
           const SizedBox(width: 10),
           Flexible(
+            // Ellipsis rather than overflow: dropped into a row that is narrower
+            // than the sentence, this should get shorter, not paint stripes over
+            // whatever is beside it. (In a row with no width at all it can still
+            // run off the end - no widget can save itself from that - so callers
+            // put it somewhere bounded.)
             child: Text(tr(widget.lines[_line.clamp(0, widget.lines.length - 1)]),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 12, color: context.c.muted)),
           ),
         ],
