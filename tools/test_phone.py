@@ -325,6 +325,32 @@ ok("taking a permission away takes it away",
 ok("'ver' cannot be taken away by accident",
    "ver" in pairing.set_caps(SAND, dev_id, [])["caps"])
 
+# Switching an agent on for the phone.
+#
+# An agent that has never been switched on answers nothing from the phone, and the
+# app used to say only 'Todavía no está activado para este agente' - true, and no
+# use at all to somebody holding a phone away from the computer the switch is on.
+# It offers the switch now, which makes who is allowed to press it a real question.
+pairing.set_caps(SAND, dev_id, ["ver", "hablar"])
+ok("a phone that was not given config cannot switch an agent on",
+   p.request("POST", "/api/talk/enable", {})[0] == 403)
+pairing.set_caps(SAND, dev_id, ["ver", "hablar", "config"])
+ok("and one that was is let through to the handler",
+   p.request("POST", "/api/talk/enable", {})[0] != 403)
+ok("the same for switching it back off",
+   p.request("POST", "/api/talk/disable", {})[0] != 403)
+
+# And the app does not simply dead-end when it is off.
+_main = io.open(os.path.join(ROOT, 'app', 'lib', 'main.dart'), encoding='utf-8').read()
+ok("the app has a screen for an agent that is not switched on",
+   '_talkOffScreen' in _main and 'talk/enable' in _main)
+ok("it offers the switch only to a phone that may press it",
+   "pairing.caps.contains('config')" in _main)
+ok("and says where the switch is when it may not",
+   'H\u00e1blale desde aqu\u00ed' in _main)
+ok("with no box to type into while nothing is listening",
+   'if (!_talkOff)' in _main)
+
 section("the master switch and revoking")
 pairing.set_enabled(SAND, False)
 ok("off shuts every device at once",

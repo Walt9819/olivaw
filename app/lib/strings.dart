@@ -344,4 +344,18 @@ const Map<String, (String, String)> _table = {
     'There is no app to open that.',
     'Es gibt keine App, die das öffnen kann.'
   ),
+  'Este agente todavía no está puesto para hablar desde aquí.': (
+    'This agent is not set up to talk from here yet.',
+    'Dieser Agent ist noch nicht dafür eingerichtet, von hier aus zu sprechen.'
+  ),
+  'Se enciende una sola vez y queda encendido.': (
+    'You switch it on once and it stays on.',
+    'Einmal einschalten, dann bleibt es an.'
+  ),
+  'Enciéndelo en la computadora: elige este agente y abre «Háblale desde aquí».': (
+    'Switch it on at the computer: pick this agent and open «Háblale desde aquí».',
+    'Schalte es am Computer ein: Wähle diesen Agenten und öffne «Háblale desde aquí».'
+  ),
+  'Encender': ('Switch on', 'Einschalten'),
+  'Encendiendo…': ('Switching on…', 'Wird eingeschaltet…'),
 };

@@ -778,6 +778,13 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
   bool _sending = false;
   String _error = '';
 
+  /// Talking is off for this agent. Not an error so much as a thing not done yet,
+  /// and it has its own screen because 'Todavía no está activado' told you what was
+  /// wrong and then left you to find the switch on a computer you may not be sitting
+  /// at - which is the whole point of holding the phone.
+  bool _talkOff = false;
+  bool _turningOn = false;
+
   @override
   void initState() {
     super.initState();
@@ -801,8 +808,10 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       // Whether talking is switched on, first: everything below depends on it.
       final st = await widget.link.reach('POST', '/api/talk/status', body: _body());
       if (st['ok'] != true || st['enabled'] != true) {
-        setState(() => _error = tr((st['detail'] ??
-                tr('Todavía no está activado para este agente.')).toString()));
+        setState(() {
+          _talkOff = true;
+          _error = '';
+        });
         return;
       }
       // Where you left off. The thread this phone had open comes first; failing that,
@@ -1643,6 +1652,66 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
     ]);
   }
 
+  /// Turn it on from here, which this phone may do only if it was given `config`
+  /// when it was paired. Without that the server would refuse - so rather than
+  /// offer a button that cannot work, the screen says where the switch is instead.
+  Future<void> _turnTalkOn() async {
+    setState(() => _turningOn = true);
+    try {
+      final res = await widget.link.reach('POST', '/api/talk/enable',
+          body: _body(), wait: Link.thinkingWait);
+      if (res['ok'] != true) {
+        setState(() => _error = tr((res['detail'] ?? '').toString()));
+        return;
+      }
+      setState(() => _talkOff = false);
+      await _start();
+    } catch (e) {
+      if (mounted) setState(() => _error = humanError(e));
+    } finally {
+      if (mounted) setState(() => _turningOn = false);
+    }
+  }
+
+  Widget _talkOffScreen(BuildContext context) {
+    final mayTurnOn = widget.link.pairing.caps.contains('config');
+    return Expanded(
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.chat_bubble_outline, size: 40, color: context.c.muted),
+              const SizedBox(height: 14),
+              Text(
+                tr('Este agente todavía no está puesto para hablar desde aquí.'),
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 15, color: context.c.ink),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                mayTurnOn
+                    ? tr('Se enciende una sola vez y queda encendido.')
+                    : tr('Enciéndelo en la computadora: elige este agente y abre '
+                        '«Háblale desde aquí».'),
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 13, color: context.c.muted),
+              ),
+              if (mayTurnOn) ...[
+                const SizedBox(height: 18),
+                FilledButton(
+                  onPressed: _turningOn ? null : _turnTalkOn,
+                  child: Text(_turningOn ? tr('Encendiendo…') : tr('Encender')),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(children: [
@@ -1654,7 +1723,9 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
           child: Text(_error,
               style: TextStyle(fontSize: 12, color: context.c.ink)),
         ),
-      if (_loadingHistory)
+      if (_talkOff)
+        _talkOffScreen(context)
+      else if (_loadingHistory)
         const Expanded(child: Center(child: CircularProgressIndicator()))
       else if (_msgs.isEmpty && _error.isEmpty && _ready)
         Expanded(
@@ -1690,8 +1761,11 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
           },
         ),
       ),
-      if (_replyTo != null) _replyStrip(),
-      if (_attached.isNotEmpty) _attachedStrip(),
+      if (_replyTo != null && !_talkOff) _replyStrip(),
+      if (_attached.isNotEmpty && !_talkOff) _attachedStrip(),
+      // No box to type in while there is nothing listening: a composer under a
+      // screen that says it is switched off is an invitation to lose a message.
+      if (!_talkOff)
       SafeArea(
         top: false,
         child: Padding(

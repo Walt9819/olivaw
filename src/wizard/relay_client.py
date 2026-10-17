@@ -43,6 +43,12 @@ MAX_STREAMS = 16
 CHUNK = 32 * 1024
 BACKOFF_MAX = 300
 
+# How long an attachment has to stand up before a drop counts as bad luck rather
+# than evidence that the rendezvous is down. Anything that held a socket open for a
+# minute was working; what ended it was the network, and the answer to that is to
+# dial again now, not in five minutes.
+HELD_LONG_ENOUGH = 60
+
 _state = {"on": False, "connected": False, "detail": "", "since": 0, "url": ""}
 _thread = None
 _stop = threading.Event()
@@ -306,11 +312,25 @@ def _loop(url, room, key, local_port):
     """
     wait = 2
     while not _stop.is_set():
+        started = time.time()
         try:
             _serve_once(url, room, key, local_port)
             wait = 2
         except Exception as e:  # noqa: BLE001
+            # Backing off is for a rendezvous that is DOWN. It was also punishing an
+            # attachment that stood up, worked for five minutes and then lost its
+            # wifi: `wait` only reset when _serve_once returned normally, which a
+            # dropped connection never does. A few blinks on a flaky network and
+            # every later drop cost five minutes - during which the phone is told
+            # there is no computer, which on this machine was most of the time.
+            #
+            # An attachment that held is not evidence of anything being down, so the
+            # next try starts from the beginning again.
+            held = bool(_state.get("connected"))
+            lived = time.time() - started
             _state.update({"connected": False, "detail": str(e)[:160]})
+            if held and lived >= HELD_LONG_ENOUGH:
+                wait = 2
             log("not attached (%s); retrying in %ds" % (str(e)[:80], wait))
         for _ in range(wait):
             if _stop.is_set():
