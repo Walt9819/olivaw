@@ -31,9 +31,27 @@ import json
 import os
 import re
 import secrets
+import threading
 import time
 
 STORE = "devices.json"
+
+# One writer at a time.
+#
+# The phone's door is threaded, and every authenticated request stamps the device's
+# last_seen - so opening a screen that asks nine things at once had nine threads
+# doing read-modify-write on the same file. On Windows they collide three different
+# ways: the temp file is open by another thread (WinError 32), the rename is denied
+# (WinError 5), or the other thread already renamed it away (FileNotFoundError).
+# Whichever it was came out of the handler as a dropped connection, so most of a
+# burst simply failed - which from the phone looks like the computer refusing to
+# answer.
+#
+# A process lock is enough for the door, which is one process. The unique temp name
+# below is what keeps the CONSOLE, which is another one, from colliding with it.
+# Re-entrant: `touch` holds it across its read-modify-write, and the write
+# goes through `_save`, which takes it too. A plain Lock deadlocks there.
+_write_lock = threading.RLock()
 MAX_DEVICES = 24
 NAME_MAX = 32
 PIN_TRIES = 5                 # typed-code attempts before the offer is burned
@@ -158,9 +176,16 @@ def _path(install_dir):
 
 
 def _load(install_dir):
+    # Readers take the lock too, and that is not belt-and-braces.
+    #
+    # On Windows os.replace fails with 'access denied' when the DESTINATION is open -
+    # so a thread merely reading devices.json was enough to break another thread's
+    # write, even with every writer serialised and writing to its own temp file. The
+    # read is a few hundred bytes; the contention is nothing next to a failed request.
     try:
-        with open(_path(install_dir), "r", encoding="utf-8") as fh:
-            data = json.load(fh)
+        with _write_lock:
+            with open(_path(install_dir), "r", encoding="utf-8") as fh:
+                data = json.load(fh)
     except Exception:  # noqa: BLE001
         data = {}
     if not isinstance(data, dict):
@@ -171,11 +196,35 @@ def _load(install_dir):
 
 
 def _save(install_dir, data):
+    with _write_lock:
+        _save_locked(install_dir, data)
+
+
+def _save_locked(install_dir, data):
     p = _path(install_dir)
-    tmp = p + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, ensure_ascii=False, indent=2)
-    os.replace(tmp, p)
+    # Named for THIS write. A shared '.tmp' is a second file two writers fight over,
+    # and the fight is lost before the atomic rename ever happens.
+    tmp = "%s.%d.%d.tmp" % (p, os.getpid(), threading.get_ident())
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=2)
+        # Retried, because the lock above only covers THIS process. The console is
+        # another one, and a rename onto a file it happens to have open fails the
+        # same way. A few milliseconds is all such an overlap ever lasts.
+        for attempt in range(6):
+            try:
+                os.replace(tmp, p)
+                break
+            except PermissionError:
+                if attempt == 5:
+                    raise
+                time.sleep(0.02 * (attempt + 1))
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
     try:
         if os.name != "nt":
             os.chmod(p, 0o600)
@@ -229,10 +278,19 @@ def _write_offer(install_dir, got):
         except OSError:
             pass
         return
-    tmp = p + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(got, fh)
-    os.replace(tmp, p)
+    # Unique, for the reason _save explains: the console writes this file and the
+    # door reads it, and a shared '.tmp' is something for two processes to fight over.
+    tmp = "%s.%d.%d.tmp" % (p, os.getpid(), threading.get_ident())
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(got, fh)
+        os.replace(tmp, p)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
     try:
         if os.name != "nt":
             os.chmod(p, 0o600)
@@ -329,13 +387,33 @@ def device_for(install_dir, token):
     return found
 
 
+# How stale the 'last seen' stamp may get before it is worth a write. The console
+# shows it to the minute, so a screen that asks nine things in one second has no
+# business writing the file nine times to record the same minute.
+TOUCH_EVERY = 60
+
+
 def touch(install_dir, device_id):
-    data = _load(install_dir)
-    for dev in data["devices"]:
-        if dev.get("id") == device_id:
-            dev["last_seen"] = int(time.time())
-            _save(install_dir, data)
-            return
+    """Record that this device is alive. Never fails a request to do it.
+
+    Losing a timestamp is nothing; failing the owner's request because the timestamp
+    could not be written is everything - and that is exactly what used to happen when
+    two threads reached the file together.
+    """
+    now = int(time.time())
+    try:
+        with _write_lock:
+            data = _load(install_dir)
+            for dev in data["devices"]:
+                if dev.get("id") != device_id:
+                    continue
+                if now - int(dev.get("last_seen") or 0) < TOUCH_EVERY:
+                    return
+                dev["last_seen"] = now
+                _save(install_dir, data)
+                return
+    except Exception:  # noqa: BLE001
+        return
 
 
 def devices(install_dir):

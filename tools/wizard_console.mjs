@@ -470,6 +470,23 @@ const CANNED = {
                                    schedule: "0 9 * * *", enabled: true, script: false,
                                    last_status: "ok", where: "telegram",
                                    clean: true, only_on_error: false } },
+  // Two brains on one machine, which is the case the panel exists for: the numbers
+  // come from Hermes either way, and what produced them is a property of the agent.
+  "stats/usage": {
+    ok: true, days: 30, costed: false,
+    teams: [{ name: "iGalenus", icon: "\u{1F3E5}", members: ["default", "daneel"],
+              sessions: 12, message_count: 340, tool_call_count: 91,
+              input_tokens: 1250000, output_tokens: 80000 }],
+    agents: [
+      { slug: "daneel", name: "Daneel", engine: "codex", known: true, sessions: 3,
+        message_count: 140, tool_call_count: 31,
+        input_tokens: 350000, output_tokens: 30000 },
+      { slug: "default", name: "Agente principal", engine: "claude", known: true,
+        sessions: 9, message_count: 200, tool_call_count: 60,
+        input_tokens: 900000, output_tokens: 50000 },
+      { slug: "solo", name: "Trabaja Sola", engine: "claude", known: false },
+    ],
+  },
   "numbers/add": { ok: true, number: { slug: "soporte", label: "Soporte", port: 3002 } },
   "channel/whatsapp-qr": { ok: true, connected: false,
                            qr: "████\n████\n████\n████\n████\n████\n████\n████\n████", detail: "escanea" },
@@ -496,7 +513,7 @@ const HOOK = "\n  globalThis.__ol = { CONSOLE: CONSOLE, S: S, META: META, STEPS:
   " SOS: SOS, openSos: openSos, sendTurn: sendTurn, paintMsgs: paintMsgs," +
   " showQr: showQr, TALK: TALK, sendTalk: sendTalk, loadConn: loadConn," +
   " paintLog: paintLog, tkChips: tkChips, tkAdd: tkAdd, tkFileHtml: tkFileHtml," +
-  " paintCron: paintCron, cronHtml: cronHtml, CRON: CRON, cjWhen: cjWhen, avatarHtml: avatarHtml, faceOf: faceOf, avHex: avHex, renderTree: renderTree, __faceEmoji: FACE_EMOJI, paintAgentChip: paintAgentChip, navOf: navOf," +
+  " USE: USE, paintCron: paintCron, cronHtml: cronHtml, CRON: CRON, cjWhen: cjWhen, avatarHtml: avatarHtml, faceOf: faceOf, avHex: avHex, renderTree: renderTree, __faceEmoji: FACE_EMOJI, paintAgentChip: paintAgentChip, navOf: navOf," +
   " startLogin: startLogin, loadDash: loadDash, DASH: DASH, BOOT: BOOT, paintTeam: paintTeam, teamSvg: teamSvg, TEAM: TEAM, secTeam: secTeam, paintAgentTeam: paintAgentTeam, AGT: AGT, paintProposal: paintProposal, rAgent: rAgent, rFinished: rFinished, agentConnectCard: agentConnectCard," +
   " get LIVE(){ return LIVE } };\n";
 const hooked = src.slice(0, cut) + HOOK + src.slice(cut);
@@ -2177,6 +2194,71 @@ ok("the agent's routine page asks for the same list",
   const empty = OL.cronHtml(st, "nobody");
   ok("an agent with no routines is told so about itself",
      empty.includes("Este agente todav"), empty.slice(0, 160));
+}
+
+console.log("\n=== how much work has been done, and by which brain ===");
+{
+  // Cold, as the owner's first visit is: the sweep above has already been through
+  // this panel once and left the count in hand.
+  OL.USE.st = null;
+  OL.USE.busy = false;
+  CALLS.length = 0;
+  OL.goSec("uso", "default");
+  ok("before the count lands the panel says so rather than showing nothing",
+     getEl("panel").innerHTML.includes("Contando"),
+     getEl("panel").innerHTML.slice(0, 120));
+  ok("and it asks for the window it is showing",
+     CALLS.some((c) => c.route === "stats/usage" && c.body.days === 30),
+     JSON.stringify(CALLS.map((c) => c.route + ":" + c.body.days)));
+
+  await new Promise((r) => setTimeout(r, 0));
+
+  // Counting is slow - it reads every conversation Hermes has filed - so coming back
+  // to a panel you just left should not pay for it twice.
+  CALLS.length = 0;
+  OL.goSec("gasto", "default");
+  OL.goSec("uso", "default");
+  ok("coming back to it does not count everything again",
+     !CALLS.some((c) => c.route === "stats/usage"),
+     JSON.stringify(CALLS.map((c) => c.route)));
+  const html = getEl("panel").innerHTML;
+  ok("the teams are counted too, not only the agents",
+     html.includes("iGalenus") && html.includes("2 agentes"), html.slice(0, 200));
+
+  // Busiest first. Sorted by name you have to read the whole list to find out who is
+  // doing the work, which is the one question the panel is open to answer.
+  ok("the agent doing the most work is at the top",
+     html.indexOf("Agente principal") < html.indexOf("Daneel"),
+     html.indexOf("Agente principal") + " vs " + html.indexOf("Daneel"));
+
+  // The two bridges are not interchangeable and the numbers should not pretend they are.
+  ok("every number is labelled with the brain that produced it",
+     html.includes(">claude<") && html.includes(">codex<"));
+
+  // Not measured is not the same as did nothing, and a zero would say the wrong one.
+  ok("an agent whose channel is off is told apart from one that did nothing",
+     html.includes("Sin datos: su canal no"), html.slice(-240));
+
+  // A subscription has no price per token; printing a 0 next to a million tokens reads
+  // as free rather than as not-measured.
+  ok("and on a subscription it says it is measuring work, not money",
+     html.includes("no hay precio por token"));
+
+  // The window picker is the only control on the page. It was wired through a helper
+  // that belongs to another panel's closure, so clicking a day did nothing at all -
+  // and the whole section threw on the way in.
+  const days = document.querySelectorAll("#panel .useDays");
+  ok("the window picker offers the three windows", days.length === 3, days.length);
+  CALLS.length = 0;
+  const week = days.filter((b) => b.getAttribute("data-d") === "7")[0];
+  ok("and the seven-day button is one of them", !!week);
+  if (week) {
+    week.onclick();
+    await new Promise((r) => setTimeout(r, 0));
+    ok("choosing a window counts that window",
+       CALLS.some((c) => c.route === "stats/usage" && c.body.days === 7),
+       JSON.stringify(CALLS.map((c) => c.route + ":" + c.body.days)));
+  }
 }
 
 report();

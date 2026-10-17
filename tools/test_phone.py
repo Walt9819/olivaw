@@ -1124,6 +1124,62 @@ _hist = _hist[:_hist.index(chr(10) + 'def ', 10)]
 ok('and only the owner\'s own turns are read that way',
    'read_files_in(' in _hist and '== "user"' in _hist)
 
+# ── nine requests at once, one devices.json ───────────────────────────
+# The door is threaded and every authenticated request stamps the device's last_seen,
+# so a screen that asks nine things at once had nine threads doing read-modify-write
+# on one file. On Windows they collide three ways - the temp file is open by another
+# thread, the rename is denied, or the other thread already renamed it away - and all
+# three came out of the handler as a dropped connection. Most of a burst simply
+# failed, which from the phone looks like the computer refusing to answer.
+_burst = []
+
+
+def _hammer():
+    # _save, not touch: touch is throttled now, so a burst of touches would prove
+    # only that the throttle works. The shared resource is the file, and every
+    # mutation of the store goes through here.
+    try:
+        for _ in range(20):
+            pairing._save(SAND, pairing._load(SAND))
+            pairing.touch(SAND, dev_id)
+        _burst.append(True)
+    except Exception as e:  # noqa: BLE001
+        _burst.append(e)
+
+
+_threads = [threading.Thread(target=_hammer) for _ in range(9)]
+for _t in _threads:
+    _t.start()
+for _t in _threads:
+    _t.join()
+ok('nine at once never lose a request between them',
+   all(x is True for x in _burst), [x for x in _burst if x is not True][:2])
+
+# And nothing is left lying around: a temp file per write is only an improvement if
+# it is also cleaned up.
+_litter = [n for n in os.listdir(SAND) if n.startswith('devices.json.') 
+           and n.endswith('.tmp')]
+ok('and leave no half-written files behind', not _litter, _litter)
+
+# Recording that a phone is alive must never be the reason a request fails. Even a
+# store that cannot be written at all is a lost timestamp, not a lost answer.
+_real_save = pairing._save
+try:
+    pairing._save = lambda *a, **k: (_ for _ in ()).throw(OSError('disco lleno'))
+    pairing.touch(SAND, dev_id)   # must not raise
+    ok('and a store that cannot be written loses a timestamp, not the request', True)
+except Exception as e:  # noqa: BLE001
+    ok('and a store that cannot be written loses a timestamp, not the request',
+       False, e)
+finally:
+    pairing._save = _real_save
+
+# The stamp is shown to the minute, so writing it nine times a second to record the
+# same minute is work nobody asked for - and it was the volume that made the race
+# easy to hit in the first place.
+ok('a stamp that has not aged is not rewritten', pairing.TOUCH_EVERY >= 30,
+   pairing.TOUCH_EVERY)
+
 # ── how much work has been done, and by which brain ─────────────────────
 # The counting is Hermes' - it keeps a row per conversation the same way whichever
 # brain is behind the bridge - so this never asks a brain anything, and Claude Code

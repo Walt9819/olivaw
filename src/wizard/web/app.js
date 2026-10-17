@@ -2541,7 +2541,8 @@
 
   function eUsage() {
     if (!USE.st && !USE.busy) loadUsage();
-    each(".useDays", function (b) {
+    // Spelled out: the short `each` helper belongs to wireTeam and is not in scope here.
+    Array.prototype.forEach.call(document.querySelectorAll("#panel .useDays"), function (b) {
       b.onclick = function () {
         USE.days = parseInt(b.getAttribute("data-d"), 10) || 30;
         USE.st = null;

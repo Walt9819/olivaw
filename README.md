@@ -870,10 +870,10 @@ uninstall first, which throws away everything the app has stored.
 the certificate to pin and the address of the rendezvous. After that it works from
 anywhere.
 
-Both halves are tested: `tools/test_phone.py` (150 checks — a real TLS handshake against
+Both halves are tested: `tools/test_phone.py` (234 checks — a real TLS handshake against
 the hand-rolled certificate, a real rendezvous in its own process, every forbidden route
 attempted and refused, and the rendezvous moved between two of them) and `flutter test`
-in `app/` (28). Beyond the suites it has been run on a Galaxy Z Fold 5: paired, chatted,
+in `app/` (46). Beyond the suites it has been run on a Galaxy Z Fold 5: paired, chatted,
 opened a routine, drove the browser, and — with the tether unplugged and the computer
 not answering a ping — loaded the roster and opened a file over nothing but mobile data.
 
