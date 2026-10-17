@@ -104,6 +104,14 @@ try:
 except Exception:  # noqa: BLE001
     _remote = _relay = None
 
+# What an agent is allowed to write back. Guarded the same way: a supervisor that
+# will not start because a skill file could not be imported is a worse outage than
+# an agent that does not know it can quote a message.
+try:
+    from wizard import reply_skill as _replies
+except Exception:  # noqa: BLE001
+    _replies = None
+
 
 # The update source is PINNED into the distributed code. A mutable `repo` in updater.config.json
 # must never be able to repoint the auto-updater at an attacker-controlled repo (that would turn
@@ -1498,6 +1506,28 @@ def _ensure_image_skill():
             log(f"images: could not teach {r['profile']}: {r.get('detail', '')}")
 
 
+def _ensure_reply_skill():
+    """Tell every agent it can answer one message in particular.
+
+    The phone has been able to DRAW an agent's reply as a reply since the day it
+    learned to draw one - the quote is the whole protocol - and no agent had ever
+    been told it could write one. Teaching is all this does; nothing here changes
+    what any agent is allowed to say.
+    """
+    if not _replies:
+        return
+    try:
+        results = _replies.ensure_all(log=log, install_dir=INSTALL_DIR)
+    except Exception as e:  # noqa: BLE001
+        log(f"replies: skill check failed: {e}")
+        return
+    for r in results:
+        if r.get("changed"):
+            log(f"replies: taught {r['profile']} that it can answer one message "
+                f"in particular ({r.get('path')})")
+            _skill_needs_reload(r["profile"], "replies")
+
+
 def _ensure_intercom_skill():
     """Tell every agent who its colleagues are, and how to ask them something.
 
@@ -1619,6 +1649,7 @@ def main():
     _ensure_browser_labels()
     _ensure_image_skill()
     _ensure_intercom_skill()
+    _ensure_reply_skill()
     last_check = 0.0
     while True:
         try:

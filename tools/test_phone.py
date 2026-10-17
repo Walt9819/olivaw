@@ -597,7 +597,35 @@ def through_relay(method, path, body=None, token=""):
             break
     s.close()
     h, _, b = buf.partition(b"\r\n\r\n")
+    if not h.strip():
+        # Nothing at all came back. On a loaded machine the FIRST tunnel opened
+        # after the house attaches does this about one run in five, and it used to
+        # surface as an IndexError on an empty split - which says nothing about
+        # where it went wrong and buries the rest of the suite.
+        raise _EmptyThroughRelay(method + " " + path)
     return int(h.split(b" ")[1]), json.loads(b.decode("utf-8", "replace") or "{}")
+
+
+class _EmptyThroughRelay(Exception):
+    """The relay carried nothing back. Retried once by through_relay below."""
+
+
+_through_once = through_relay
+
+
+def through_relay(method, path, body=None, token=""):
+    """One retry, and only for a reply that never arrived.
+
+    Not a loop and not a blanket catch: a 403 is an answer and stays an answer. This
+    is for the one failure the suite actually sees - a stream opened in the moment
+    after attaching that gets nothing at all - and if the second attempt also comes
+    back empty, that is a real fault and the suite says so.
+    """
+    try:
+        return _through_once(method, path, body, token)
+    except _EmptyThroughRelay:
+        time.sleep(1.0)
+        return _through_once(method, path, body, token)
 
 
 code, res = through_relay("GET", "/ping")
@@ -1049,6 +1077,44 @@ if os.path.exists(_KT):
        'startsWith("http://")' in _kt and 'startsWith("https://")' in _kt)
     ok("the microphone is checked before recording",
        "checkSelfPermission" in _kt and "RECORD_AUDIO" in _kt)
+
+# ── the agent is told it can answer one message in particular ─────────────────
+# The phone has been able to DRAW an agent's reply as a reply since the day it could
+# draw one - the quote is the whole protocol - and no agent had been told it could
+# write one. So the skill teaches a shape and the app parses a shape, and the only
+# thing holding them together is that somebody checked.
+from wizard import reply_skill  # noqa: E402
+
+_sk = reply_skill.render_skill()
+ok('the skill says how to quote', '> **' in _sk and ':**' in _sk)
+ok('and says when NOT to', 'no es el formato por defecto' in _sk)
+
+# The example in the skill, parsed by the app's own rule. If either side moves, this
+# is what notices.
+_ex = [L for L in _sk.split('\n') if L.startswith('> **')]
+ok('the skill shows an example to copy', bool(_ex), _sk[:80])
+_dart_re = re.search(r"RegExp\(r'(\^>[^']+)'\)", _main)
+ok('the app has one rule for reading it', _dart_re is not None)
+if _ex and _dart_re:
+    # Dart and Python agree on this much of the syntax, which is all it uses.
+    _pat = _dart_re.group(1).replace('[ \\t]', '[ \\t]')
+    _m = re.match(_pat, _ex[0] + '\n')
+    ok('and that rule reads the example the agent is given',
+       _m is not None and bool((_m.group(1) or '').strip())
+       and bool((_m.group(2) or '').strip()),
+       _ex[0])
+
+# Writing it twice must not rewrite the file: the supervisor calls this on a tick,
+# and a skill that changes every fifteen seconds restarts a gateway every fifteen
+# seconds.
+_skhome = tempfile.mkdtemp()
+_r1 = reply_skill.install_skill('daneel', home=_skhome)
+_r2 = reply_skill.install_skill('daneel', home=_skhome)
+ok('the skill installs', _r1.get('changed') is True)
+ok('and installing it again changes nothing', _r2.get('changed') is False)
+ok('it lands where the agent will look for it',
+   os.path.join('profiles', 'daneel', 'skills') in _r1['path'])
+shutil.rmtree(_skhome, ignore_errors=True)
 
 # ── every sentence the app can say ───────────────────────────────────
 # Spanish IS the key, so a missing row is not a crash - tr() hands back the Spanish
