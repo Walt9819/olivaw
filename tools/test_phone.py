@@ -1161,6 +1161,25 @@ ok('with config, it may', pairing.allowed('avatar/set', ['ver', 'config']))
 
 from wizard import avatars  # noqa: E402
 
+# And the picture has to turn up wherever the agent does. The roster already says
+# WHETHER an agent has one and which version; only the bytes are a second request,
+# because seven photos inline would make the first screen a quarter of a megabyte on
+# a connection that may be mobile data.
+ok('the roster carries what a face is and which version it is at',
+   'kind' in avatars.look('daneel', 'Daneel', SAND)
+   and 'v' in avatars.look('daneel', 'Daneel', SAND))
+ok('the app draws a photo wherever it draws a face',
+   'class Faces {' in _app_main and 'ClipOval(' in _app_main)
+ok('keyed by version, so a changed picture is a different picture',
+   "'${a.slug}@${a.look['v'] ?? 0}'" in _app_main)
+ok('the roster and the open chat both get one',
+   'Face(agent: a, link: _link)' in _app_main
+   and 'Face(agent: widget.agent, size: 30, link: widget.link)' in _app_main)
+# A face that did not change on the screen you came from looks exactly like one that
+# was not saved.
+ok('and the roster is asked again after a change',
+   'if (changed == true && mounted) _refresh();' in _app_main)
+
 _facedir = tempfile.mkdtemp()
 _noface = avatars.picture('daneel', _facedir)
 ok('an agent with no picture says so rather than failing',

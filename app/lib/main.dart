@@ -507,18 +507,25 @@ class _HomeState extends State<Home> {
                     itemBuilder: (c, i) {
                       final a = _agents[i];
                       return ListTile(
-                        leading: Face(agent: a),
+                        leading: Face(agent: a, link: _link),
                         title: Text(a.name,
                             style: const TextStyle(fontWeight: FontWeight.w600)),
                         subtitle: Text(a.state),
                         trailing: const Icon(Icons.chevron_right),
-                        onTap: () => Navigator.push(
+                        // A new name or a new face comes back as `true`, and the
+                        // roster behind has to be asked again: the look it is holding
+                        // is the old one, and a picture that did not change on the
+                        // screen you came from looks exactly like one that was not
+                        // saved.
+                        onTap: () => Navigator.push<bool>(
                           c,
                           MaterialPageRoute(
                             builder: (_) =>
                                 AgentScreen(link: _link, agent: a, pairing: widget.pairing),
                           ),
-                        ),
+                        ).then((changed) {
+                          if (changed == true && mounted) _refresh();
+                        }),
                       );
                     },
                   ),
@@ -527,16 +534,116 @@ class _HomeState extends State<Home> {
   }
 }
 
-class Face extends StatelessWidget {
-  const Face({super.key, required this.agent, this.size = 42});
+/// Agent pictures, fetched once per version and kept for the run.
+///
+/// The roster already says WHETHER an agent has one (`look.kind`) and which version
+/// of it (`look.v`); only the bytes are a second request. They are not sent with the
+/// roster because seven photos inline would make the first screen a quarter of a
+/// megabyte on a connection that may be mobile data - and most agents have no photo
+/// at all, so most of that would be nothing.
+///
+/// Keyed by slug AND version, which is what makes a changed picture appear: a new
+/// version is a different key, so the old bytes are never shown and never have to be
+/// explicitly thrown away.
+class Faces {
+  static final Map<String, Uint8List?> _got = {};
+  static final Map<String, Future<Uint8List?>> _busy = {};
+
+  static String _key(Agent a) => '${a.slug}@${a.look['v'] ?? 0}';
+
+  /// What is already here, for a first paint with no flicker.
+  static Uint8List? ready(Agent a) => _got[_key(a)];
+
+  static bool has(Agent a) => (a.look['kind'] ?? '').toString() == 'image';
+
+  static Future<Uint8List?> of(Link link, Agent a) {
+    final k = _key(a);
+    if (_got.containsKey(k)) return Future.value(_got[k]);
+    return _busy[k] ??= _fetch(link, a, k);
+  }
+
+  static Future<Uint8List?> _fetch(Link link, Agent a, String k) async {
+    try {
+      final res = await link.reach('POST', '/api/avatar/get',
+          body: {'slug': a.slug});
+      final b64 = (res['data_b64'] ?? '').toString();
+      final bytes = b64.isEmpty ? null : base64Decode(b64);
+      // Remembered even when it is null: an agent with no photo should not be asked
+      // about again every time its row scrolls past.
+      _got[k] = bytes;
+      return bytes;
+    } catch (_) {
+      // NOT remembered: a request that failed is a connection problem, not an answer,
+      // and the next draw should try again.
+      return null;
+    } finally {
+      _busy.remove(k);
+    }
+  }
+}
+
+class Face extends StatefulWidget {
+  const Face({super.key, required this.agent, this.size = 42, this.link});
   final Agent agent;
   final double size;
 
+  /// How to fetch the picture. Without it the face is the colour and the initials,
+  /// which is what every face was before photos reached the phone at all.
+  final Link? link;
+
+  @override
+  State<Face> createState() => _FaceState();
+}
+
+class _FaceState extends State<Face> {
+  Uint8List? _photo;
+
+  @override
+  void initState() {
+    super.initState();
+    _photo = Faces.ready(widget.agent);
+    _load();
+  }
+
+  @override
+  void didUpdateWidget(Face old) {
+    super.didUpdateWidget(old);
+    // A renamed or re-faced agent arrives as a new look on the same widget.
+    if (old.agent.slug != widget.agent.slug ||
+        old.agent.look['v'] != widget.agent.look['v']) {
+      _photo = Faces.ready(widget.agent);
+      _load();
+    }
+  }
+
+  Future<void> _load() async {
+    final link = widget.link;
+    if (link == null || !Faces.has(widget.agent) || _photo != null) return;
+    final got = await Faces.of(link, widget.agent);
+    if (mounted && got != null) setState(() => _photo = got);
+  }
+
   @override
   Widget build(BuildContext context) {
-    // The picture itself is not fetched: that route is a GET on the desktop console's
-    // own token. The colour and the initials travel with the roster, and they are what
-    // make the face here match the colour that agent's Chrome window wears.
+    final photo = _photo;
+    if (photo != null) {
+      return ClipOval(
+        child: Image.memory(photo,
+            width: widget.size,
+            height: widget.size,
+            fit: BoxFit.cover,
+            gaplessPlayback: true),
+      );
+    }
+    return _mark(context);
+  }
+
+  Widget _mark(BuildContext context) {
+    final agent = widget.agent;
+    final size = widget.size;
+    // No photo, or none yet. The colour and the initials travel with the roster, so
+    // this draws immediately and never waits for anything - and the colour is the
+    // same one that agent's Chrome window wears.
     return Container(
       width: size,
       height: size,
@@ -700,7 +807,7 @@ class _AgentScreenState extends State<AgentScreen> {
               title: InkWell(
                 onTap: _openSettings,
                 child: Row(children: [
-                  Face(agent: widget.agent, size: 30),
+                  Face(agent: widget.agent, size: 30, link: widget.link),
                   const SizedBox(width: 10),
                   Expanded(
                       child:
