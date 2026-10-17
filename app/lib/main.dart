@@ -18,6 +18,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'attachment.dart';
 import 'link.dart';
+import 'loading.dart';
 import 'sha256.dart';
 import 'markdown.dart';
 import 'media.dart';
@@ -495,7 +496,11 @@ class _HomeState extends State<Home> {
                 )
               ])
             : _loading
-                ? const Center(child: CircularProgressIndicator())
+                ? const Waiting(lines: [
+                    'Buscando tu computadora…',
+                    'Preguntando por tus agentes…',
+                    'Tarda un poco la primera vez. Sigue en ello.',
+                  ])
                 : ListView.separated(
                     itemCount: _agents.length,
                     separatorBuilder: (_, __) => const Divider(height: 1),
@@ -602,13 +607,20 @@ class _AgentScreenState extends State<AgentScreen> {
       case 'media':
         final st = _chat.currentState;
         if (st == null) return;
-        Navigator.of(context).push(MaterialPageRoute(
+        Navigator.of(context).push<int>(MaterialPageRoute(
           builder: (_) => MediaScreen(
             link: widget.link,
             messages: st.messages,
             body: st.bodyFor,
           ),
-        ));
+        )).then((index) {
+          // The gallery hands back the message a file came with, if somebody asked
+          // to be taken to it.
+          if (index != null) {
+            setState(() => _tab = 0);
+            _chat.currentState?.jumpToMessage(index);
+          }
+        });
       case 'settings':
         _openSettings();
     }
@@ -759,6 +771,28 @@ Future<void> loadOpenThreads() async {
   _openThreads.addAll(await Store.loadThreads());
 }
 
+/// A message that begins with a quote is a reply. Returns (who, what they said,
+/// the rest), or null.
+///
+/// Top level so it can be tested on its own: this is a parser, its input is written
+/// by an agent as often as by a person, and the ways it must NOT fire - a message
+/// that merely starts with a quotation, a bold word at the front - matter as much as
+/// the ways it must.
+(String, String, String)? splitReply(String text) {
+    // Spaces and tabs, not \s: \s swallowed the blank line that separates the quote
+    // from the answer, so '> **Yo:**' followed by a blank line and 'nada' parsed as a
+    // reply quoting "nada" - and the answer disappeared into the header. One line for
+    // the name, one for what was said, which is the shape this writes and the shape an
+    // agent copying it writes back.
+    final m = RegExp(r'^>[ \t]*\*\*([^\n]+?):\*\*[ \t]*([^\n]*)(?:\n|$)')
+        .firstMatch(text);
+    if (m == null) return null;
+    final who = (m.group(1) ?? '').trim();
+    final quoted = (m.group(2) ?? '').trim();
+    if (who.isEmpty || quoted.isEmpty) return null;
+    return (who, quoted, text.substring(m.end).trimLeft());
+  }
+
 class ChatTab extends StatefulWidget {
   const ChatTab({super.key, required this.link, required this.agent});
   final Link link;
@@ -793,6 +827,12 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
   bool _talkOff = false;
   bool _turningOn = false;
 
+  /// Still finding out whether this agent can be talked to and where the
+  /// conversation left off. There was no state for this: the screen showed an empty
+  /// message list and a composer that could not be typed into, which is a chat that
+  /// looks finished and broken at the same time. On mobile data it lasted seconds.
+  bool _connecting = true;
+
   @override
   void initState() {
     super.initState();
@@ -812,6 +852,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       };
 
   Future<void> _start() async {
+    if (mounted) setState(() => _connecting = true);
     try {
       // Whether talking is switched on, first: everything below depends on it.
       final st = await widget.link.reach('POST', '/api/talk/status', body: _body());
@@ -859,6 +900,8 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       }
     } catch (e) {
       setState(() => _error = humanError(e));
+    } finally {
+      if (mounted) setState(() => _connecting = false);
     }
   }
 
@@ -928,6 +971,31 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
     var quoted = (r['text'] ?? '').toString().trim().replaceAll('\n', ' ');
     if (quoted.length > 300) quoted = '${quoted.substring(0, 300)}…';
     return '> **$who:** $quoted\n\n$text';
+  }
+
+  /// A message that begins with a quote is a reply, and is drawn as one.
+  ///
+  /// There is no 'in reply to' field in the protocol - the quote IS the protocol,
+  /// which is why the agent understands one without being taught anything. That cuts
+  /// both ways: an agent that answers by quoting is replying to a particular message,
+  /// exactly as Hermes does on Telegram, and this reads it back the same way for
+  /// both of them. Nothing was added to the wire; what was missing was the drawing.
+  ///
+  /// Returns (who, what they said, the rest of the message), or null.
+  static (String, String, String)? _asReply(String text) => splitReply(text);
+
+  /// Where the quoted message is, so tapping the quote can go there. Matched on the
+  /// text because that is all a quote carries; the newest match wins, since quoting
+  /// something said twice almost always means the recent one.
+  int _findQuoted(String quoted, int before) {
+    final needle = quoted.endsWith('…')
+        ? quoted.substring(0, quoted.length - 1)
+        : quoted;
+    for (var i = (before - 1).clamp(0, _msgs.length - 1); i >= 0; i--) {
+      final t = (_msgs[i]['text'] ?? '').toString().replaceAll('\n', ' ');
+      if (needle.isNotEmpty && t.contains(needle)) return i;
+    }
+    return -1;
   }
 
   Future<void> _send() async {
@@ -1106,6 +1174,37 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
         }),
     ];
   }
+
+  /// A message somebody asked to be taken to, from the gallery. Rings for a moment
+  /// and then stops: a permanent mark would still be there next time, meaning
+  /// nothing, and the point is to answer 'which one' at the instant of arriving.
+  int _flash = -1;
+
+  /// Take me to the message this file came with.
+  ///
+  /// By a fraction of the list, the same approximation the search arrows use and for
+  /// the same reason: the bubbles are different heights and there is no cheap way to
+  /// know where one starts. Landing near it is enough when it is also ringed.
+  void jumpToMessage(int index) {
+    if (index < 0 || index >= _msgs.length) return;
+    setState(() => _flash = index);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scroll.hasClients) return;
+      final at = index / _msgs.length;
+      _scroll.animateTo(
+        (_scroll.position.maxScrollExtent * at)
+            .clamp(0.0, _scroll.position.maxScrollExtent),
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOut,
+      );
+    });
+    Future.delayed(const Duration(milliseconds: 2200), () {
+      if (mounted && _flash == index) setState(() => _flash = -1);
+    });
+  }
+
+  bool _isFlashed(Map<String, dynamic> m) =>
+      _flash >= 0 && _flash < _msgs.length && identical(_msgs[_flash], m);
 
   /// Is this the match the arrows are currently pointing at?
   bool _isCurrentHit(Map<String, dynamic> m) {
@@ -1736,8 +1835,21 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
         ),
       if (_talkOff)
         _talkOffScreen(context)
+      else if (_connecting)
+        const Expanded(
+          child: Waiting(lines: [
+            'Conectando con el agente…',
+            'Viendo dónde os quedasteis…',
+            'Sigue en ello. Fuera de casa tarda un poco más.',
+          ]),
+        )
       else if (_loadingHistory)
-        const Expanded(child: Center(child: CircularProgressIndicator()))
+        const Expanded(
+          child: Waiting(lines: [
+            'Abriendo la conversación…',
+            'Trayendo lo que os dijisteis…',
+          ]),
+        )
       else if (_msgs.isEmpty && _error.isEmpty && _ready)
         Expanded(
           child: Center(
@@ -1772,11 +1884,11 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
           },
         ),
       ),
-      if (_replyTo != null && !_talkOff) _replyStrip(),
+      if (_replyTo != null && !_talkOff && !_connecting) _replyStrip(),
       if (_attached.isNotEmpty && !_talkOff) _attachedStrip(),
       // No box to type in while there is nothing listening: a composer under a
       // screen that says it is switched off is an invitation to lose a message.
-      if (!_talkOff)
+      if (!_talkOff && !_connecting)
       SafeArea(
         top: false,
         child: Padding(
@@ -1785,6 +1897,46 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
         ),
       ),
     ]);
+  }
+
+  /// The strip above a reply: who was answered and what they said. Tapping it goes
+  /// there, which is the whole reason anybody taps a quote.
+  Widget _replyHead(BuildContext c, String who, String quoted,
+      Map<String, dynamic> m, Color ink, bool mine) {
+    final tint = ink.withValues(alpha: mine ? 0.22 : 0.08);
+    return InkWell(
+      onTap: () {
+        final at = _findQuoted(quoted, _msgs.indexOf(m));
+        if (at >= 0) jumpToMessage(at);
+      },
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 6),
+        padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
+        decoration: BoxDecoration(
+          color: tint,
+          borderRadius: BorderRadius.circular(8),
+          border: Border(
+            left: BorderSide(color: ink.withValues(alpha: 0.55), width: 3),
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(who,
+                style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: ink.withValues(alpha: 0.9))),
+            Text(quoted,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    fontSize: 11, color: ink.withValues(alpha: 0.75))),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _bubble(BuildContext c, Map<String, dynamic> m, bool mine) {
@@ -1800,7 +1952,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
                   borderRadius: BorderRadius.circular(16),
                   // The match being looked at gets a ring. Without it, scrolling to a
                   // result lands you in a wall of bubbles with no idea which one it is.
-                  border: _isCurrentHit(m)
+                  border: (_isCurrentHit(m) || _isFlashed(m))
                       ? Border.all(color: context.c.warn, width: 2)
                       : mine
                           ? null
@@ -1847,21 +1999,30 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
                       pending: m['pending'] == true,
                     );
                   }
+                  // A leading quote is a reply, from either side, and is lifted out
+                  // of the text so the bubble shows what was actually said rather
+                  // than a block of markdown with the answer buried under it.
+                  final reply = _asReply(body);
+                  final rest = reply?.$3 ?? body;
+                  final head = reply == null
+                      ? null
+                      : _replyHead(bc, reply.$1, reply.$2, m, ink, mine);
                   final body2 = mine
-                      ? SelectableText(body,
+                      ? SelectableText(rest,
                           style: TextStyle(color: ink),
                           contextMenuBuilder: menuFor(_actionsFor(m, mine)))
-                      : Markdown(body,
+                      : Markdown(rest,
                           baseStyle: TextStyle(color: ink, height: 1.35),
                           onLink: _openLink,
                           highlight: _query.trim(),
                           actions: _actionsFor(m, mine));
-                  if (files.isEmpty) return body2;
+                  if (files.isEmpty && head == null) return body2;
                   return Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      if (body.isNotEmpty) body2,
+                      if (head != null) head,
+                      if (rest.isNotEmpty) body2,
                       for (final f in files)
                         Attachment(
                           link: widget.link,
@@ -1988,15 +2149,67 @@ class _BrowserTabState extends State<BrowserTab> {
   final _url = TextEditingController();
   final _keys = FocusNode();
 
+  /// Getting closer to the page.
+  ///
+  /// A 1440-pixel desktop window drawn across a phone makes most text too small to
+  /// read and most links too small to hit - and the agent's browser is a DESKTOP
+  /// browser, so there is no mobile layout coming to rescue it. This zooms the
+  /// picture rather than the page: nothing is asked of the computer, and what is on
+  /// screen stays exactly what the agent is looking at.
+  final TransformationController _view = TransformationController();
+  double _zoom = 1;
+
+  /// The size the picture is being drawn at, so zooming can keep the middle of the
+  /// screen still. Set by the LayoutBuilder below rather than measured here.
+  Size _box = Size.zero;
+
+  static const double _zoomMin = 1, _zoomMax = 5;
+
+  void _setZoom(double want, [Offset? around]) {
+    final next = want.clamp(_zoomMin, _zoomMax);
+    setState(() {
+      _zoom = next;
+      if (next <= 1) {
+        _view.value = Matrix4.identity();
+      } else {
+        // Around the middle of what is on screen, because that is where somebody
+        // peering at something small is already looking. Zooming from the corner -
+        // which is what scaling the identity does - throws the thing they were
+        // reading off the screen and makes the button feel like it did the wrong
+        // thing.
+        final at = around ??
+            (_box == Size.zero
+                ? Offset.zero
+                : Offset(_box.width / 2, _box.height / 2));
+        final now = _view.value;
+        final was = now.getMaxScaleOnAxis();
+        final shift = Offset(now.storage[12], now.storage[13]);
+        final scene = (at - shift) / was;      // the picture point under that spot
+        final keep = at - scene * next;        // put it back where it was
+        _view.value = Matrix4.identity()
+          ..translateByDouble(keep.dx, keep.dy, 0, 1)
+          ..scaleByDouble(next, next, next, 1);
+      }
+    });
+  }
+
   @override
   void initState() {
     super.initState();
     _open();
+    super.initState();
+    // Pinching changes the scale without going through _setZoom, and the one-finger
+    // rule below depends on knowing the current one.
+    _view.addListener(() {
+      final now = _view.value.getMaxScaleOnAxis();
+      if ((now - _zoom).abs() > 0.01 && mounted) setState(() => _zoom = now);
+    });
   }
 
   @override
   void dispose() {
     _stream?.close();
+    _view.dispose();
     _keys.dispose();
     super.dispose();
   }
@@ -2072,6 +2285,18 @@ class _BrowserTabState extends State<BrowserTab> {
               onSubmitted: (v) => _stream?.navigate(v),
             ),
           ),
+          // Buttons as well as pinch: pinching a live video of somebody else's
+          // browser is not an obvious thing to try, and these say it can be done.
+          IconButton(
+            tooltip: tr('Alejar'),
+            onPressed: _zoom <= 1.01 ? null : () => _setZoom(_zoom - 0.5),
+            icon: const Icon(Icons.zoom_out),
+          ),
+          IconButton(
+            tooltip: tr('Acercar'),
+            onPressed: _zoom >= _zoomMax ? null : () => _setZoom(_zoom + 0.5),
+            icon: const Icon(Icons.zoom_in),
+          ),
           IconButton(
             tooltip: 'Actualizar la imagen',
             onPressed: () => _stream?.refresh(),
@@ -2087,11 +2312,23 @@ class _BrowserTabState extends State<BrowserTab> {
                   child: Text(tr('Esperando la primera imagen…'),
                       style: const TextStyle(color: Colors.white70)))
               : LayoutBuilder(builder: (c, box) {
-                  return GestureDetector(
+                  _box = Size(box.maxWidth, box.maxHeight);
+                  // The gesture detector is INSIDE, so its coordinates are the
+                  // picture's own however far it has been zoomed or panned - the tap
+                  // that reaches the computer needs no correcting.
+                  return InteractiveViewer(
+                    transformationController: _view,
+                    minScale: _zoomMin,
+                    maxScale: _zoomMax,
+                    // One finger drags the PAGE at 1x and the VIEW once zoomed in.
+                    // Both are what you would expect at the time, and the two cannot
+                    // both have one finger.
+                    panEnabled: _zoom > 1.01,
+                    child: GestureDetector(
                     onTapDown: (d) =>
                         _tapAt(d.localPosition, Size(box.maxWidth, box.maxHeight)),
                     onVerticalDragUpdate: (d) {
-                      if (!_armed) return;
+                      if (!_armed || _zoom > 1.01) return;
                       _stream?.scroll(
                         d.localPosition.dx / box.maxWidth,
                         d.localPosition.dy / box.maxHeight,
@@ -2105,6 +2342,7 @@ class _BrowserTabState extends State<BrowserTab> {
                         fit: BoxFit.contain,
                         width: box.maxWidth,
                       ),
+                    ),
                     ),
                   );
                 }),

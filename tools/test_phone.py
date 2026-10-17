@@ -368,8 +368,12 @@ ok("it offers the switch only to a phone that may press it",
    "pairing.caps.contains('config')" in _main)
 ok("and says where the switch is when it may not",
    'H\u00e1blale desde aqu\u00ed' in _main)
+# No composer while the agent is off, and none while the app is still finding out
+# where the conversation left off - typing into either is a way to lose a message.
 ok("with no box to type into while nothing is listening",
-   'if (!_talkOff)' in _main)
+   'if (!_talkOff && !_connecting)' in _main)
+ok("and a wait that says what it is waiting for, rather than a dead screen",
+   'Conectando con el agente' in _main and 'Waiting(' in _main)
 
 section("the master switch and revoking")
 pairing.set_enabled(SAND, False)

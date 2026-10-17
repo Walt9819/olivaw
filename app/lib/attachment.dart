@@ -17,6 +17,7 @@ import 'package:flutter/material.dart';
 import 'link.dart';
 import 'native.dart';
 import 'theme.dart';
+import 'loading.dart';
 import 'strings.dart';
 
 /// Fetched file bytes, by grant id. Deliberately not persisted: an id is only good while
@@ -140,7 +141,13 @@ class Attachment extends StatelessWidget {
     }
   }
 
-  Widget _row(BuildContext context) {
+  /// A file nobody has tapped yet. The row is its own widget because tapping it
+  /// starts a fetch that can take seconds on mobile data, and the old one had
+  /// nowhere to put a spinner - so a tap looked like nothing had happened, and the
+  /// obvious response is to tap again.
+  Widget _row(BuildContext context) => _FileRow(this);
+
+  Widget _rowBody(BuildContext context, bool busy, VoidCallback? onTap) {
     final human = (file['human'] ?? '').toString();
     final folder = (file['folder'] ?? '').toString();
     // The computer could not find it any more. Weeks after a conversation that is
@@ -150,17 +157,24 @@ class Attachment extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(top: 4),
       child: InkWell(
-        onTap: fetchable ? () => _download(context) : null,
+        onTap: (fetchable && !busy) ? onTap : null,
         onLongPress: fetchable ? () => saveCopy(context) : null,
         child: Row(mainAxisSize: MainAxisSize.min, children: [
-          Icon(
-              missing
-                  ? Icons.broken_image_outlined
-                  : fetchable
-                      ? Icons.download_outlined
-                      : Icons.insert_drive_file_outlined,
-              size: 16,
-              color: ink.withValues(alpha: missing ? 0.6 : 1.0)),
+          if (busy)
+            SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2, color: ink),
+            )
+          else
+            Icon(
+                missing
+                    ? Icons.broken_image_outlined
+                    : fetchable
+                        ? Icons.download_outlined
+                        : Icons.insert_drive_file_outlined,
+                size: 16,
+                color: ink.withValues(alpha: missing ? 0.6 : 1.0)),
           const SizedBox(width: 6),
           Flexible(
             child: Column(
@@ -174,7 +188,14 @@ class Attachment extends StatelessWidget {
                         color: ink,
                         decoration: fetchable ? TextDecoration.underline : null,
                         decorationColor: ink.withValues(alpha: 0.4))),
-                if (human.isNotEmpty || !fetchable)
+                if (busy)
+                  Text(
+                    human.isEmpty
+                        ? tr('Trayéndolo…')
+                        : trp('Trayéndolo… {0}', [human]),
+                    style: TextStyle(fontSize: 11, color: ink.withValues(alpha: 0.7)),
+                  )
+                else if (human.isNotEmpty || !fetchable)
                   Text(
                     missing
                         ? 'ya no está en el computadora'
@@ -261,6 +282,31 @@ class Attachment extends StatelessWidget {
 }
 
 /// An image that fetches itself once and then stays put.
+class _FileRow extends StatefulWidget {
+  const _FileRow(this.att);
+  final Attachment att;
+
+  @override
+  State<_FileRow> createState() => _FileRowState();
+}
+
+class _FileRowState extends State<_FileRow> {
+  bool _busy = false;
+
+  Future<void> _tap() async {
+    setState(() => _busy = true);
+    try {
+      await widget.att._download(context);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      widget.att._rowBody(context, _busy, _tap);
+}
+
 class _ImagePreview extends StatefulWidget {
   const _ImagePreview(this.att);
   final Attachment att;
@@ -310,11 +356,9 @@ class _ImagePreviewState extends State<_ImagePreview> {
           border: Border.all(color: context.c.line),
         ),
         child: Center(
-          child: SizedBox(
-            width: 20,
-            height: 20,
-            child: CircularProgressIndicator(strokeWidth: 2, color: context.c.muted),
-          ),
+          // With the size on it: 40 kB that is slow is a bad connection and 4 MB
+          // that is slow is simply 4 MB, and those want different patience.
+          child: Busy(label: (widget.att.file['human'] ?? '').toString()),
         ),
       ),
     );

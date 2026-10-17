@@ -28,17 +28,38 @@ class MediaScreen extends StatelessWidget {
   final List<Map<String, dynamic>> messages;
   final Map<String, dynamic> Function([Map<String, dynamic>?]) body;
 
-  /// Every file in the conversation, newest first, with who sent it.
+  /// Every file in the conversation, newest first, with who sent it, the first
+  /// words of the message it arrived with, and where that message is.
+  ///
+  /// The words are the point. 'presentacion-v3.pdf' six weeks later is a filename;
+  /// 'esto es lo que le enseñé al cliente' is the thing you are looking for.
   List<Map<String, dynamic>> get _all {
     final out = <Map<String, dynamic>>[];
-    for (final m in messages) {
+    for (var i = 0; i < messages.length; i++) {
+      final m = messages[i];
       for (final f in (m['files'] as List? ?? [])) {
         if (f is Map) {
-          out.add({...f.cast<String, dynamic>(), '_mine': m['role'] == 'user'});
+          out.add({
+            ...f.cast<String, dynamic>(),
+            '_mine': m['role'] == 'user',
+            '_said': _firstWords((m['text'] ?? '').toString()),
+            '_at': i,
+          });
         }
       }
     }
     return out.reversed.toList();
+  }
+
+  /// One line of it. Markdown and newlines flattened, because this is a caption in a
+  /// list, not a message.
+  static String _firstWords(String text) {
+    final flat = text
+        .replaceAll(RegExp(r'[`*_#>]'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    if (flat.length <= 90) return flat;
+    return '${flat.substring(0, 89).trimRight()}…';
   }
 
   @override
@@ -103,15 +124,40 @@ class _Grid extends StatelessWidget {
         mainAxisSpacing: 8,
       ),
       itemCount: files.length,
-      itemBuilder: (c, i) => ClipRRect(
-        borderRadius: BorderRadius.circular(10),
-        child: Attachment(
-          link: link,
-          file: files[i],
-          body: body,
-          ink: c.c.ink,
-          thumbnail: true,
-        ),
+      itemBuilder: (c, i) => Stack(
+        fit: StackFit.expand,
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: Attachment(
+              link: link,
+              file: files[i],
+              body: body,
+              ink: c.c.ink,
+              thumbnail: true,
+            ),
+          ),
+          // A corner button rather than a tap on the picture: tapping a photo means
+          // 'show me the photo', and taking that away to mean something else is how
+          // a gallery stops behaving like one.
+          if (files[i]['_at'] != null)
+            Positioned(
+              right: 2,
+              bottom: 2,
+              child: Material(
+                color: Colors.black.withValues(alpha: 0.45),
+                shape: const CircleBorder(),
+                child: IconButton(
+                  iconSize: 16,
+                  visualDensity: VisualDensity.compact,
+                  tooltip: tr('Ver en la conversación'),
+                  icon: const Icon(Icons.forum_outlined, color: Colors.white),
+                  onPressed: () =>
+                      Navigator.pop(c, files[i]['_at'] as int),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -142,16 +188,59 @@ class _Rows extends StatelessWidget {
                 color: c.c.muted),
             const SizedBox(width: 12),
             Expanded(
-              child: Attachment(
-                link: link,
-                file: f,
-                body: body,
-                ink: c.c.ink,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Attachment(
+                    link: link,
+                    file: f,
+                    body: body,
+                    ink: c.c.ink,
+                  ),
+                  _Said(said: (f['_said'] ?? '').toString(), at: f['_at']),
+                ],
               ),
             ),
           ]),
         );
       },
+    );
+  }
+}
+
+/// The first words of the message a file arrived with, and the way back to it.
+///
+/// Tapping the FILE opens the file - that is what tapping a file means. Tapping what
+/// was said around it goes to the conversation, which is the other thing somebody
+/// wants from a gallery and has nowhere else to live.
+class _Said extends StatelessWidget {
+  const _Said({required this.said, required this.at});
+
+  final String said;
+  final Object? at;
+
+  @override
+  Widget build(BuildContext context) {
+    if (said.isEmpty || at is! int) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 2),
+      child: InkWell(
+        onTap: () => Navigator.pop(context, at as int),
+        child: Row(children: [
+          Icon(Icons.subdirectory_arrow_right,
+              size: 13, color: context.c.muted),
+          const SizedBox(width: 4),
+          Expanded(
+            child: Text(
+              said,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 11, color: context.c.muted),
+            ),
+          ),
+        ]),
+      ),
     );
   }
 }

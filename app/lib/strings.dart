@@ -425,4 +425,11 @@ const Map<String, (String, String)> _table = {
     'Everything the two of you have sent.',
     'Alles, was ihr euch geschickt habt.'
   ),
+
+  // ── waiting, zooming, and finding the message a file came with ──
+  'Trayéndolo…': ('Fetching it…', 'Wird geholt…'),
+  'Trayéndolo… {0}': ('Fetching it… {0}', 'Wird geholt… {0}'),
+  'Alejar': ('Zoom out', 'Verkleinern'),
+  'Acercar': ('Zoom in', 'Vergrößern'),
+  'Ver en la conversación': ('See it in the conversation', 'Im Gespräch ansehen'),
 };
