@@ -27,6 +27,7 @@ import 'theme.dart';
 import 'voice.dart';
 import 'settings.dart';
 import 'strings.dart';
+import 'teams.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -460,6 +461,12 @@ class _HomeState extends State<Home> {
   String _error = '';
   bool _loading = true;
 
+  /// Agents, teams, usage. Three views rather than one list with everything on it:
+  /// 'which agents are there', 'who works with whom' and 'who has been doing the
+  /// work' are three questions, and answering them in one column meant answering
+  /// only the first.
+  int _tab = 0;
+
   @override
   void initState() {
     super.initState();
@@ -535,16 +542,53 @@ class _HomeState extends State<Home> {
     }
   }
 
+  /// Open one agent's screen, from the roster or from a team.
+  void _open(BuildContext c, Agent a) {
+    Navigator.push<bool>(
+      c,
+      MaterialPageRoute(
+        builder: (_) => AgentScreen(link: _link, agent: a, pairing: widget.pairing),
+      ),
+    ).then((changed) {
+      if (changed == true && mounted) _refresh();
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(tr('Tus agentes')),
+        title: Text([
+          tr('Tus agentes'),
+          tr('Equipos'),
+          tr('Uso'),
+        ][_tab.clamp(0, 2)]),
         actions: [
-          IconButton(onPressed: _refresh, icon: const Icon(Icons.refresh)),
+          if (_tab == 0)
+            IconButton(onPressed: _refresh, icon: const Icon(Icons.refresh)),
         ],
       ),
-      body: RefreshIndicator(
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _tab.clamp(0, 2),
+        onDestinationSelected: (i) => setState(() => _tab = i),
+        destinations: [
+          NavigationDestination(
+              icon: const Icon(Icons.people_outline), label: tr('Agentes')),
+          NavigationDestination(
+              icon: const Icon(Icons.workspaces_outline), label: tr('Equipos')),
+          NavigationDestination(
+              icon: const Icon(Icons.insights_outlined), label: tr('Uso')),
+        ],
+      ),
+      body: _tab == 1
+          ? TeamsTab(
+              link: _link,
+              agents: _agents,
+              onOpenAgent: (a) => _open(context, a),
+            )
+          : _tab == 2
+              ? UsageTab(link: _link, agents: _agents)
+              : RefreshIndicator(
         onRefresh: _refresh,
         child: _error.isNotEmpty
             ? ListView(children: [
@@ -581,19 +625,12 @@ class _HomeState extends State<Home> {
                         subtitle: _AgentLine(agent: a),
                         trailing: const Icon(Icons.chevron_right),
                         // A new name or a new face comes back as `true`, and the
-                        // roster behind has to be asked again: the look it is holding
-                        // is the old one, and a picture that did not change on the
-                        // screen you came from looks exactly like one that was not
-                        // saved.
-                        onTap: () => Navigator.push<bool>(
-                          c,
-                          MaterialPageRoute(
-                            builder: (_) =>
-                                AgentScreen(link: _link, agent: a, pairing: widget.pairing),
-                          ),
-                        ).then((changed) {
-                          if (changed == true && mounted) _refresh();
-                        }),
+                        // roster behind has to be asked again: the look it is
+                        // holding is the old one, and a picture that did not change
+                        // on the screen you came from looks exactly like one that
+                        // was not saved. Shared with the team view, which opens an
+                        // agent the same way.
+                        onTap: () => _open(c, a),
                       );
                     },
                   ),

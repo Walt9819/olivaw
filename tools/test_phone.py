@@ -1124,6 +1124,70 @@ _hist = _hist[:_hist.index(chr(10) + 'def ', 10)]
 ok('and only the owner\'s own turns are read that way',
    'read_files_in(' in _hist and '== "user"' in _hist)
 
+# ── how much work has been done, and by which brain ─────────────────────
+# The counting is Hermes' - it keeps a row per conversation the same way whichever
+# brain is behind the bridge - so this never asks a brain anything, and Claude Code
+# and Codex need no special case. The ENGINE is a property of the AGENT, read from
+# Olivaw's registry, so every number can be labelled with the process that made it.
+from wizard import usage as usage_mod  # noqa: E402
+
+_now = time.time()
+_rows = [
+    {'id': 'a', 'source': 'telegram', 'model': 'claude-code', 'message_count': 10,
+     'tool_call_count': 4, 'input_tokens': 1000, 'output_tokens': 100,
+     'last_active': _now - 3600},
+    {'id': 'b', 'source': 'cron', 'model': 'hermes-agent', 'message_count': 2,
+     'tool_call_count': 1, 'input_tokens': 50, 'output_tokens': 5,
+     'last_active': _now - 86400},
+    # Older than the window: counted by nobody.
+    {'id': 'c', 'source': 'cli', 'model': 'claude-code', 'message_count': 99,
+     'tool_call_count': 99, 'input_tokens': 999999, 'output_tokens': 9999,
+     'last_active': _now - 400 * 86400},
+]
+_real_sessions = usage_mod.talk.sessions
+try:
+    usage_mod.talk.sessions = lambda *a, **k: {'ok': True, 'sessions': _rows}
+    _u = usage_mod.for_agent(None, days=30, install_dir=SAND)
+    ok('a window means a window', _u['sessions'] == 2, _u['sessions'])
+    ok('and the counters add up', _u['message_count'] == 12
+       and _u['input_tokens'] == 1050, _u)
+    ok('where the work came from is kept',
+       _u['by_source'] == {'telegram': 1, 'cron': 1}, _u['by_source'])
+    # A subscription reports no price, and summing zero would read as free.
+    ok('no price is no price, not zero', _u['cost_usd'] == 0)
+
+    _rep = usage_mod.report(
+        [{'slug': 'default', 'name': 'Principal'}, {'slug': 'otro', 'name': 'Otro'}],
+        {'teams': [{'id': 'eq', 'name': 'Equipo', 'icon': '\U0001f3e5',
+                    'members': ['default']}]},
+        install_dir=SAND)
+    ok('a team is the sum of its members',
+       _rep['teams'][0]['message_count'] == 12, _rep['teams'][0])
+    ok('and it keeps its mark', _rep['teams'][0]['icon'] == '\U0001f3e5')
+    ok('an agent on no team is still counted somewhere',
+       _rep['unassigned'] == ['otro'], _rep['unassigned'])
+    # Every number carries the brain that produced it, so a team running two of them
+    # can be split without either side knowing the other exists.
+    ok('every agent is labelled with its brain',
+       all(a.get('engine') for a in _rep['agents']), _rep['agents'])
+    ok('and the report says whether money was measured at all',
+       _rep['costed'] is False)
+
+    # A gateway that is off has NO numbers. Reporting zero would be a measurement
+    # nobody took, and it would quietly drag a team's totals down.
+    usage_mod.talk.sessions = lambda *a, **k: {'ok': False, 'detail': 'apagado'}
+    _off = usage_mod.for_agent('x', days=30, install_dir=SAND)
+    ok('an agent that cannot answer has no numbers, not zero numbers',
+       _off['known'] is False and _off['sessions'] == 0, _off)
+finally:
+    usage_mod.talk.sessions = _real_sessions
+
+ok('a phone that may look may see the numbers',
+   pairing.allowed('stats/usage', ['ver']))
+_m3 = io.open(os.path.join(ROOT, 'app', 'lib', 'main.dart'), encoding='utf-8').read()
+ok('and the main panel has the three views',
+   "tr('Agentes')" in _m3 and "tr('Equipos')" in _m3 and "tr('Uso')" in _m3)
+
 # ── whose team an agent is on ────────────────────────────────────────
 # Seven names say nothing about who works with whom, and that grouping is the owner's
 # own. It rides with the roster for the same reason the face does: a list that draws

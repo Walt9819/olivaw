@@ -474,4 +474,42 @@ const Map<String, (String, String)> _table = {
     'That photo is {0} and the limit is 5 MB. Crop it and try again.',
     'Das Foto hat {0}, erlaubt sind 5 MB. Schneide es zu und versuche es erneut.'
   ),
+
+  // ── teams, and how much work has been done ──
+  'Agentes': ('Agents', 'Agenten'),
+  'Equipos': ('Teams', 'Teams'),
+  'Uso': ('Usage', 'Nutzung'),
+  'Todavía no has agrupado a nadie. Los equipos se crean en la computadora, en «El equipo».': (
+    'Nobody is grouped yet. Teams are made at the computer, under «El equipo».',
+    'Noch ist niemand gruppiert. Teams werden am Computer unter «El equipo» erstellt.'
+  ),
+  '1 agente': ('1 agent', '1 Agent'),
+  '{0} agentes': ('{0} agents', '{0} Agenten'),
+  'Sin equipo': ('No team', 'Ohne Team'),
+  'Trabajan igual que los demás; sólo no están agrupados.': (
+    'They work like the rest; they are simply not grouped.',
+    'Sie arbeiten wie die anderen, sie sind nur nicht gruppiert.'
+  ),
+  'Mirando los equipos…': ('Looking at the teams…', 'Teams werden geladen…'),
+  'Conversaciones': ('Conversations', 'Gespräche'),
+  'Mensajes': ('Messages', 'Nachrichten'),
+  'Herramientas': ('Tool calls', 'Werkzeuge'),
+  'Tokens': ('Tokens', 'Tokens'),
+  'Coste': ('Cost', 'Kosten'),
+  'Último movimiento {0}': ('Last active {0}', 'Zuletzt aktiv {0}'),
+  'Los últimos': ('The last', 'Die letzten'),
+  '{0} d': ('{0} d', '{0} T'),
+  'Con una suscripción no hay precio por token, así que esto mide trabajo hecho, no dinero.': (
+    'On a subscription there is no price per token, so this measures work done, not money.',
+    'Im Abo gibt es keinen Preis pro Token, das hier misst also geleistete Arbeit, nicht Geld.'
+  ),
+  'Sin datos: su canal no está encendido ahora mismo.': (
+    'No data: its channel is not switched on right now.',
+    'Keine Daten: sein Kanal ist gerade nicht eingeschaltet.'
+  ),
+  'Telegram': ('Telegram', 'Telegram'),
+  'Consola': ('Console', 'Konsole'),
+  'Esta app': ('This app', 'Diese App'),
+  'Contando el trabajo…': ('Counting the work…', 'Arbeit wird gezählt…'),
+  'Un agente por vez.': ('One agent at a time.', 'Ein Agent nach dem anderen.'),
 };

@@ -49,6 +49,7 @@ if __package__ in (None, ""):
                         cron_patch, cronjobs, hermes_ctl, image_setup, numbers, obsidian,
                         pairing, proposals, providers, relay_client, remote, renaming,
                         rescue, selfcare, session_health, talk, talk_access, telegram_health,
+                        usage,
                         telegram_setup, usecases)
     from wizard import workspace as wsdir   # aliased: `workspace` is a local
                                             # variable name elsewhere in this file
@@ -61,6 +62,7 @@ else:
                    cronjobs, hermes_ctl, image_setup, numbers, obsidian, pairing,
                    proposals, providers, relay_client, remote, renaming, rescue,
                    selfcare, session_health, talk, talk_access, telegram_health, telegram_setup,
+                   usage,
                    usecases)
     from . import workspace as wsdir        # aliased: see above
     from .procutil import http_json, which
@@ -104,6 +106,23 @@ _test_bridge = None  # Popen of the throwaway bridge used by "probar el cerebro"
 
 import re as _re
 _SLUG_RE = _re.compile(r"^[a-z0-9]{1,24}$")
+
+
+def _default_engine():
+    """The brain an agent runs on unless it names its own.
+
+    The same rule launcher.py applies when it starts a bridge, read from the same
+    file - so a number labelled 'codex' was produced by a codex process and not by
+    whatever a session row happened to call itself.
+    """
+    try:
+        with open(os.path.join(INSTALL_DIR, "updater.config.json"),
+                  encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        got = ((cfg.get("env") or {}).get("OLIVAW_ENGINE") or "").strip().lower()
+        return got or "claude"
+    except Exception:  # noqa: BLE001
+        return "claude"
 
 
 def _target_profile(body, allow_new=False):
@@ -871,6 +890,19 @@ class Handler(BaseHTTPRequestHandler):
         # Every scheduled routine on the machine, and how loudly each one speaks. Read
         # from Hermes' own jobs.json rather than from `hermes cron list`, because the
         # printed form has nowhere to put an answer back.
+        # How much work each agent and each team has done. Read from Hermes' own
+        # session rows, which it keeps the same way whichever brain is behind the
+        # bridge - so this counts Claude Code and Codex without asking either.
+        if route == "stats/usage":
+            try:
+                _tstat, _tdat = teams.read(INSTALL_DIR)
+            except Exception:  # noqa: BLE001
+                _tdat = None
+            return usage.report(intercom.roster(INSTALL_DIR), _tdat,
+                                which("hermes"), INSTALL_DIR,
+                                days=body.get("days") or usage.DEFAULT_DAYS,
+                                default_engine=_default_engine())
+
         if route == "cron/list":
             st = cronjobs.state(roster=intercom.roster(INSTALL_DIR),
                                 hermes_exe=which("hermes"))

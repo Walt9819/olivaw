@@ -348,6 +348,10 @@
       lead: "Cuando ve algo que podría hacer por ti, lo propone aquí y espera. No construye " +
             "nada sin tu sí — y lo que descartes no vuelve a proponerlo.",
       render: function () { return secProposals(true); } },
+    { id: "uso", scope: "team", icon: "📊", label: "Cuánto trabajan",
+      title: "Cuánto trabaja cada agente",
+      lead: "Conversaciones, mensajes, herramientas y tokens — por agente y por equipo. Lo cuenta Hermes, que lleva la misma ficha de cada conversación sea cual sea el cerebro detrás, así que aquí salen igual Claude Code y Codex.",
+      render: secUsage, wire: eUsage },
     { id: "memoria", scope: "team", icon: "📓", label: "Leer su memoria",
       title: "Su memoria, en Obsidian",
       lead: "Lo que tu agente recuerda son notas de texto. En Obsidian puedes leerlas, " +
@@ -2446,6 +2450,107 @@
   // The legend under the picture: which colour is which team. Put here rather than as a
   // label on each node because a 48px box already carries a name and a role, and a third
   // line turns the diagram into a wall of six-point text.
+  // ── how much work has been done ──────────────────────────────────────────────
+  //
+  // The numbers are Hermes': it keeps a row per conversation - messages, tool calls,
+  // tokens in and out - the same way whichever brain is behind the bridge. So this
+  // asks no brain anything, and Claude Code and Codex need no special case. What the
+  // ENGINE is, is a property of the agent, read from Olivaw's own registry, so every
+  // number is labelled with the process that actually produced it.
+  var USE = { st: null, days: 30, busy: false };
+
+  function useNum(n) {
+    n = n || 0;
+    if (n < 1000) return String(n);
+    if (n < 1000000) return (n / 1000).toFixed(n >= 100000 ? 0 : 1) + " k";
+    return (n / 1000000).toFixed(n >= 100000000 ? 0 : 1) + " M";
+  }
+
+  function useStat(label, value) {
+    return '<div class="usestat"><b>' + esc(value) + '</b><span class="muted small">' +
+      esc(label) + "</span></div>";
+  }
+
+  function useRow(r, label, extra) {
+    return '<div class="userow"><div class="row" style="align-items:center;gap:8px">' +
+      "<b>" + esc(label) + "</b>" + (extra || "") + "</div>" +
+      '<div class="usestats">' +
+      useStat("conversaciones", useNum(r.sessions)) +
+      useStat("mensajes", useNum(r.message_count)) +
+      useStat("herramientas", useNum(r.tool_call_count)) +
+      useStat("tokens", useNum((r.input_tokens || 0) + (r.output_tokens || 0))) +
+      "</div></div>";
+  }
+
+  function secUsage() {
+    var st = USE.st;
+    if (!st) return '<p class="muted">Contando…</p>';
+    if (st.ok === false) return '<p class="muted">' + esc(st.detail || "Sin datos.") + "</p>";
+    var pick = [7, 30, 90].map(function (d) {
+      return '<button class="btn btn-sm ' + (USE.days === d ? "btn-soft" : "btn-ghost") +
+        ' useDays" data-d="' + d + '">' + d + " d</button>";
+    }).join(" ");
+
+    var teams = (st.teams || []).map(function (t) {
+      return useRow(t, (t.icon ? t.icon + " " : "") + t.name,
+                    '<span class="muted small">' + (t.members || []).length +
+                    ((t.members || []).length === 1 ? " agente" : " agentes") + "</span>");
+    }).join("");
+
+    // Busiest first: a list sorted by name makes you read all of it to find out who
+    // is doing the work.
+    var ags = (st.agents || []).slice().sort(function (a, b) {
+      return (b.input_tokens || 0) - (a.input_tokens || 0);
+    }).map(function (a) {
+      var tag = '<span class="pill">' + esc(a.engine || "") + "</span>";
+      if (!a.known) {
+        return '<div class="userow"><div class="row" style="align-items:center;gap:8px">' +
+          "<b>" + esc(a.name) + "</b>" + tag + "</div>" +
+          '<p class="muted small" style="margin:6px 0 0">Sin datos: su canal no ' +
+          'está encendido ahora mismo.</p></div>';
+      }
+      return useRow(a, a.name, tag);
+    }).join("");
+
+    // Said out loud rather than left as a zero next to two hundred million tokens,
+    // which reads as free instead of as not-measured.
+    var money = st.costed ? "" :
+      '<p class="muted small">Con una suscripción no hay precio por token, así que ' +
+      'esto mide trabajo hecho, no dinero.</p>';
+
+    return '<div class="row" style="gap:6px;align-items:center;margin-bottom:10px">' +
+      '<span class="muted small">Los últimos</span>' + pick + "</div>" + money +
+      (teams ? "<h3>Equipos</h3>" + teams : "") +
+      "<h3>Agentes</h3>" + ags;
+  }
+
+  function loadUsage() {
+    if (USE.busy) return;
+    USE.busy = true;
+    api("stats/usage", { days: USE.days }).then(function (st) {
+      USE.st = st;
+    }).catch(function (e) {
+      USE.st = { ok: false, detail: String(e && e.message || e) };
+    }).then(function () {
+      USE.busy = false;
+      // Only when the owner is still looking at it: a slow count that lands after
+      // they moved on should not yank the screen back.
+      if (S.sec === "uso") render();
+    });
+  }
+
+  function eUsage() {
+    if (!USE.st && !USE.busy) loadUsage();
+    each(".useDays", function (b) {
+      b.onclick = function () {
+        USE.days = parseInt(b.getAttribute("data-d"), 10) || 30;
+        USE.st = null;
+        render();
+        loadUsage();
+      };
+    });
+  }
+
   function tmLegend(t) {
     var teams = (t.teams || []).filter(function (g) { return g.count; });
     if (!teams.length) return "";

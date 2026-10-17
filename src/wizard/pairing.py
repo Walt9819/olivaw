@@ -83,6 +83,9 @@ ROUTES = {
     "avatar/get": "ver",
     "proposals/list": "ver",
     "cron/list": "ver",
+    # How much work has been done, which is the same kind of question as "what
+    # agents are there" - a phone that may look may see it.
+    "stats/usage": "ver",
     # talking
     "talk/sessions": "hablar",
     "talk/history": "hablar",

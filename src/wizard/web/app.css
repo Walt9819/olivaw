@@ -826,3 +826,11 @@ li.bad .boot-tick{background:var(--warn); border-color:var(--warn); color:#fff;
 .swrow { display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer }
 .swrow input { width:16px; height:16px; flex:none }
 .swrow b.warn { color:#b45309; font-weight:600 }
+
+/* Cuánto trabajan: one block per agent or team, with its counters in a row that
+   wraps on a narrow window rather than scrolling sideways. */
+.userow{padding:12px 0; border-bottom:1px solid var(--line)}
+.userow:last-child{border-bottom:0}
+.usestats{display:flex; flex-wrap:wrap; gap:18px; margin-top:8px}
+.usestat{display:flex; flex-direction:column; min-width:72px}
+.usestat b{font-size:17px; line-height:1.2}
