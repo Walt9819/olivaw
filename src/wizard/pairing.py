@@ -72,6 +72,12 @@ ROUTES = {
     "browser/status": "ver",
     "intercom/status": "ver",
     "talk/status": "ver",
+    # What the agent is for, what it knows how to do, and who it may talk to. All
+    # three are things the console shows anybody standing in front of it, so a phone
+    # that may LOOK may read them too. Changing the purpose is another matter and
+    # lives under config, below.
+    "agent/info": "ver",
+    "agent/skill": "ver",
     "proposals/list": "ver",
     "cron/list": "ver",
     # talking
@@ -93,11 +99,16 @@ ROUTES = {
     "agent/action": "operar",
     # the ones that are off until the owner says otherwise
     "agent/rename": "config",
+    "agent/purpose": "config",
     "avatar/set": "config",
     # Switching talking on is what makes an agent reachable at all, and a phone that
     # already holds "config" may change the agent's policy, which is the stronger of
     # the two by some distance. Keeping this desktop-only meant the settings screen
     # could show the one switch that matters and not touch it.
+    # Two switches, not one: whether THIS COMPUTER offers a chat and whether a PHONE
+    # may reach the agent are different questions. talk/access sets either one, and a
+    # phone setting its own is the common case - which is why it is allowed at all.
+    "talk/access": "config",
     "talk/enable": "config",
     "talk/disable": "config",
     "policy/save": "config",

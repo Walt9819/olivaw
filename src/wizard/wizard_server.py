@@ -43,22 +43,24 @@ if __package__ in (None, ""):
     # `from wizard import x` - so removing it costs nothing.
     sys.path[:] = [d for d in sys.path if os.path.abspath(d or ".") != _HERE]
     from wizard import updates as updates_mod
-    from wizard import (agents_registry, avatars, browser_setup, channels, checks,
+    from wizard import (agent_info, agents_registry, avatars, browser_setup,
+                        channels, checks,
                         config_writer, browser_label, connections, context_policy,
                         cron_patch, cronjobs, hermes_ctl, image_setup, numbers, obsidian,
                         pairing, proposals, providers, relay_client, remote, renaming,
-                        rescue, selfcare, session_health, talk, telegram_health,
+                        rescue, selfcare, session_health, talk, talk_access, telegram_health,
                         telegram_setup, usecases)
     from wizard import workspace as wsdir   # aliased: `workspace` is a local
                                             # variable name elsewhere in this file
     from wizard.procutil import http_json, which
 else:
     from . import updates as updates_mod
-    from . import (agents_registry, avatars, browser_setup, channels, checks,
+    from . import (agent_info, agents_registry, avatars, browser_setup,
+                   channels, checks,
                    config_writer, browser_label, connections, context_policy, cron_patch,
                    cronjobs, hermes_ctl, image_setup, numbers, obsidian, pairing,
                    proposals, providers, relay_client, remote, renaming, rescue,
-                   selfcare, session_health, talk, telegram_health, telegram_setup,
+                   selfcare, session_health, talk, talk_access, telegram_health, telegram_setup,
                    usecases)
     from . import workspace as wsdir        # aliased: see above
     from .procutil import http_json, which
@@ -980,17 +982,73 @@ class Handler(BaseHTTPRequestHandler):
         # Talking to the agent from this screen, through Hermes' own api_server platform -
         # so it is the SAME agent, with its persona, memory and skills, and not the raw
         # brain behind the bridge. wizard/talk.py explains why that distinction matters.
+        # What this agent IS. One round trip, because the screen that asks is on a
+        # phone and three would be three waits.
+        if route == "agent/info":
+            prof = _target_profile(body)
+            st = talk.status(prof, which("hermes"), INSTALL_DIR)
+            st.update(talk_access.flags(INSTALL_DIR, prof, st.get("enabled")))
+            return {"ok": True,
+                    "purpose": agent_info.purpose(prof, INSTALL_DIR),
+                    "skills": agent_info.skills(prof),
+                    "peers": agent_info.peers(prof, INSTALL_DIR,
+                                              intercom.roster(INSTALL_DIR)),
+                    "talk": st}
+        if route == "agent/skill":
+            return agent_info.skill_body(_target_profile(body),
+                                         body.get("id", ""))
+        if route == "agent/purpose":
+            return agent_info.save_purpose(_target_profile(body),
+                                           body.get("markdown", ""), INSTALL_DIR)
         if route == "talk/status":
             prof = _target_profile(body)
-            return talk.status(prof, which("hermes"), INSTALL_DIR)
+            st = talk.status(prof, which("hermes"), INSTALL_DIR)
+            # Two answers, not one. The gateway underneath is what carries a
+            # conversation; whether this computer and whether a phone may HAVE one
+            # are separate questions, and collapsing them is what made the console
+            # switch quietly decide what the phone could reach.
+            st.update(talk_access.flags(INSTALL_DIR, prof, st.get("enabled")))
+            return st
+        if route == "talk/access":
+            prof = _target_profile(body)
+            st = talk.status(prof, which("hermes"), INSTALL_DIR)
+            where = (body.get("where") or "").strip()
+            on = bool(body.get("on"))
+            try:
+                flags, want = talk_access.set_flag(INSTALL_DIR, prof, where, on,
+                                                   st.get("enabled"))
+            except ValueError:
+                return {"ok": False, "detail": "No sé de qué switch me hablas."}
+            res = {"ok": True}
+            # The gateway follows the pair: on while either wants it, off when
+            # neither does. A flag the transport cannot carry is a switch that lies.
+            if want and not st.get("enabled"):
+                res = talk.enable(prof, which("hermes"), INSTALL_DIR)
+                if res.get("ok"):
+                    res["restart"] = _queue_gateway_reload(prof)
+            elif not want and st.get("enabled"):
+                res = talk.disable(prof, which("hermes"))
+            res.update(flags)
+            return res
         if route == "talk/enable":
             prof = _target_profile(body)
             res = talk.enable(prof, which("hermes"), INSTALL_DIR)
             if res.get("ok"):
                 res["restart"] = _queue_gateway_reload(prof)
+                # Turning the gateway on by the old route is still an answer to both
+                # questions for an agent nobody has answered them for.
+                talk_access.set_flag(INSTALL_DIR, prof, "desktop", True, True)
             return res
         if route == "talk/disable":
-            return talk.disable(_target_profile(body), which("hermes"))
+            prof = _target_profile(body)
+            talk_access.set_flag(INSTALL_DIR, prof, "desktop", False,
+                                 talk.status(prof, which("hermes"),
+                                             INSTALL_DIR).get("enabled"))
+            if talk_access.flags(INSTALL_DIR, prof, False)["phone"]:
+                # Still wanted on a phone, so the gateway stays up; only the
+                # console stops offering its chat.
+                return {"ok": True, "detail": "Apagado aquí; sigue encendido en el teléfono."}
+            return talk.disable(prof, which("hermes"))
         if route == "talk/sessions":
             return talk.sessions(_target_profile(body), which("hermes"),
                                  limit=int(body.get("limit") or 20))

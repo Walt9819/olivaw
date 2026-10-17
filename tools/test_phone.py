@@ -37,7 +37,8 @@ os.environ["HERMES_HOME"] = os.path.join(SAND, "hermes")
 os.environ["OLIVAW_CRON_SCHEDULER"] = os.path.join(SAND, "scheduler.py")
 os.environ["OLIVAW_BRIDGE_JS"] = os.path.join(SAND, "bridge.js")
 
-from wizard import pairing, relay_client, remote, screencast, selfcert  # noqa: E402
+from wizard import (pairing, relay_client, remote, screencast, selfcert,
+                    talk_access)  # noqa: E402
 
 PORT = 8893
 passed = failed = 0
@@ -276,7 +277,22 @@ ok("no token, no API", p.request("POST", "/api/agents/list", {}, token="")[0] ==
 ok("an invented token, no API",
    p.request("POST", "/api/agents/list", {}, token="x" * 40)[0] == 401)
 ok("the paired phone may look", p.request("POST", "/api/agents/list", {})[0] == 200)
+# An agent has to be put on the phone before a phone may talk to it, which is a
+# separate decision from whether this computer offers a chat. Nothing is decided here
+# yet, and with no gateway running the pair inherits 'off' - so the refusal comes
+# first, and then the switch.
+ok("an agent nobody put on the phone is not reachable from one",
+   p.request("POST", "/api/talk/send", {"text": "hola"})[0] == 403)
+talk_access.set_flag(SAND, "default", "phone", True, False)
 ok("and talk", p.request("POST", "/api/talk/send", {"text": "hola"})[0] == 200)
+ok("the switch for this computer is a different one",
+   talk_access.flags(SAND, "default", False)["desktop"] is False)
+
+# Turning it off again closes the same door.
+talk_access.set_flag(SAND, "default", "phone", False, False)
+ok("taking it off the phone takes it off the phone",
+   p.request("POST", "/api/talk/send", {"text": "hola"})[0] == 403)
+talk_access.set_flag(SAND, "default", "phone", True, False)
 ok("but not rename", p.request("POST", "/api/agent/rename", {})[0] == 403)
 
 # A connection that opens and then says nothing.
@@ -343,7 +359,11 @@ ok("the same for switching it back off",
 # And the app does not simply dead-end when it is off.
 _main = io.open(os.path.join(ROOT, 'app', 'lib', 'main.dart'), encoding='utf-8').read()
 ok("the app has a screen for an agent that is not switched on",
-   '_talkOffScreen' in _main and 'talk/enable' in _main)
+   '_talkOffScreen' in _main and 'talk/access' in _main)
+# And it throws the PHONE switch, not the computer's. They are two settings now, and
+# an app that flipped the wrong one would turn on a chat window nobody is sitting at.
+ok("and the switch it throws is the phone one",
+   "'where': 'phone'" in _main)
 ok("it offers the switch only to a phone that may press it",
    "pairing.caps.contains('config')" in _main)
 ok("and says where the switch is when it may not",
@@ -1025,6 +1045,31 @@ if os.path.exists(_KT):
        'startsWith("http://")' in _kt and 'startsWith("https://")' in _kt)
     ok("the microphone is checked before recording",
        "checkSelfPermission" in _kt and "RECORD_AUDIO" in _kt)
+
+# ── every sentence the app can say ───────────────────────────────────
+# Spanish IS the key, so a missing row is not a crash - tr() hands back the Spanish
+# and the screen looks finished. On a phone set to German it is half translated, and
+# the only way anyone finds out is by holding one. Three sentences had already slipped
+# through that way before this existed.
+_LIT = r"'(?:[^'\\]|\\.)*'"
+_lib = os.path.join(ROOT, 'app', 'lib')
+_tbl = io.open(os.path.join(_lib, 'strings.dart'), encoding='utf-8').read()
+_have = set()
+# A key may be spread over adjacent literals on several lines; Dart joins them, so
+# reading one line at a time reports keys as missing that are already there.
+for _m in re.finditer(r'^  ((?:' + _LIT + r'\s*)+):\s*\(', _tbl, re.M):
+    _have.add(''.join(x[1:-1] for x in re.findall(_LIT, _m.group(1))))
+_untranslated = []
+for _name in sorted(os.listdir(_lib)):
+    if not _name.endswith('.dart') or _name == 'strings.dart':
+        continue
+    _src = io.open(os.path.join(_lib, _name), encoding='utf-8').read()
+    for _m in re.finditer(r'\btrp?\(\s*((?:' + _LIT + r'\s*)+)', _src):
+        _key = ''.join(x[1:-1] for x in re.findall(_LIT, _m.group(1)))
+        if _key and _key not in _have:
+            _untranslated.append('%s: %s' % (_name, _key[:60]))
+ok('every sentence the app says has English and German',
+   not _untranslated, _untranslated[:4])
 
 # ── the app's own manifest ─────────────────────────────────────────────────────────────
 # Flutter's template grants INTERNET in the DEBUG manifest only. A release build of a

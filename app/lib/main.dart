@@ -621,6 +621,8 @@ class _AgentScreenState extends State<AgentScreen> {
         slug: widget.agent.slug,
         name: widget.agent.name,
         isDefault: widget.agent.isDefault,
+        canEdit: widget.pairing.caps.contains('config'),
+        onOpenFiles: _chat.currentState == null ? null : () => _menu('media'),
       ),
     ));
     // A rename or a new face changes the roster behind this screen, and the title at
@@ -679,13 +681,20 @@ class _AgentScreenState extends State<AgentScreen> {
             )
           : AppBar(
               titleSpacing: 0,
-              title: Row(children: [
-                Face(agent: widget.agent, size: 30),
-                const SizedBox(width: 10),
-                Expanded(
-                    child:
-                        Text(widget.agent.name, overflow: TextOverflow.ellipsis)),
-              ]),
+              // The name opens the agent, which is where every phone app puts the
+              // thing you are looking at: tapping who you are talking to is how you
+              // find out about them. The menu entry stays, because a menu is where
+              // somebody looks when tapping the title did not occur to them.
+              title: InkWell(
+                onTap: _openSettings,
+                child: Row(children: [
+                  Face(agent: widget.agent, size: 30),
+                  const SizedBox(width: 10),
+                  Expanded(
+                      child:
+                          Text(widget.agent.name, overflow: TextOverflow.ellipsis)),
+                ]),
+              ),
               actions: [
                 if (_tab == 0)
                   IconButton(
@@ -711,11 +720,10 @@ class _AgentScreenState extends State<AgentScreen> {
                       value: 'media',
                       child: Text(tr('Fotos y archivos')),
                     ),
-                    if (widget.pairing.caps.contains('config'))
-                      PopupMenuItem(
-                        value: 'settings',
-                        child: Text(tr('Ajustes del agente')),
-                      ),
+                    PopupMenuItem(
+                      value: 'settings',
+                      child: Text(tr('Sobre este agente')),
+                    ),
                   ],
                 ),
               ],
@@ -807,7 +815,10 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
     try {
       // Whether talking is switched on, first: everything below depends on it.
       final st = await widget.link.reach('POST', '/api/talk/status', body: _body());
-      if (st['ok'] != true || st['enabled'] != true) {
+      // The PHONE switch, which is not the same question as whether the computer
+      // offers a chat window. An agent can be on here and off there, and the point
+      // of splitting them was that one answer could not mean both.
+      if (st['ok'] != true || st['phone'] != true) {
         setState(() {
           _talkOff = true;
           _error = '';
@@ -1658,8 +1669,8 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
   Future<void> _turnTalkOn() async {
     setState(() => _turningOn = true);
     try {
-      final res = await widget.link.reach('POST', '/api/talk/enable',
-          body: _body(), wait: Link.thinkingWait);
+      final res = await widget.link.reach('POST', '/api/talk/access',
+          body: _body({'where': 'phone', 'on': true}), wait: Link.thinkingWait);
       if (res['ok'] != true) {
         setState(() => _error = tr((res['detail'] ?? '').toString()));
         return;

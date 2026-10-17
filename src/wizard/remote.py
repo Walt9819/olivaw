@@ -116,6 +116,26 @@ def call_api(route, body, caps):
                     "addresses": selfcert.local_ips(), "port": PORT}, 200
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "detail": str(e)}, 500
+    # An agent the owner has not put on the phone is not reachable FROM the phone,
+    # whatever permissions this device holds. The app also hides it, but the app is a
+    # courtesy and this is the rule: a phone that keeps asking gets the same no.
+    # The switches themselves are not behind the switch - turning it on is precisely
+    # what you do when it is off - and neither is asking what the state is. Those four
+    # are gated by "config" in the permission table instead.
+    if route.startswith("talk/") and route not in (
+            "talk/status", "talk/access", "talk/enable", "talk/disable",
+            "talk/voice_status"):
+        try:
+            from . import talk, talk_access
+            prof = (body or {}).get("profile") or "default"
+            st = talk.status(prof, install_dir=INSTALL_DIR)
+            if not talk_access.allowed_from_phone(INSTALL_DIR, prof, st.get("enabled")):
+                return {"ok": False, "phone_off": True,
+                        "detail": u"Este agente no está puesto para hablar desde el teléfono."}, 403
+        except Exception as e:  # noqa: BLE001
+            # A check that cannot run must not become a door that opens.
+            log("could not check phone access for %s: %s" % (route, e))
+            return {"ok": False, "detail": u"No pude comprobar el permiso."}, 503
     try:
         return _api().dispatch("/api/" + route, body or {}), 200
     except Exception as e:  # noqa: BLE001

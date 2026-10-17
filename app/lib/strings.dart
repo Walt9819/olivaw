@@ -358,4 +358,71 @@ const Map<String, (String, String)> _table = {
   ),
   'Encender': ('Switch on', 'Einschalten'),
   'Encendiendo…': ('Switching on…', 'Wird eingeschaltet…'),
+
+  // ── what an agent is, and where it can be talked to ──
+  'Sobre este agente': ('About this agent', 'Über diesen Agenten'),
+  'Quién es': ('Who it is', 'Wer er ist'),
+  'Para qué es': ('What it is for', 'Wofür er da ist'),
+  'Editar': ('Edit', 'Bearbeiten'),
+  'Todavía no tiene uno escrito.': ('Nothing written for it yet.', 'Dafür ist noch nichts geschrieben.'),
+  'Lo que este agente es y cómo debe comportarse.': (
+    'What this agent is and how it should behave.',
+    'Was dieser Agent ist und wie er sich verhalten soll.'
+  ),
+  'Lo usa desde el siguiente mensaje: no hace falta reiniciar nada.': (
+    'It uses this from the next message on: nothing needs restarting.',
+    'Ab der nächsten Nachricht gilt das: Es muss nichts neu gestartet werden.'
+  ),
+  'Debajo de eso': ('Underneath that', 'Darunter'),
+  'Lo que trae Hermes de fábrica, igual para todos los agentes. No se edita desde aquí.': (
+    'What Hermes ships with, the same for every agent. Not editable from here.',
+    'Was Hermes mitbringt, für alle Agenten gleich. Hier nicht bearbeitbar.'
+  ),
+  'Lo que sabe hacer': ('What it knows how to do', 'Was er kann'),
+  'Nada especial todavía.': ('Nothing special yet.', 'Noch nichts Besonderes.'),
+  '1 habilidad': ('1 skill', '1 Fähigkeit'),
+  '{0} habilidades': ('{0} skills', '{0} Fähigkeiten'),
+  'Suyas': ('Its own', 'Seine eigenen'),
+  'De la computadora': ('From the computer', 'Vom Computer'),
+  'Las tienen todos los agentes de esta máquina.': (
+    'Every agent on this machine has these.',
+    'Die haben alle Agenten auf diesem Rechner.'
+  ),
+  'Son más largas de lo que cabe aquí; esto es el principio.': (
+    'They are longer than fits here; this is the beginning.',
+    'Sie sind länger als hier hineinpasst; das ist der Anfang.'
+  ),
+  'Buscando las instrucciones…': ('Fetching the instructions…', 'Anleitung wird geholt…'),
+  'Con quién habla': ('Who it talks to', 'Mit wem er spricht'),
+  'Es el único agente de esta computadora.': (
+    'It is the only agent on this computer.',
+    'Er ist der einzige Agent auf diesem Computer.'
+  ),
+  'Puede preguntarles algo y esperar su respuesta, sin que tú estés delante.': (
+    'It can ask them something and wait for an answer, without you being there.',
+    'Er kann sie etwas fragen und auf Antwort warten, auch ohne dich.'
+  ),
+  'Ahora mismo no contesta': ('Not answering right now', 'Antwortet gerade nicht'),
+  'Cómo les habla': ('How it talks to them', 'Wie er mit ihnen spricht'),
+  'Dónde se le puede hablar': ('Where it can be talked to', 'Wo man mit ihm sprechen kann'),
+  'En este teléfono': ('On this phone', 'Auf diesem Telefon'),
+  'Si está apagado, el agente no aparece para hablar desde el teléfono.': (
+    'With this off, the agent cannot be talked to from the phone.',
+    'Ist das aus, kann man vom Telefon aus nicht mit ihm sprechen.'
+  ),
+  'En la computadora': ('On the computer', 'Auf dem Computer'),
+  'La ventana de conversación de la computadora.': (
+    'The conversation window on the computer.',
+    'Das Gesprächsfenster auf dem Computer.'
+  ),
+  'Para cambiar estos interruptores, este teléfono necesita el permiso de configuración.': (
+    'To change these switches, this phone needs the configuration permission.',
+    'Um diese Schalter zu ändern, braucht dieses Telefon die Konfigurationsberechtigung.'
+  ),
+  'Preguntándole al agente…': ('Asking the agent…', 'Der Agent wird gefragt…'),
+  'Guardando…': ('Saving…', 'Wird gespeichert…'),
+  'Todo lo que os habéis mandado.': (
+    'Everything the two of you have sent.',
+    'Alles, was ihr euch geschickt habt.'
+  ),
 };
