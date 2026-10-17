@@ -212,6 +212,51 @@ class Native {
     }
   }
 
+  /// Hold the recording where it is, and pick it up again in the same note.
+  ///
+  /// Both report whether it worked rather than throwing: a phone too old to pause
+  /// should lose the button, not the recording.
+  static Future<bool> recordPause() async {
+    try {
+      await _ch.invokeMethod('recordPause');
+      return true;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  static Future<bool> recordResume() async {
+    try {
+      await _ch.invokeMethod('recordResume');
+      return true;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  /// Hold whatever note is playing, and start it again afterwards.
+  ///
+  /// For when a recording begins: a microphone and a speaker in the same room is
+  /// feedback, and the phone would record whatever was playing. Pausing rather than
+  /// stopping keeps the place in a long note somebody was halfway through.
+  /// [playPause] says whether there was anything to pause, so the caller knows
+  /// whether to offer it back.
+  static Future<bool> playPause() async {
+    try {
+      return await _ch.invokeMethod<bool>('playPause') ?? false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  static Future<bool> playResume() async {
+    try {
+      return await _ch.invokeMethod<bool>('playResume') ?? false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
   static Future<void> recordCancel() async {
     try {
       await _ch.invokeMethod('recordCancel');

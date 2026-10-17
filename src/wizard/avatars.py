@@ -179,6 +179,38 @@ def look(slug, name="", install_dir=None):
     return out
 
 
+def picture(slug, install_dir=None):
+    """The stored picture itself, base64, for a client that cannot use the console URL.
+
+    The console draws faces from a GET on its own token, which a phone does not have
+    and should not be given - so the phone has only ever had the colour and the
+    initials. It could SET a picture it was then unable to see, which reads as the
+    upload having failed.
+
+    Small by construction: set_picture squares everything down to a 256-pixel PNG,
+    and refuses anything it cannot shrink past MAX_STORED. So this is tens of
+    kilobytes, which is why it can go inline in a JSON reply at all.
+    """
+    slug = (slug or "").strip().lower()
+    if not SLUG_RE.match(slug):
+        return {"ok": False, "detail": u"«%s» no es un agente válido." % slug}
+    rec = _entry(slug, install_dir)
+    if rec.get("kind") != "image" or not rec.get("file"):
+        return {"ok": True, "kind": rec.get("kind") or "initials", "data_b64": ""}
+    path = os.path.join(store_dir(install_dir), rec["file"])
+    try:
+        with io.open(path, "rb") as fh:
+            raw = fh.read()
+    except OSError:
+        # Gone is not an error worth a message: the face falls back to initials,
+        # which is what it looked like before anybody uploaded one.
+        return {"ok": True, "kind": "initials", "data_b64": ""}
+    return {"ok": True, "kind": "image",
+            "mime": rec.get("mime") or "image/png",
+            "v": int(rec.get("v") or 0),
+            "data_b64": base64.b64encode(raw).decode("ascii")}
+
+
 def look_all(agents, install_dir=None):
     out = {}
     for a in (agents or []):

@@ -732,7 +732,7 @@ def _session_id(data):
     return str(data.get("id") or data.get("session_id") or "")
 
 
-def history(profile=None, hermes=None, session_id=""):
+def history(profile=None, hermes=None, session_id="", install_dir=None):
     if not _safe_session(session_id):
         return {"ok": False, "detail": "Conversación no válida."}
     key, port, err = _require(profile, hermes)
@@ -775,6 +775,20 @@ def history(profile=None, hermes=None, session_id=""):
                     continue
                 kept.append(line)
             row["content"] = "\n".join(kept).strip()
+            # And the owner's OWN attachments, which send() could only record as a block
+            # of prose in the message - Hermes refuses file parts, so naming the path is
+            # the only way the agent can reach one. Reopening a conversation therefore
+            # brought every voice note back as its transcript followed by a Windows path,
+            # with no way to hear what was actually said, which is the one thing a note
+            # has that a transcription does not.
+            #
+            # Only on the owner's turns: an agent that wrote this block into a reply
+            # would otherwise be choosing paths for a phone to fetch, which is the whole
+            # thing talk/file exists to prevent.
+            if str(row.get("role") or "") == "user":
+                row["content"], mine = read_files_in(
+                    row["content"], install_dir=install_dir, profile=profile)
+                files = list(mine) + list(files)
             if files:
                 row["files"] = files
         out.append(row)
@@ -792,6 +806,72 @@ def _attached_note(picked):
     return ("\n\n[Archivos que te acabo de adjuntar, ya guardados en tu carpeta de "
             "trabajo:\n%s\nÁbrelos con tus herramientas si necesitas lo que hay dentro.]"
             % "\n".join(lines))
+
+
+# The first line of the block _attached_note writes, and the shape of each entry
+# in it. Kept next to the writer so the two cannot drift apart unnoticed.
+ATTACHED_HEAD = "[Archivos que te acabo de adjuntar"
+_ATTACHED_LINE = re.compile(r"^-\s+(?P<name>.+?)\s+\((?P<human>[^)]*)\):\s+"
+                            r"(?P<path>.+?)\s*$")
+
+
+def read_files_in(text, install_dir=None, profile=None):
+    """Lift the owner's OWN attachments back out of a stored turn.
+
+    Hermes refuses `file` parts, so a recording cannot ride inside a turn: send()
+    names it in the message instead, as a block the agent can act on. That block is
+    the only record of it - and when a conversation was reopened weeks later, the
+    whole thing came back as prose. A voice note read as its transcript followed by
+    a Windows path, with no way to hear what was actually said, which is the one
+    thing a note has that a transcription does not.
+
+    Returns (text without the block, [file records]) with fetch ids minted the same
+    way an upload gets one.
+
+    Two guards, and both matter:
+
+    * **Only the owner's own turns.** The caller passes role; an AGENT that wrote
+      this block into its reply would otherwise be choosing paths for the phone to
+      fetch, which is the whole thing `talk/file` exists to prevent.
+    * **Only inside the agent's own folder.** Even in the owner's turn the path is
+      just text in a transcript, and a transcript is not a capability.
+    """
+    body = str(text or "")
+    at = body.find(ATTACHED_HEAD)
+    if at < 0:
+        return body, []
+    end = body.find("]", at)
+    block = body[at:end + 1] if end > at else body[at:]
+    allowed = os.path.realpath(attach_dir(profile, install_dir))
+    found = []
+    for line in block.split("\n"):
+        m = _ATTACHED_LINE.match(line.strip())
+        if not m:
+            continue
+        path = _clean_path(m.group("path")) or m.group("path").strip()
+        name = os.path.basename(path.rstrip("\\/")) or m.group("name")
+        rec = {"kind": kind_of(name), "name": name,
+               "human": (m.group("human") or "").strip()}
+        try:
+            real = os.path.realpath(path)
+            inside = os.path.isfile(real) and (
+                real == allowed or real.startswith(allowed + os.sep))
+        except OSError:
+            inside = False
+        if inside:
+            size = os.path.getsize(real)
+            rec.update({"size": size, "human": rec["human"] or _human(size),
+                        "path": real, "mime": mime_of(name)})
+            rec["id"] = _remember(_UPLOADS, dict(rec))
+        else:
+            # Tidied away, or somewhere it has no business being. Named and marked
+            # gone, which is what the row already does for a vanished MEDIA file.
+            rec["missing"] = True
+        found.append(rec)
+    if not found:
+        return body, []
+    clean = (body[:at] + body[end + 1:]).strip() if end > at else body[:at].strip()
+    return clean, found
 
 
 def send(profile=None, hermes=None, session_id="", text="", files=None, timeout=600):

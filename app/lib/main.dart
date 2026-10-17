@@ -1223,6 +1223,18 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
   bool _loadingHistory = false;
 
   bool _recording = false;
+
+  /// Held, not ended. Somebody interrupted mid-sentence wants to carry on, not to
+  /// start again and not to send the interruption.
+  bool _paused = false;
+
+  /// How long has actually been captured, which is not how long the button has been
+  /// held: the clock stops while paused, because the gap does not appear in the note.
+  Duration _captured = Duration.zero;
+
+  /// A note was playing when this recording started, and is waiting to be let back.
+  /// Only set when there WAS one, so nothing is 'resumed' that was never going.
+  bool _duckedNote = false;
   DateTime? _recordingSince;
   Timer? _tick;
   final bool _transcribing = false;
@@ -1313,14 +1325,23 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
   Future<void> _recordToggle() async {
     if (_transcribing) return;
     if (!_recording) {
+      // The speaker first. A microphone and a speaker in the same room is feedback,
+      // and the note would have whatever was playing underneath it. Paused rather
+      // than stopped, so a two-minute note somebody was halfway through keeps its
+      // place and can be let back afterwards.
+      final ducked = await Native.playPause();
       try {
         await Native.recordStart();
       } on NativeError catch (e) {
+        if (ducked) await Native.playResume();
         _say(e.message);
         return;
       }
       setState(() {
         _recording = true;
+        _paused = false;
+        _duckedNote = ducked;
+        _captured = Duration.zero;
         _recordingSince = DateTime.now();
       });
       // Only to redraw the running time; the recording itself is Android's.
@@ -1330,7 +1351,15 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       return;
     }
     _tick?.cancel();
-    setState(() => _recording = false);
+    setState(() {
+      _recording = false;
+      _paused = false;
+    });
+    // Whatever was playing gets its turn back, whether the note is sent or not.
+    if (_duckedNote) {
+      _duckedNote = false;
+      await Native.playResume();
+    }
     PickedFile? note;
     try {
       note = await Native.recordStop();
@@ -1450,7 +1479,19 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
   Future<void> _recordCancel() async {
     _tick?.cancel();
     await Native.recordCancel();
-    if (mounted) setState(() => _recording = false);
+    // Whatever was playing when this started gets its turn back - a discarded note
+    // is no reason to leave somebody's music stopped.
+    if (_duckedNote) {
+      _duckedNote = false;
+      await Native.playResume();
+    }
+    if (mounted) {
+      setState(() {
+        _recording = false;
+        _paused = false;
+        _captured = Duration.zero;
+      });
+    }
   }
 
   /// Start a clean thread with this agent.
@@ -1733,8 +1774,37 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
 
   /// While a note is being recorded the composer becomes the recorder: a way out on the
   /// left, how long it has been running in the middle, and the button that ends it.
+  /// The time actually captured so far: frozen while paused, running otherwise.
+  Duration get _recordedSoFar => _paused
+      ? _captured
+      : _captured + DateTime.now().difference(_recordingSince ?? DateTime.now());
+
+  Future<void> _pauseToggle() async {
+    if (!_recording) return;
+    if (_paused) {
+      if (!await Native.recordResume()) {
+        _say(tr('Este teléfono no sabe pausar la grabación.'));
+        return;
+      }
+      setState(() {
+        _paused = false;
+        _recordingSince = DateTime.now();
+      });
+      return;
+    }
+    if (!await Native.recordPause()) {
+      _say(tr('Este teléfono no sabe pausar la grabación.'));
+      return;
+    }
+    setState(() {
+      // Banked, so the clock carries on from here rather than from zero.
+      _captured = _recordedSoFar;
+      _paused = true;
+    });
+  }
+
   Widget _recordingRow() {
-    final secs = DateTime.now().difference(_recordingSince ?? DateTime.now()).inSeconds;
+    final secs = _recordedSoFar.inSeconds;
     final mm = (secs ~/ 60).toString();
     final ss = (secs % 60).toString().padLeft(2, '0');
     return Row(children: [
@@ -1743,21 +1813,38 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
         icon: Icon(Icons.delete_outline, color: context.c.err),
         tooltip: tr('Descartar'),
       ),
+      IconButton(
+        onPressed: _pauseToggle,
+        // Play, not a record dot: the question this button answers while paused is
+        // 'carry on?', and a red dot is what you press to START something.
+        icon: Icon(_paused ? Icons.play_arrow : Icons.pause, color: context.c.ink),
+        tooltip: _paused ? tr('Seguir grabando') : tr('Pausa'),
+      ),
       Expanded(
         child: Row(children: [
-          Icon(Icons.fiber_manual_record, size: 12, color: context.c.err),
+          // The red dot belongs to recording, not to paused: a blinking light over a
+          // stopped microphone is the app telling you it is listening when it is not.
+          Icon(_paused ? Icons.pause_circle_outline : Icons.fiber_manual_record,
+              size: _paused ? 14 : 12,
+              color: _paused ? context.c.muted : context.c.err),
           const SizedBox(width: 8),
-          Text('${tr('Grabando')}  $mm:$ss',
-              style: TextStyle(
-                  color: context.c.ink,
-                  fontWeight: FontWeight.w600,
-                  fontFeatures: const [FontFeature.tabularFigures()])),
+          Flexible(
+            child: Text('${_paused ? tr('En pausa') : tr('Grabando')}  $mm:$ss',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    color: context.c.ink,
+                    fontWeight: FontWeight.w600,
+                    fontFeatures: const [FontFeature.tabularFigures()])),
+          ),
         ]),
       ),
+      // An arrow, not a stop. Stop is what you press when you want the recording to
+      // end; this ends it AND sends it, and every messaging app draws that as send.
       IconButton.filled(
         onPressed: _recordToggle,
-        icon: const Icon(Icons.stop),
-        tooltip: tr('Terminar'),
+        icon: const Icon(Icons.arrow_forward),
+        tooltip: tr('Enviar'),
       ),
     ]);
   }
@@ -2047,6 +2134,27 @@ class RoutinesTab extends StatefulWidget {
   State<RoutinesTab> createState() => _RoutinesTabState();
 }
 
+/// The jobs for one agent, whichever shape the computer answered in.
+///
+/// A computer that has not updated yet still replies with the machine-wide
+/// {agents: [...]}, and the phone used to read `jobs` off the top of that, find
+/// nothing, and draw an empty routines tab - no error, just nothing, on a machine
+/// with seventeen of them. So it looks in both places rather than trusting one.
+List _jobsIn(Map<String, dynamic> res, String slug) {
+  final direct = res['jobs'] ?? res['rows'];
+  if (direct is List) return direct;
+  final agents = res['agents'];
+  if (agents is List) {
+    for (final a in agents) {
+      if (a is Map && ((a['profile'] ?? a['slug']) == slug)) {
+        final jobs = a['jobs'];
+        if (jobs is List) return jobs;
+      }
+    }
+  }
+  return const [];
+}
+
 class _RoutinesTabState extends State<RoutinesTab> {
   List<Map<String, dynamic>> _rows = [];
   String _error = '';
@@ -2060,10 +2168,13 @@ class _RoutinesTabState extends State<RoutinesTab> {
 
   Future<void> _load() async {
     try {
+      // Always named, including 'default'. Leaving it out for the main agent meant
+      // the computer could not tell a phone asking about one agent from the console
+      // asking about the machine.
       final res = await widget.link.reach('POST', '/api/cron/list',
-          body: {if (!widget.agent.isDefault) 'profile': widget.agent.slug});
+          body: {'profile': widget.agent.slug});
       setState(() {
-        _rows = ((res['jobs'] ?? res['rows'] ?? []) as List)
+        _rows = _jobsIn(res, widget.agent.slug)
             .map((r) => (r as Map).cast<String, dynamic>())
             .toList();
         _loading = false;

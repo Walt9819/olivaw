@@ -78,6 +78,9 @@ ROUTES = {
     # lives under config, below.
     "agent/info": "ver",
     "agent/skill": "ver",
+    # Seeing the face is looking, not configuring: anybody who may see the agent
+    # exists may see what it looks like. SETTING it stays under config.
+    "avatar/get": "ver",
     "proposals/list": "ver",
     "cron/list": "ver",
     # talking

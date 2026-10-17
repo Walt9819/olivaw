@@ -1078,6 +1078,110 @@ if os.path.exists(_KT):
     ok("the microphone is checked before recording",
        "checkSelfPermission" in _kt and "RECORD_AUDIO" in _kt)
 
+# ── a voice note is still a voice note tomorrow ──────────────────────────
+# Hermes refuses `file` parts, so a recording cannot ride inside a turn: send() names
+# it in the message instead, as a block of prose the agent can act on. That block was
+# the only record of it - so reopening a conversation brought every note back as its
+# transcript followed by a Windows path, with no way to hear what was actually said,
+# which is the one thing a note has that a transcription does not.
+from wizard import talk as talk_mod  # noqa: E402
+
+_vd = tempfile.mkdtemp()
+_ad = talk_mod.attach_dir('daneel', _vd)
+_note = os.path.join(_ad, 'nota-1.m4a')
+io.open(_note, 'wb').write(b'x' * 2048)
+_blk = ('Lo que dije.\n\n'
+        '[Archivos que te acabo de adjuntar, ya guardados en tu carpeta:\n'
+        '- nota-1.m4a (2 KB): ' + _note + '\n'
+        '\u00c1brelos con tus herramientas si necesitas lo que hay dentro.]')
+_txt, _fs = talk_mod.read_files_in(_blk, install_dir=_vd, profile='daneel')
+ok('a stored note comes back as a file, not as a path',
+   len(_fs) == 1 and _fs[0]['kind'] == 'audio', _fs)
+ok('with a way to fetch it', bool(_fs[0].get('id')))
+ok('and the sentence left behind is just the sentence', _txt == 'Lo que dije.', _txt)
+
+# The path in a transcript is text, not a capability.
+_out = ('x\n\n[Archivos que te acabo de adjuntar, ya guardados:\n'
+        '- win.ini (1 KB): ' + os.path.join('C:' + os.sep, 'Windows', 'win.ini') + '\n]')
+_t2, _f2 = talk_mod.read_files_in(_out, install_dir=_vd, profile='daneel')
+ok('a path outside the agent folder is named but not fetchable',
+   len(_f2) == 1 and _f2[0].get('missing') is True and not _f2[0].get('id'), _f2)
+
+ok('a message with no attachments is left exactly alone',
+   talk_mod.read_files_in('solo texto', install_dir=_vd, profile='daneel')
+   == ('solo texto', []))
+shutil.rmtree(_vd, ignore_errors=True)
+
+# Only the OWNER's turns. An agent that wrote this block into a reply would otherwise
+# be choosing paths for a phone to fetch, which is the whole thing talk/file prevents.
+_talksrc = io.open(os.path.join(ROOT, 'src', 'wizard', 'talk.py'),
+                   encoding='utf-8').read()
+# To the NEXT def, not to the first 'return messages': history() has an early one
+# for a session with nothing in it, and slicing there cut the function in half and
+# hid the very line this is checking.
+_hist = _talksrc[_talksrc.index('def history('):]
+_hist = _hist[:_hist.index(chr(10) + 'def ', 10)]
+ok('and only the owner\'s own turns are read that way',
+   'read_files_in(' in _hist and '== "user"' in _hist)
+
+# ── routines, and the shape they come back in ─────────────────────────────
+# cron/list answers the console, which asks about the MACHINE and gets
+# {agents: [...]}. The phone asks about the agent whose screen is open and got the
+# same thing - a shape with no 'jobs' in it - so it read an empty list and drew an
+# empty routines tab for every agent, on a machine with seventeen of them. It never
+# errored; there was simply nothing where it looked.
+_srv = io.open(os.path.join(ROOT, 'src', 'wizard', 'wizard_server.py'),
+               encoding='utf-8').read()
+_cron = _srv[_srv.index('if route == "cron/list"'):]
+_cron = _cron[:_cron.index('if route ==', 40)]
+ok('asked about one agent, cron/list answers about one agent',
+   '"jobs"' in _cron and 'profile' in _cron)
+ok('and the console, which names no profile, still gets the machine',
+   'if want is None' in _cron and 'return st' in _cron)
+# 'default' is None inside the server and the string 'default' in the roster.
+# Comparing one to the other quietly matched nothing, which is how the agent with
+# sixteen jobs came back with none.
+ok('and the main agent is not lost between its two names',
+   'or "default"' in _cron)
+_app_main = io.open(os.path.join(ROOT, 'app', 'lib', 'main.dart'),
+                    encoding='utf-8').read()
+ok('the app always names the agent it is asking about',
+   "body: {'profile': widget.agent.slug}" in _app_main)
+ok('and still finds the jobs if the computer answers the old way',
+   '_jobsIn(' in _app_main and "res['agents']" in _app_main)
+
+# ── the face a phone may look at ───────────────────────────────────────
+# The console draws a face from a GET on its own token, which a phone does not have
+# and should not be given - so the phone could SET a picture and never see it, which
+# reads exactly like the upload having failed.
+ok('a phone may look at the face', pairing.allowed('avatar/get', ['ver']))
+ok('and still may not change it without config',
+   not pairing.allowed('avatar/set', ['ver']))
+ok('with config, it may', pairing.allowed('avatar/set', ['ver', 'config']))
+
+from wizard import avatars  # noqa: E402
+
+_facedir = tempfile.mkdtemp()
+_noface = avatars.picture('daneel', _facedir)
+ok('an agent with no picture says so rather than failing',
+   _noface.get('ok') is True and _noface.get('data_b64') == '', _noface)
+_badslug = avatars.picture('../../etc', _facedir)
+ok('and a slug that is a path is refused', _badslug.get('ok') is False, _badslug)
+shutil.rmtree(_facedir, ignore_errors=True)
+
+# A picked file that cannot be read is NOT a picked file that does not exist. The
+# two were the same empty list, so choosing a photo Android could not read did
+# nothing and said nothing.
+_kt = io.open(os.path.join(ROOT, 'app', 'android', 'app', 'src', 'main', 'kotlin',
+                           'com', 'olivaw', 'olivaw', 'MainActivity.kt'),
+              encoding='utf-8').read()
+ok('a pick that could not be read is an error, not an empty hand',
+   'out.isEmpty() && uris.isNotEmpty()' in _kt)
+ok('and the recording can be paused and picked up again',
+   'recordPause' in _kt and 'recordResume' in _kt)
+ok('and whatever was playing is paused while the microphone is on',
+   'playPause' in _kt and 'playResume' in _kt)
+
 # ── the agent is told it can answer one message in particular ─────────────────
 # The phone has been able to DRAW an agent's reply as a reply since the day it could
 # draw one - the quote is the whole protocol - and no agent had been told it could

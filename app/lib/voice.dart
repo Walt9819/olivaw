@@ -167,28 +167,27 @@ class _VoiceNoteState extends State<VoiceNote> {
       mainAxisSize: MainAxisSize.min,
       children: [
         Row(mainAxisSize: MainAxisSize.min, children: [
-          if (widget.pending)
-            SizedBox(
+          // Playable from the moment it exists.
+          //
+          // A spinner used to sit here while the computer listened to it, so the one
+          // thing you could not do with a note you had just recorded was hear it -
+          // and that is the moment you most want to, because that is when you find
+          // out whether you said what you meant. The bytes never left the phone;
+          // there was nothing to wait for. What is still being waited on is the
+          // transcript, and that says so on its own line below.
+          InkWell(
+            onTap: _toggle,
+            customBorder: const CircleBorder(),
+            child: Container(
               width: 34,
               height: 34,
-              child: Padding(
-                padding: const EdgeInsets.all(7),
-                child: CircularProgressIndicator(strokeWidth: 2, color: widget.ink),
-              ),
-            )
-          else
-            InkWell(
-              onTap: _toggle,
-              customBorder: const CircleBorder(),
-              child: Container(
-                width: 34,
-                height: 34,
-                decoration:
-                    BoxDecoration(color: widget.ink.withValues(alpha: 0.15), shape: BoxShape.circle),
-                child: Icon(_playing ? Icons.stop : Icons.play_arrow,
-                    size: 20, color: widget.ink),
-              ),
+              decoration: BoxDecoration(
+                  color: widget.ink.withValues(alpha: 0.15),
+                  shape: BoxShape.circle),
+              child: Icon(_playing ? Icons.stop : Icons.play_arrow,
+                  size: 20, color: widget.ink),
             ),
+          ),
           const SizedBox(width: 10),
           SizedBox(
             width: 120,
@@ -204,7 +203,9 @@ class _VoiceNoteState extends State<VoiceNote> {
           ),
           const SizedBox(width: 10),
           Text(
-            widget.pending ? tr('Enviando…') : _clock,
+            // The length as soon as it is known, which for a note just recorded is
+            // immediately. 'Enviando…' only while there is no length to show yet.
+            (_durationMs <= 0 && widget.pending) ? tr('Enviando…') : _clock,
             style: TextStyle(
                 fontSize: 12,
                 color: widget.ink.withValues(alpha: 0.8),
@@ -217,8 +218,20 @@ class _VoiceNoteState extends State<VoiceNote> {
             child: Padding(
               padding: const EdgeInsets.only(top: 4),
               child: Row(mainAxisSize: MainAxisSize.min, children: [
-                Icon(_open ? Icons.expand_less : Icons.expand_more,
-                    size: 16, color: widget.ink.withValues(alpha: 0.7)),
+                if (widget.pending && !hasText)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child: SizedBox(
+                      width: 11,
+                      height: 11,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 1.6,
+                          color: widget.ink.withValues(alpha: 0.7)),
+                    ),
+                  )
+                else
+                  Icon(_open ? Icons.expand_less : Icons.expand_more,
+                      size: 16, color: widget.ink.withValues(alpha: 0.7)),
                 const SizedBox(width: 2),
                 Text(
                   widget.pending && !hasText

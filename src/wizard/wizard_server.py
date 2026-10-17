@@ -677,6 +677,10 @@ class Handler(BaseHTTPRequestHandler):
 
         # The face. Three shapes: a picture she uploaded, an emoji, or initials in the
         # agent's own colour (which is the colour its Chrome window wears).
+        if route == "avatar/get":
+            return avatars.picture((body.get("slug") or "").strip().lower(),
+                                   INSTALL_DIR)
+
         if route == "avatar/set":
             slug = (body.get("slug") or "").strip().lower()
             if body.get("data"):
@@ -845,8 +849,35 @@ class Handler(BaseHTTPRequestHandler):
         # from Hermes' own jobs.json rather than from `hermes cron list`, because the
         # printed form has nowhere to put an answer back.
         if route == "cron/list":
-            return cronjobs.state(roster=intercom.roster(INSTALL_DIR),
-                                  hermes_exe=which("hermes"))
+            st = cronjobs.state(roster=intercom.roster(INSTALL_DIR),
+                                hermes_exe=which("hermes"))
+            # Asked about ONE agent, answer about one agent.
+            #
+            # The console asks about the machine and gets {agents: [...]}, which is
+            # what it draws. The phone asks about the agent whose screen is open and
+            # got the same thing - a shape with no "jobs" in it at all - so it read
+            # an empty list and drew an empty routines tab for every agent, forever,
+            # on a machine with seventeen jobs. It never errored; there was simply
+            # nothing where it looked.
+            #
+            # Only when a profile is named, so the console is untouched. It also
+            # stops a phone that asked about one agent being sent the job names of
+            # the other six.
+            want = (body or {}).get("profile")
+            if want is None:
+                return st
+            # 'default' internally is None, and in the roster it is the string
+            # 'default'. Comparing one to the other quietly matched nothing, which
+            # is how the agent with sixteen jobs came back with none.
+            want = _target_profile(body) or "default"
+            for a in (st.get("agents") or []):
+                if (a.get("profile") or a.get("slug")) == want:
+                    return {"ok": True, "jobs": a.get("jobs") or [],
+                            "agent": {k: a.get(k) for k in ("slug", "name", "profile")},
+                            "detail": a.get("detail", ""),
+                            "patch": st.get("patch")}
+            return {"ok": True, "jobs": [], "detail": "",
+                    "agent": {"slug": want, "profile": want}}
 
         # Two booleans on one job. `_target_profile` decides WHICH agent's jobs.json is
         # opened - a profile name straight from the page would be a path join into
@@ -1057,7 +1088,8 @@ class Handler(BaseHTTPRequestHandler):
                                title=body.get("title", ""))
         if route == "talk/history":
             return talk.history(_target_profile(body), which("hermes"),
-                                session_id=body.get("session_id", ""))
+                                session_id=body.get("session_id", ""),
+                                install_dir=INSTALL_DIR)
         if route == "talk/send":
             return talk.send(_target_profile(body), which("hermes"),
                              session_id=body.get("session_id", ""),

@@ -40,6 +40,16 @@ class MainActivity : FlutterActivity() {
     private val channel = "olivaw/native"
     private var pending: MethodChannel.Result? = null
     private var recorder: MediaRecorder? = null
+
+    /// Held while the microphone is on, and given back the moment it is not.
+    ///
+    /// Pausing our own player only ever silenced our own notes. What is actually
+    /// playing while somebody records is usually Spotify, or a podcast, or a video in
+    /// another app - and no app can reach into another one to stop it. Audio focus is
+    /// how Android arranges this: ask for it TRANSIENT_EXCLUSIVE, every other player
+    /// pauses itself, and when it is handed back they resume on their own. Nothing
+    /// here has to know who they were.
+    private var focus: Any? = null
     private var recordingPath: String? = null
 
     private val pickFileRequest = 4101
@@ -77,6 +87,10 @@ class MainActivity : FlutterActivity() {
             "recordStart" -> recordStart(result)
             "recordStop" -> recordStop(result)
             "recordCancel" -> recordCancel(result)
+            "recordPause" -> recordPause(result)
+            "recordResume" -> recordResume(result)
+            "playPause" -> playPause(result)
+            "playResume" -> playResume(result)
             else -> result.notImplemented()
         }
     }
@@ -213,13 +227,25 @@ class MainActivity : FlutterActivity() {
         }
         data.data?.let { if (uris.isEmpty()) uris.add(it) }
         val out = mutableListOf<Map<String, Any>>()
+        var firstFailure: String? = null
         for (uri in uris) {
             try {
                 out.add(read(uri))
             } catch (e: Exception) {
                 // One unreadable file does not lose the others.
+                if (firstFailure == null) firstFailure = e.message ?: e.toString()
                 continue
             }
+        }
+        // Picked something and got nothing: that is a failure, not a cancellation,
+        // and returning an empty list for both made them identical to the app - which
+        // then returned silently, so choosing a photo that could not be read did
+        // nothing at all and said nothing at all. A photo in the cloud, or one too
+        // big to hold in memory, both land here.
+        if (out.isEmpty() && uris.isNotEmpty()) {
+            result.error("unreadable",
+                         firstFailure ?: "No pude leer ese archivo.", null)
+            return
         }
         result.success(out)
     }
@@ -424,6 +450,37 @@ class MainActivity : FlutterActivity() {
         result.success(true)
     }
 
+    /**
+     * Hold the note where it is, rather than ending it.
+     *
+     * Used when a recording starts: the microphone and the speaker in the same room
+     * is feedback, and the phone would record whatever was playing. Stopping outright
+     * would lose the place in a two-minute note somebody was halfway through, so this
+     * pauses and reports whether there was anything to pause - the caller only offers
+     * to resume if there was.
+     */
+    private fun playPause(result: MethodChannel.Result) {
+        val mp = player
+        if (mp == null || !mp.isPlaying) { result.success(false); return }
+        try {
+            mp.pause()
+            result.success(true)
+        } catch (e: Exception) {
+            result.success(false)
+        }
+    }
+
+    private fun playResume(result: MethodChannel.Result) {
+        val mp = player
+        if (mp == null) { result.success(false); return }
+        try {
+            mp.start()
+            result.success(true)
+        } catch (e: Exception) {
+            result.success(false)
+        }
+    }
+
     private fun stopPlayer() {
         try { player?.stop() } catch (e: Exception) { /* was not playing */ }
         try { player?.release() } catch (e: Exception) { /* already released */ }
@@ -434,6 +491,9 @@ class MainActivity : FlutterActivity() {
 
     override fun onDestroy() {
         stopPlayer()
+        // Never leave the speakers claimed by an app that is gone: every other
+        // player would stay paused with nothing to resume them.
+        dropAudioFocus()
         super.onDestroy()
     }
 
@@ -442,6 +502,53 @@ class MainActivity : FlutterActivity() {
     private fun hasMic() = ContextCompat.checkSelfPermission(
         this, android.Manifest.permission.RECORD_AUDIO
     ) == PackageManager.PERMISSION_GRANTED
+
+    @Suppress("DEPRECATION")
+    private fun takeAudioFocus() {
+        val am = getSystemService(android.content.Context.AUDIO_SERVICE)
+                as android.media.AudioManager
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val req = android.media.AudioFocusRequest.Builder(
+                        android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
+                    .setAudioAttributes(
+                        android.media.AudioAttributes.Builder()
+                            .setUsage(android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                            .setContentType(
+                                android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build())
+                    .build()
+                am.requestAudioFocus(req)
+                focus = req
+            } else {
+                am.requestAudioFocus(null,
+                    android.media.AudioManager.STREAM_VOICE_CALL,
+                    android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
+                focus = true
+            }
+        } catch (e: Exception) {
+            // A recording that cannot claim the speakers is still a recording.
+            focus = null
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun dropAudioFocus() {
+        val f = focus ?: return
+        focus = null
+        val am = getSystemService(android.content.Context.AUDIO_SERVICE)
+                as android.media.AudioManager
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                f is android.media.AudioFocusRequest) {
+                am.abandonAudioFocusRequest(f)
+            } else {
+                am.abandonAudioFocus(null)
+            }
+        } catch (e: Exception) {
+            // Nothing useful to do about a focus the system has already taken back.
+        }
+    }
 
     private fun recordStart(result: MethodChannel.Result) {
         if (!hasMic()) {
@@ -472,11 +579,13 @@ class MainActivity : FlutterActivity() {
             r.setAudioEncodingBitRate(32000)
             r.setOutputFile(file.absolutePath)
             r.prepare()
+            takeAudioFocus()
             r.start()
             recorder = r
             recordingPath = file.absolutePath
             result.success(true)
         } catch (e: Exception) {
+            dropAudioFocus()
             recorder = null
             recordingPath = null
             result.error("record", e.message, null)
@@ -488,6 +597,7 @@ class MainActivity : FlutterActivity() {
         val path = recordingPath
         recorder = null
         recordingPath = null
+        dropAudioFocus()
         if (r == null || path == null) {
             result.error("idle", "No se estaba grabando.", null); return
         }
@@ -511,11 +621,47 @@ class MainActivity : FlutterActivity() {
         result.success(mapOf("name" to f.name, "bytes" to bytes))
     }
 
+    /**
+     * Stop capturing without ending the note, and pick it up again in the same file.
+     *
+     * MediaRecorder has had pause/resume since Android 7, and the gap simply does not
+     * appear in the recording - which is the point: somebody interrupted mid-sentence
+     * wants to carry on, not to start again or to send the interruption.
+     */
+    private fun recordPause(result: MethodChannel.Result) {
+        val r = recorder
+        if (r == null) { result.error("idle", "No se estaba grabando.", null); return }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+            result.error("unsupported", "Este teléfono no sabe pausar.", null); return
+        }
+        try {
+            r.pause()
+            result.success(true)
+        } catch (e: Exception) {
+            result.error("pause", e.message, null)
+        }
+    }
+
+    private fun recordResume(result: MethodChannel.Result) {
+        val r = recorder
+        if (r == null) { result.error("idle", "No se estaba grabando.", null); return }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+            result.error("unsupported", "Este teléfono no sabe pausar.", null); return
+        }
+        try {
+            r.resume()
+            result.success(true)
+        } catch (e: Exception) {
+            result.error("resume", e.message, null)
+        }
+    }
+
     private fun recordCancel(result: MethodChannel.Result) {
         val r = recorder
         val path = recordingPath
         recorder = null
         recordingPath = null
+        dropAudioFocus()
         try { r?.stop() } catch (e: Exception) { /* nothing was captured */ }
         r?.reset()
         r?.release()

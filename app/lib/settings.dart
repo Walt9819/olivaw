@@ -15,6 +15,7 @@
 // find out why its agent answers the way it does.
 
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
@@ -129,7 +130,6 @@ class _SkillsScreen extends StatelessWidget {
 class _AgentSettingsState extends State<AgentSettings> {
   late final TextEditingController _name = TextEditingController(text: widget.name);
   bool _busy = false;
-  bool _dirty = false;
   String _error = '';
 
   /// Two switches, because they are two questions. The gateway underneath runs
@@ -139,6 +139,15 @@ class _AgentSettingsState extends State<AgentSettings> {
   String _talkDetail = '';
 
   bool _loading = true;
+
+  /// The agent's actual picture, if it has one.
+  ///
+  /// The roster carries a colour and initials - the console draws the photo from a
+  /// GET on its own token, which a phone does not have and should not be given - so
+  /// the phone could SET a picture and then never see it, which reads exactly like
+  /// the upload having failed. Fetched on its own, once; a few tens of kilobytes,
+  /// because the computer squares every upload down to 256 pixels.
+  Uint8List? _photo;
   String _purpose = '';
   String _purposeBase = '';
   List<SkillRow> _skills = const [];
@@ -214,6 +223,7 @@ class _AgentSettingsState extends State<AgentSettings> {
         _how = (peers['how'] ?? '').toString();
         _howName = (peers['how_name'] ?? '').toString();
       });
+      await _loadFace();
     } catch (e) {
       // Said out loud. This used to fail silently on the grounds that not knowing is
       // not worth a banner - and the screen then showed an agent with no purpose, no
@@ -225,6 +235,19 @@ class _AgentSettingsState extends State<AgentSettings> {
           _error = humanError(e);
         });
       }
+    }
+  }
+
+  Future<void> _loadFace() async {
+    try {
+      final res = await widget.link
+          .reach('POST', '/api/avatar/get', body: _agentBody());
+      if (!mounted) return;
+      final b64 = (res['data_b64'] ?? '').toString();
+      setState(() => _photo = b64.isEmpty ? null : base64Decode(b64));
+    } catch (_) {
+      // No picture is the ordinary case, and a face that falls back to initials is
+      // what it looked like before anybody uploaded one.
     }
   }
 
@@ -253,27 +276,54 @@ class _AgentSettingsState extends State<AgentSettings> {
     if (wanted.isEmpty || wanted == widget.name) return;
     await _run(() => widget.link.reach('POST', '/api/agent/rename',
         body: _agentBody({'name': wanted}), wait: Link.thinkingWait));
-    if (mounted && _error.isEmpty) setState(() => _dirty = false);
   }
+
+  /// Five megabytes, which is what the computer accepts.
+  ///
+  /// Checked here as well as there because a photo straight off this camera is
+  /// routinely eight, and finding that out after pushing eight megabytes through a
+  /// rendezvous on mobile data is a slow way to be told no.
+  static const int _maxPicture = 5 * 1024 * 1024;
 
   Future<void> _pickPicture() async {
     try {
       final picked = await Native.pick(mime: 'image/*');
+      // Empty now means cancelled, and nothing else: the picker reports an
+      // unreadable file as an error rather than as no file.
       if (picked.isEmpty) return;
+      final bytes = picked.first.bytes;
+      if (bytes.isEmpty) {
+        setState(() => _error = tr('Esa foto llegó vacía.'));
+        return;
+      }
+      if (bytes.length > _maxPicture) {
+        setState(() => _error = trp(
+            'Esa foto pesa {0} y el máximo son 5 MB. Recórtala y vuelve a probar.',
+            [humanSize(bytes.length)]));
+        return;
+      }
       await _run(() => widget.link.reach('POST', '/api/avatar/set',
-          body: _agentBody({'data': base64Encode(picked.first.bytes)}),
+          body: _agentBody({'data': base64Encode(bytes)}),
           wait: Link.thinkingWait));
+      // Shown straight away rather than after a reload: the whole complaint was
+      // that setting a picture looked like nothing had happened.
+      if (mounted && _error.isEmpty) setState(() => _photo = bytes);
     } on NativeError catch (e) {
       setState(() => _error = e.message);
     }
   }
 
-  Future<void> _setEmoji(String emoji) =>
-      _run(() => widget.link.reach('POST', '/api/avatar/set',
-          body: _agentBody({'emoji': emoji})));
+  Future<void> _setEmoji(String emoji) async {
+    await _run(() => widget.link.reach('POST', '/api/avatar/set',
+        body: _agentBody({'emoji': emoji})));
+    if (mounted) setState(() => _photo = null);
+  }
 
-  Future<void> _clearFace() => _run(() =>
-      widget.link.reach('POST', '/api/avatar/set', body: _agentBody({'clear': true})));
+  Future<void> _clearFace() async {
+    await _run(() => widget.link
+        .reach('POST', '/api/avatar/set', body: _agentBody({'clear': true})));
+    if (mounted) setState(() => _photo = null);
+  }
 
   Future<void> _toggle(String where, bool on) async {
     await _run(() => widget.link.reach('POST', '/api/talk/access',
@@ -329,6 +379,164 @@ class _AgentSettingsState extends State<AgentSettings> {
     );
   }
 
+  /// The picture at the size somebody wants to look at it, falling back to the
+  /// colour and initials that the roster already carries.
+  Widget _bigFace(BuildContext context) {
+    const d = 96.0;
+    final photo = _photo;
+    if (photo != null) {
+      return ClipOval(
+        child: Image.memory(photo,
+            width: d, height: d, fit: BoxFit.cover, gaplessPlayback: true),
+      );
+    }
+    return Container(
+      width: d,
+      height: d,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: context.c.panel2,
+        shape: BoxShape.circle,
+        border: Border.all(color: context.c.line),
+      ),
+      child: Icon(Icons.person_outline, size: 44, color: context.c.muted),
+    );
+  }
+
+  Widget _profileHeader(BuildContext context) => Column(children: [
+        Stack(children: [
+          InkWell(
+            customBorder: const CircleBorder(),
+            onTap: _photo == null ? null : _showPhoto,
+            child: _bigFace(context),
+          ),
+          if (widget.canEdit)
+            Positioned(
+              right: 0,
+              bottom: 0,
+              child: Material(
+                color: context.c.accent,
+                shape: const CircleBorder(),
+                child: InkWell(
+                  customBorder: const CircleBorder(),
+                  onTap: _busy ? null : _faceSheet,
+                  child: Padding(
+                    padding: const EdgeInsets.all(7),
+                    child: Icon(Icons.photo_camera_outlined,
+                        size: 17, color: context.c.accentInk),
+                  ),
+                ),
+              ),
+            ),
+        ]),
+        const SizedBox(height: 12),
+        Row(mainAxisSize: MainAxisSize.min, children: [
+          Flexible(
+            child: Text(
+              _name.text.trim().isEmpty ? widget.name : _name.text.trim(),
+              maxLines: 2,
+              textAlign: TextAlign.center,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+            ),
+          ),
+          if (widget.canEdit)
+            IconButton(
+              icon: const Icon(Icons.edit_outlined, size: 18),
+              tooltip: tr('Cambiar el nombre'),
+              onPressed: _busy ? null : _renameSheet,
+            ),
+        ]),
+      ]);
+
+  /// Full size, on black, which is what tapping a profile picture means.
+  void _showPhoto() {
+    final photo = _photo;
+    if (photo == null) return;
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (c) => Scaffold(
+        backgroundColor: Colors.black,
+        appBar: AppBar(
+          backgroundColor: Colors.black,
+          foregroundColor: Colors.white,
+          title: Text(widget.name),
+        ),
+        body: Center(child: InteractiveViewer(child: Image.memory(photo))),
+      ),
+    ));
+  }
+
+  /// The three ways an agent can have a face, in one sheet rather than three
+  /// buttons taking up a section of the screen for something done once.
+  void _faceSheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (sheet) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          ListTile(
+            leading: const Icon(Icons.image_outlined),
+            title: Text(tr('Elegir una foto')),
+            onTap: () {
+              Navigator.pop(sheet);
+              _pickPicture();
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.emoji_emotions_outlined),
+            title: Text(tr('Usar un símbolo')),
+            onTap: () {
+              Navigator.pop(sheet);
+              _emojiSheet();
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.restart_alt),
+            title: Text(tr('Volver a las iniciales')),
+            onTap: () {
+              Navigator.pop(sheet);
+              _clearFace();
+            },
+          ),
+        ]),
+      ),
+    );
+  }
+
+  /// Renaming, in a dialog. The old inline field meant the name on screen and the
+  /// name in the box could disagree while you typed, with a Save button appearing
+  /// underneath to resolve it.
+  Future<void> _renameSheet() async {
+    final field = TextEditingController(text: _name.text.trim());
+    final wanted = await showDialog<String>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: Text(tr('Cambiar el nombre')),
+        content: TextField(
+          controller: field,
+          autofocus: true,
+          textInputAction: TextInputAction.done,
+          decoration: InputDecoration(hintText: widget.name),
+          onSubmitted: (v) => Navigator.pop(c, v.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c),
+            child: Text(tr('Cancelar')),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(c, field.text.trim()),
+            child: Text(tr('Guardar')),
+          ),
+        ],
+      ),
+    );
+    field.dispose();
+    if (wanted == null || wanted.isEmpty || wanted == widget.name) return;
+    _name.text = wanted;
+    await _rename();
+    if (mounted) setState(() {});
+  }
+
   @override
   Widget build(BuildContext context) {
     return PopScope(
@@ -360,56 +568,13 @@ class _AgentSettingsState extends State<AgentSettings> {
                 child: Waiting(lines: ['Preguntándole al agente…']),
               ),
 
-            if (widget.canEdit) ...[
-            Text(tr('La cara'),
-                style: TextStyle(
-                    fontWeight: FontWeight.w700, color: context.c.muted, fontSize: 12)),
-            const SizedBox(height: 8),
-            Wrap(spacing: 10, runSpacing: 10, children: [
-              OutlinedButton.icon(
-                onPressed: _busy ? null : _pickPicture,
-                icon: const Icon(Icons.image_outlined, size: 18),
-                label: Text(tr('Foto')),
-              ),
-              OutlinedButton.icon(
-                onPressed: _busy ? null : _emojiSheet,
-                icon: const Icon(Icons.emoji_emotions_outlined, size: 18),
-                label: Text(tr('Símbolo')),
-              ),
-              OutlinedButton.icon(
-                onPressed: _busy ? null : _clearFace,
-                icon: const Icon(Icons.restart_alt, size: 18),
-                label: Text(tr('Iniciales')),
-              ),
-            ]),
-            const SizedBox(height: 24),
-
-            Text(tr('El nombre'),
-                style: TextStyle(
-                    fontWeight: FontWeight.w700, color: context.c.muted, fontSize: 12)),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _name,
-              enabled: !_busy,
-              textInputAction: TextInputAction.done,
-              decoration: InputDecoration(hintText: widget.name),
-              onChanged: (v) => setState(() => _dirty = v.trim() != widget.name),
-              onSubmitted: (_) => _rename(),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              tr('Cambiarlo aquí también cambia cómo se presenta el agente.'),
-              style: TextStyle(fontSize: 11, color: context.c.muted),
-            ),
-            if (_dirty) ...[
-              const SizedBox(height: 10),
-              FilledButton(
-                onPressed: _busy ? null : _rename,
-                child: Text(tr('Guardar el nombre')),
-              ),
-            ],
-            const SizedBox(height: 24),
-            ],
+            // The face and the name, at the top, the way a messaging app opens a
+            // profile. They used to be two labelled sections of controls further
+            // down - which told you how to CHANGE the agent without ever showing
+            // you the agent. Tapping the picture shows it full size; the camera and
+            // the pencil are the two things anybody wants to change about it.
+            Center(child: _profileHeader(context)),
+            const SizedBox(height: 26),
 
             Text(tr('Dónde se le puede hablar'),
                 style: TextStyle(

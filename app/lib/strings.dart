@@ -455,4 +455,23 @@ const Map<String, (String, String)> _table = {
     'This computer cannot tell me about the agent yet.',
     'Dieser Computer kann mir noch nichts über den Agenten sagen.'
   ),
+
+  // ── recording a note, and the agent's own face ──
+  'Pausa': ('Pause', 'Pause'),
+  'En pausa': ('Paused', 'Pausiert'),
+  'Seguir grabando': ('Keep recording', 'Weiter aufnehmen'),
+  'Enviar': ('Send', 'Senden'),
+  'Este teléfono no sabe pausar la grabación.': (
+    'This phone cannot pause a recording.',
+    'Dieses Telefon kann eine Aufnahme nicht pausieren.'
+  ),
+  'Cambiar el nombre': ('Change the name', 'Namen ändern'),
+  'Elegir una foto': ('Choose a photo', 'Ein Foto wählen'),
+  'Usar un símbolo': ('Use a symbol', 'Ein Symbol verwenden'),
+  'Volver a las iniciales': ('Back to initials', 'Zurück zu den Initialen'),
+  'Esa foto llegó vacía.': ('That photo came through empty.', 'Das Foto kam leer an.'),
+  'Esa foto pesa {0} y el máximo son 5 MB. Recórtala y vuelve a probar.': (
+    'That photo is {0} and the limit is 5 MB. Crop it and try again.',
+    'Das Foto hat {0}, erlaubt sind 5 MB. Schneide es zu und versuche es erneut.'
+  ),
 };
