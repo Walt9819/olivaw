@@ -216,7 +216,18 @@ def test_talk():
           "?key=" not in doc and "key=%s" not in doc, doc[:0])
 
     section("configured, listening and answering are three states")
-    st = T.status()
+    # An agent nobody has set up - described here rather than hoped for. These read
+    # the real machine once, so they passed on a laptop where talking had never been
+    # turned on and failed on one where it had, which is backwards: a working install
+    # is the ordinary case and the thing being checked has nothing to do with it.
+    from wizard import hermes_ctl as _hc
+    _real_env, _real_get = T.env_of, _hc.config_get
+    T.env_of = lambda profile=None, hermes=None: {}
+    _hc.config_get = lambda k, h=None, p=None: ""
+    try:
+        st = T.status()
+    finally:
+        T.env_of, _hc.config_get = _real_env, _real_get
     check("an unconfigured agent is not reported as broken",
           st["enabled"] is False and st["ready"] is False, st)
     check("and the message invites setting it up",
@@ -267,9 +278,18 @@ def test_talk():
     hermes_ctl.set_env_vars = lambda u, h=None, p=None: (
         calls.update(u) or {"ok": True, "detail": ""})
     hermes_ctl.config_get = lambda k, h=None, p=None: ""
+    # No key yet, which is the only state in which enable() writes one.
+    #
+    # An existing key is KEPT rather than rotated - that is the next section, and the
+    # right behaviour - so on a machine that already had one, set_env_vars was never
+    # called and the key these two checks went looking for was the empty string. They
+    # were testing this machine, not the code.
+    real_env_of_key = T.env_of
+    T.env_of = lambda profile=None, hermes=None: {}
     try:
         res = T.enable()
     finally:
+        T.env_of = real_env_of_key
         (hermes_ctl.config_set, hermes_ctl.set_env_vars,
          hermes_ctl.config_get) = real_set, real_env, real_get
     check("it enables the platform",
