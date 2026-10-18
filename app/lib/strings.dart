@@ -197,6 +197,15 @@ const Map<String, (String, String)> _table = {
 
   // ── past conversations ───────────────────────────────────────────────────────────
   'Conversaciones anteriores': ('Past conversations', 'Frühere Gespräche'),
+  'Buscar en lo que os dijisteis': ('Search what you said to each other',
+      'Durchsuche, was ihr euch gesagt habt'),
+  'Buscado en {0} conversaciones': ('Searched {0} conversations',
+      'In {0} Gesprächen gesucht'),
+  'No pude buscar en las conversaciones.': ('I could not search the conversations.',
+      'Ich konnte die Gespräche nicht durchsuchen.'),
+  'Nada que diga eso.': ('Nothing says that.', 'Nichts sagt das.'),
+  'Trayendo lo de antes…': ('Bringing what came before…',
+      'Hole, was davor war…'),
   'Todavía no hay conversaciones anteriores.': (
     'There are no past conversations yet.',
     'Es gibt noch keine früheren Gespräche.'

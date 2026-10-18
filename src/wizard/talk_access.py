@@ -92,6 +92,18 @@ def set_flag(install_dir, profile, where, on, gateway_on):
             bool(row["desktop"] or row["phone"]))
 
 
+def decided_for_phone(install_dir, profile):
+    """What the owner said about this agent and phones, or None if they never said.
+
+    Lets the caller skip asking hermes whether the gateway is on, which is the standing
+    cost in front of every phone request and is only ever used as a default here.
+    """
+    row = _read(install_dir).get(_key(profile))
+    if not isinstance(row, dict) or "phone" not in row:
+        return None
+    return bool(row["phone"])
+
+
 def allowed_from_phone(install_dir, profile, gateway_on):
     """The one question remote.py asks before letting a phone near an agent."""
     return bool(flags(install_dir, profile, gateway_on)["phone"])

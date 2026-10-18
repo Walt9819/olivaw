@@ -1137,14 +1137,28 @@ class Handler(BaseHTTPRequestHandler):
             return talk.disable(prof, which("hermes"))
         if route == "talk/sessions":
             return talk.sessions(_target_profile(body), which("hermes"),
-                                 limit=int(body.get("limit") or 20))
+                                 limit=int(body.get("limit") or 20),
+                                 offset=int(body.get("offset") or 0))
+        # Finding a conversation by what was said in it. An agent a month old has
+        # hundreds, and scrolling is not a way to find anything.
+        if route == "talk/search":
+            return talk.search(_target_profile(body), which("hermes"),
+                               query=body.get("query", ""),
+                               limit=int(body.get("limit") or 25),
+                               offset=int(body.get("offset") or 0),
+                               deep=body.get("deep") is not False)
         if route == "talk/new":
             return talk.create(_target_profile(body), which("hermes"),
                                title=body.get("title", ""))
         if route == "talk/history":
+            # No limit means the whole conversation, which is what the desktop asks
+            # for - it is reading a file on its own disk. The phone asks for a page.
+            before = body.get("before")
             return talk.history(_target_profile(body), which("hermes"),
                                 session_id=body.get("session_id", ""),
-                                install_dir=INSTALL_DIR)
+                                install_dir=INSTALL_DIR,
+                                limit=int(body.get("limit") or 0),
+                                before=None if before is None else int(before))
         if route == "talk/send":
             return talk.send(_target_profile(body), which("hermes"),
                              session_id=body.get("session_id", ""),

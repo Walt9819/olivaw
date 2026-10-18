@@ -17,6 +17,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'attachment.dart';
+import 'conversations.dart';
 import 'link.dart';
 import 'loading.dart';
 import 'sha256.dart';
@@ -891,6 +892,15 @@ class _AgentScreenState extends State<AgentScreen> {
       case 'media':
         final st = _chat.currentState;
         if (st == null) return;
+        // Every file in the conversation, which means the whole of it: the chat screen
+        // itself only holds the last page.
+        st.wholeThread().then((_) => _gallery(st));
+      case 'settings':
+        _openSettings();
+    }
+  }
+
+  void _gallery(ChatTabState st) {
         Navigator.of(context).push<int>(MaterialPageRoute(
           builder: (_) => MediaScreen(
             link: widget.link,
@@ -905,9 +915,6 @@ class _AgentScreenState extends State<AgentScreen> {
             _chat.currentState?.jumpToMessage(index);
           }
         });
-      case 'settings':
-        _openSettings();
-    }
   }
 
   Future<void> _openSettings() async {
@@ -1134,6 +1141,18 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
   final _input = TextEditingController();
   final _scroll = ScrollController();
   List<Map<String, dynamic>> _msgs = [];
+
+  /// How much of a conversation arrives at once, and where in the whole thread the
+  /// part on screen begins.
+  ///
+  /// A conversation of sixty turns measured 157 KB before the computer started sending
+  /// a page of it - most of which was tool calls and reasoning this screen throws away
+  /// on arrival. Now it sends the last turns, already filtered, and the ones before
+  /// them when the owner scrolls up to look.
+  static const int _page = 25;
+  int _histStart = 0;
+  bool _histMore = false;
+  bool _histBusy = false;
   String _session = '';
   bool _sending = false;
   String _error = '';
@@ -1163,6 +1182,10 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
   /// conversation would have been with the wrong agent, under the right name.
   /// The same body builder, for screens that ask on this chat's behalf.
   Map<String, dynamic> bodyFor([Map<String, dynamic>? extra]) => _body(extra);
+
+  /// Load every turn of this conversation. For the gallery and for search,
+  /// which are both about all of it. See _wholeThread.
+  Future<void> wholeThread() => _wholeThread();
 
   Map<String, dynamic> _body([Map<String, dynamic>? extra]) => {
         if (!widget.agent.isDefault) 'profile': widget.agent.slug,
@@ -1257,18 +1280,103 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
 
   Future<void> _history() async {
     if (_session.isEmpty) return;
-    final h = await widget.link
-        .reach('POST', '/api/talk/history', body: _body({'session_id': _session}));
+    final h = await widget.link.reach('POST', '/api/talk/history',
+        body: _body({'session_id': _session, 'limit': _page}));
     if (h['ok'] != true) {
       setState(() => _error = tr((h['detail'] ?? tr('No se pudo leer la conversación.')).toString()));
       return;
     }
     setState(() {
       _msgs = _readable(h['messages'] as List? ?? []);
+      _histStart = (h['start'] as num?)?.toInt() ?? 0;
+      _histMore = h['has_more'] == true;
       _error = '';
     });
     _toBottom();
   }
+
+  /// The turns before the ones on screen.
+  ///
+  /// Indices count from the START of the conversation, which is what makes this safe
+  /// while the agent is still answering: a page asked for by distance from the end
+  /// would shift under the reader every time a new turn arrived.
+  Future<void> _earlier() async {
+    if (_histBusy || !_histMore || _session.isEmpty) return;
+    setState(() => _histBusy = true);
+    try {
+      final h = await widget.link.reach('POST', '/api/talk/history',
+          body: _body({
+            'session_id': _session,
+            'limit': _page,
+            'before': _histStart,
+          }));
+      if (!mounted || h['ok'] != true) return;
+      final older = _readable(h['messages'] as List? ?? []);
+      // Where the bottom of the list is now, so the view can be put back on the same
+      // message after the list grows upwards underneath it.
+      final was = _scroll.hasClients ? _scroll.position.maxScrollExtent : 0.0;
+      final at = _scroll.hasClients ? _scroll.offset : 0.0;
+      setState(() {
+        _msgs = [...older, ..._msgs];
+        // A remembered index into the list points at a different message now.
+        if (_flash >= 0) _flash += older.length;
+        _histStart = (h['start'] as num?)?.toInt() ?? 0;
+        _histMore = h['has_more'] == true;
+      });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!_scroll.hasClients) return;
+        final grew = _scroll.position.maxScrollExtent - was;
+        if (grew > 0) _scroll.jumpTo((at + grew).clamp(0.0, _scroll.position.maxScrollExtent));
+      });
+    } finally {
+      if (mounted) setState(() => _histBusy = false);
+    }
+  }
+
+  /// The whole conversation, for the two things that are about all of it.
+  ///
+  /// Searching inside a thread and listing the files in it both mean every turn, not
+  /// the last twenty-five - a search that quietly looked at a quarter of the
+  /// conversation would be worse than no search. Paid once, when one of them is asked
+  /// for, rather than on every opening.
+  Future<void> _wholeThread() async {
+    if (!_histMore || _session.isEmpty || _histBusy) return;
+    setState(() => _histBusy = true);
+    try {
+      final h = await widget.link
+          .reach('POST', '/api/talk/history', body: _body({'session_id': _session}));
+      if (!mounted || h['ok'] != true) return;
+      setState(() {
+        _msgs = _readable(h['messages'] as List? ?? []);
+        _histStart = 0;
+        _histMore = false;
+      });
+    } finally {
+      if (mounted) setState(() => _histBusy = false);
+    }
+  }
+  /// The top of a conversation that has more behind it.
+  Widget _earlierRow() {
+    // Asked for as it appears. The guard inside _earlier is what keeps a list that
+    // rebuilds often from asking twice.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _earlier());
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 14),
+      child: Center(
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(
+                  strokeWidth: 2, color: context.c.muted)),
+          const SizedBox(width: 8),
+          Text(tr('Trayendo lo de antes…'),
+              style: TextStyle(fontSize: 12, color: context.c.muted)),
+        ]),
+      ),
+    );
+  }
+
   void _toBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scroll.hasClients) {
@@ -1434,6 +1542,9 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
 
   /// Called from the title bar's search field.
   void search(String q) {
+    // The screen holds the last page of a long conversation; a search is about the
+    // whole of it. Fetched once, the first time somebody actually searches.
+    if (q.trim().isNotEmpty && _histMore) _wholeThread();
     setState(() {
       _query = q;
       _hit = 0;
@@ -1836,96 +1947,17 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
   /// transcript, and starting clean is what the desktop console does. This is for the
   /// other case: picking up something from yesterday, or reading back a thread that
   /// happened on Telegram, which appears here because it is the same agent.
+  /// Offer the conversations this agent has already had, and open the chosen one.
+  ///
+  /// A new thread is still what you get by default - an agent's memory is not the
+  /// transcript, and starting clean is what the desktop console does. This is for the
+  /// other case: picking up something from yesterday, or reading back a thread that
+  /// happened on Telegram, which appears here because it is the same agent.
+  ///
+  /// The sheet itself lives in conversations.dart: it pages, and it searches inside
+  /// the conversations rather than at their names.
   Future<void> pickPastConversation() async {
-    final loading = showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => const Center(child: CircularProgressIndicator()),
-    );
-    List<Map<String, dynamic>> rows = [];
-    String problem = '';
-    try {
-      final res = await widget.link
-          .reach('POST', '/api/talk/sessions', body: _body({'limit': 30}));
-      if (res['ok'] != true) {
-        problem = tr((res['detail'] ?? tr('No pude leer las conversaciones.')).toString());
-      } else {
-        rows = [
-          for (final r in (res['sessions'] as List? ?? []))
-            (r as Map).cast<String, dynamic>(),
-        ];
-      }
-    } catch (e) {
-      problem = humanError(e);
-    }
-    if (!mounted) return;
-    Navigator.of(context, rootNavigator: true).pop();
-    await loading.then((_) {});
-    if (!mounted) return;
-    if (problem.isNotEmpty) {
-      _say(problem);
-      return;
-    }
-    if (rows.isEmpty) {
-      _say(tr('Todavía no hay conversaciones anteriores.'));
-      return;
-    }
-    final chosen = await showModalBottomSheet<Map<String, dynamic>>(
-      context: context,
-      isScrollControlled: true,
-      // Capped, and not merely 'as tall as it needs': a scrollable sheet with thirty
-      // conversations in it grows to the full height of the screen and puts its own
-      // heading under the clock.
-      constraints: BoxConstraints(
-          maxHeight: MediaQuery.of(context).size.height * 0.72),
-      shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(22))),
-      builder: (sheet) => SafeArea(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(18, 16, 18, 8),
-            child: Row(children: [
-              Text(tr('Conversaciones anteriores'),
-                  style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w700,
-                      color: context.c.ink)),
-            ]),
-          ),
-          // Somebody who opens this list looking for 'a different conversation' is
-          // often after a new one.
-          ListTile(
-            leading: Icon(Icons.edit_square, color: context.c.accent),
-            title: Text(tr('Conversación nueva'),
-                style: TextStyle(
-                    color: context.c.accent, fontWeight: FontWeight.w600)),
-            onTap: () => Navigator.pop(sheet, <String, dynamic>{'new': true}),
-          ),
-          Divider(height: 1, color: context.c.line),
-          Flexible(
-            child: ListView.builder(
-              shrinkWrap: true,
-              itemCount: rows.length,
-              itemBuilder: (c, i) {
-                final r = rows[i];
-                final telegram = (r['source'] ?? '') == 'telegram';
-                return ListTile(
-                  leading: Icon(
-                      telegram ? Icons.send : Icons.chat_bubble_outline,
-                      color: context.c.muted),
-                  title: Text(_sessionTitle(r),
-                      maxLines: 1, overflow: TextOverflow.ellipsis),
-                  subtitle: Text(_sessionWhen(r),
-                      style: TextStyle(fontSize: 12, color: context.c.muted)),
-                  onTap: () => Navigator.pop(sheet, r),
-                );
-              },
-            ),
-          ),
-          const SizedBox(height: 8),
-        ]),
-      ),
-    );
+    final chosen = await pickConversation(context, link: widget.link, body: _body);
     if (chosen == null || !mounted) return;
     if (chosen['new'] == true) {
       newConversation();
@@ -1936,43 +1968,19 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
     setState(() {
       _session = id;
       _msgs = [];
+      _histStart = 0;
+      _histMore = false;
       _replyTo = null;
       _error = '';
     });
     _openThreads[widget.agent.slug] = id;
     await Store.saveThreads(_openThreads);
-    await _history();
-  }
-
-  /// What to call a conversation nobody named.
-  String _sessionTitle(Map<String, dynamic> r) {
-    final t = (r['title'] ?? '').toString().trim();
-    if (t.isNotEmpty) return t;
-    final p = (r['preview'] ?? '').toString().trim().replaceAll(RegExp(r'\s+'), ' ');
-    if (p.isNotEmpty) return p.length > 70 ? '${p.substring(0, 70)}…' : p;
-    return tr('Sin título');
-  }
-
-  String _sessionWhen(Map<String, dynamic> r) {
-    final secs = (r['last_active'] ?? r['started_at']);
-    final n = (r['message_count'] as num?)?.toInt() ?? 0;
-    final where = (r['source'] ?? '') == 'telegram' ? 'Telegram' : 'Olivaw';
-    if (secs is! num) return where;
-    final when = DateTime.fromMillisecondsSinceEpoch((secs * 1000).round());
-    final ago = DateTime.now().difference(when);
-    String rel;
-    if (ago.inMinutes < 60) {
-      rel = trp('hace {0} min', [ago.inMinutes]);
-    } else if (ago.inHours < 24) {
-      rel = trp('hace {0} h', [ago.inHours]);
-    } else if (ago.inDays < 30) {
-      rel = trp('hace {0} d', [ago.inDays]);
-    } else {
-      rel = '${when.day}/${when.month}/${when.year}';
+    setState(() => _loadingHistory = true);
+    try {
+      await _history();
+    } finally {
+      if (mounted) setState(() => _loadingHistory = false);
     }
-    return n > 0
-        ? '$where · $rel · ${trp('{0} mensajes', [n])}'
-        : '$where · $rel';
   }
 
   /// The message being answered, above the box, with a way out.
@@ -2271,9 +2279,14 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
         child: ListView.builder(
           controller: _scroll,
           padding: const EdgeInsets.all(14),
-          itemCount: _msgs.length,
+          // One row above the first message while there is more conversation behind
+          // it. Building that row IS the request: reaching the top of what you have
+          // is the moment you want what came before, and a button to press first
+          // would only be in the way.
+          itemCount: _msgs.length + (_histMore ? 1 : 0),
           itemBuilder: (c, i) {
-            final m = _msgs[i];
+            if (_histMore && i == 0) return _earlierRow();
+            final m = _msgs[_histMore ? i - 1 : i];
             final mine = m['role'] == 'user';
             if (m['pending'] == true && m['voice'] != true) return _bubble(c, m, mine);
             // Telegram's gesture, because it is the one thumbs already know: drag the

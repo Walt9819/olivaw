@@ -83,6 +83,9 @@ import os
 import re
 import secrets
 import socket
+import threading
+import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -359,6 +362,8 @@ def enable(profile=None, hermes=None, install_dir=None, log=None):
     step("activar", hermes_ctl.config_set("platforms.%s.enabled" % PLATFORM, "true",
                                           hermes, profile))
     ok = all(s["ok"] for s in steps)
+    # The port may have just changed. Nothing should still be knocking on the old one.
+    _forget_gate(profile, hermes)
     if log and ok:
         log("talk: %s can be reached at %s:%d (key %s)"
             % (profile or "default", HOST, port, "generated" if fresh else "kept"))
@@ -370,6 +375,7 @@ def enable(profile=None, hermes=None, install_dir=None, log=None):
 def disable(profile=None, hermes=None, log=None):
     """Turn it off. The key is LEFT in place so turning it back on keeps the same one."""
     r = hermes_ctl.config_set("platforms.%s.enabled" % PLATFORM, "false", hermes, profile)
+    _forget_gate(profile, hermes)
     if log and r.get("ok"):
         log("talk: %s no longer listens for browser chat" % (profile or "default"))
     return {"ok": bool(r.get("ok")), "detail": r.get("detail", "")}
@@ -671,12 +677,81 @@ def file_bytes(file_id=""):
 
 # ── talking ──────────────────────────────────────────────────────────────────
 
+# Where each agent's gateway is, remembered for a moment.
+#
+# `env_of` reads a file and `_configured_port` shells out to `hermes config get`, and
+# together they measured 1.93 SECONDS - paid before every single call, so opening a
+# conversation on the phone spent about two seconds deciding which port to knock on and
+# then twenty milliseconds reading the conversation. A search that reads two hundred
+# conversations paid it two hundred times and took a minute.
+#
+# Ten minutes, not seconds, because nothing here expires on its own: the answer changes
+# when the gateway is turned on or off for an agent, and both of those paths forget this
+# explicitly. The window only covers a config edited behind this module's back - and
+# even that is self-correcting, because nothing then answers on the remembered port,
+# which is `code == 0` below, and that forgets it. A short TTL bought no safety and
+# made the first tap after a quiet minute cost two seconds again.
+_GATE_TTL = 600.0
+_gate = {}
+_gate_lock = threading.Lock()
+
+
+def _forget_gate(profile=None, hermes=None):
+    with _gate_lock:
+        for store in (_gate, _switch):
+            if profile is None and hermes is None:
+                store.clear()
+            else:
+                store.pop((profile or "", hermes or ""), None)
+
+
+_switch = {}
+
+
+def enabled_flag(profile=None, hermes=None):
+    """Is the gateway switched on for this agent? Nothing else.
+
+    `status()` answers three questions - configured, listening, answering - and the last
+    two cost an HTTP call and a subprocess, 2.7 seconds together. remote.py asks this
+    before EVERY request a phone makes, where all it needs is the switch, and paid for
+    the examination each time. Cached on the same terms as the port above: a `hermes
+    config get` for a value that changes when somebody flips a switch, and both paths
+    that flip it forget this.
+    """
+    ck = (profile or "", hermes or "")
+    now = time.monotonic()
+    with _gate_lock:
+        hit = _switch.get(ck)
+    if hit and now - hit[0] < _GATE_TTL:
+        return hit[1]
+    on = (hermes_ctl.config_get("platforms.%s.enabled" % PLATFORM, hermes, profile)
+          or "").strip().lower() in ("true", "1", "yes", "on")
+    with _gate_lock:
+        _switch[ck] = (now, on)
+    return on
+
+
+def _gate_gone(profile, hermes, code):
+    """Nothing answered on the port we had. Ask again next time."""
+    if not code:
+        _forget_gate(profile, hermes)
+
+
 def _require(profile, hermes):
+    ck = (profile or "", hermes or "")
+    now = time.monotonic()
+    with _gate_lock:
+        hit = _gate.get(ck)
+    if hit and now - hit[0] < _GATE_TTL:
+        return hit[1], hit[2], None
     key = env_of(profile, hermes).get(KEY_ENV, "").strip()
     port = _configured_port(profile, hermes)
     if not key or not port:
+        _forget_gate(profile, hermes)
         return None, None, {"ok": False,
                             "detail": "Todavía no está activado para este agente."}
+    with _gate_lock:
+        _gate[ck] = (now, key, port)
     return key, port, None
 
 
@@ -684,15 +759,31 @@ def _safe_session(sid):
     return bool(sid) and _SESSION_RE.match(str(sid)) is not None
 
 
-def sessions(profile=None, hermes=None, limit=20):
+def sessions(profile=None, hermes=None, limit=20, offset=0):
+    """One page of this agent's conversations, newest first.
+
+    An agent that has been working for a month has hundreds of these - this machine's
+    main agent had 461 when the paging was written - and the phone used to ask for the
+    first thirty and call that the list. Thirty was both too many to wait for on mobile
+    data and far too few to find anything in: everything older than a fortnight was
+    simply unreachable. Hermes pages them properly (`offset`, `has_more`), so this
+    passes that through rather than inventing it here.
+    """
     key, port, err = _require(profile, hermes)
     if err:
         return err
-    ok, data, code = _http("http://%s:%d/api/sessions?limit=%d" % (HOST, port, int(limit)), key)
+    limit = max(1, min(int(limit or 20), 200))
+    offset = max(0, int(offset or 0))
+    ok, data, code = _http("http://%s:%d/api/sessions?limit=%d&offset=%d"
+                           % (HOST, port, limit, offset), key)
     if not ok:
+        _gate_gone(profile, hermes, code)
         return {"ok": False, "detail": _explain(code, data)}
     rows = data.get("data") if isinstance(data, dict) else data
-    return {"ok": True, "sessions": rows if isinstance(rows, list) else []}
+    rows = rows if isinstance(rows, list) else []
+    more = bool(data.get("has_more")) if isinstance(data, dict) else len(rows) == limit
+    return {"ok": True, "sessions": rows, "offset": offset, "limit": limit,
+            "has_more": more}
 
 
 def create(profile=None, hermes=None, title=""):
@@ -732,67 +823,314 @@ def _session_id(data):
     return str(data.get("id") or data.get("session_id") or "")
 
 
-def history(profile=None, hermes=None, session_id="", install_dir=None):
-    if not _safe_session(session_id):
-        return {"ok": False, "detail": "Conversación no válida."}
-    key, port, err = _require(profile, hermes)
-    if err:
-        return err
-    ok, data, code = _http("http://%s:%d/api/sessions/%s/messages"
-                           % (HOST, port, urllib.parse.quote(session_id, safe="")), key)
-    if not ok:
-        return {"ok": False, "detail": _explain(code, data)}
-    rows = data.get("data") if isinstance(data, dict) else data
-    if not isinstance(rows, list):
-        return {"ok": True, "messages": []}
+# How much of a conversation the phone is given when it opens one, and how much more
+# arrives each time it asks for what came before. A thread of sixty turns measured
+# 157 KB here; over a relay on mobile data that is the whole of the wait, and nobody
+# reads the top of it first.
+HISTORY_PAGE = 25
+
+
+def _is_speech(row):
+    """Did a person or the agent actually say this?
+
+    The rows Hermes keeps are a transcript of everything that happened - tool calls,
+    the agent's own reasoning, the summaries written when a context window filled up.
+    The phone has always dropped those on arrival; the filter lives here now because
+    the count has to mean something before a window can be taken out of it. A page of
+    twenty-five rows that comes out as four bubbles is not a page.
+    """
+    if not isinstance(row, dict):
+        return False
+    if str(row.get("role") or "") not in ("user", "assistant"):
+        return False
+    if row.get("tool_calls"):
+        return False
+    text = row.get("content") or row.get("text") or ""
+    if not isinstance(text, str) or not text.strip():
+        return False
+    return not text.strip().startswith("[CONTEXT COMPACTION")
+
+
+def _dress(row, install_dir=None, profile=None):
+    """One stored turn, made readable. Dressing is per-row and costs disk, so only the
+    rows actually being sent go through it."""
+    row = dict(row)
+    text = row.get("content")
+    if not isinstance(text, str) or not text:
+        return row
     # The same treatment a live reply gets. A stored turn still has its raw
     # `MEDIA:<path>` lines in it - the runtime consumed those when it delivered the file,
     # but nothing rewrote the transcript. Left alone they reach a reader as an absolute
     # path on somebody else's computer; put through read_files_out they become what they
     # always were, a file with a name and an id to fetch it by.
-    out = []
-    for row in rows:
-        if not isinstance(row, dict):
+    body, files = read_files_out(text)
+    # read_files_out leaves a MEDIA line alone when the file is not there any
+    # more, which is the right call for a LIVE reply - the owner may still want
+    # to know what the agent tried to send. In a transcript it is the opposite:
+    # the file was delivered weeks ago and has since been tidied away, and an
+    # absolute path on this machine is not something a reader can do anything
+    # with. Named, and marked as gone.
+    kept = []
+    for line in body.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("MEDIA:") and len(stripped) > 6:
+            gone = _clean_path(stripped[6:]) or stripped[6:].strip()
+            name = os.path.basename(gone.rstrip("\\/")) or "archivo"
+            files.append({"kind": kind_of(name), "name": name,
+                          "missing": True, "human": ""})
             continue
-        row = dict(row)
-        text = row.get("content")
-        if isinstance(text, str) and text:
-            body, files = read_files_out(text)
-            # read_files_out leaves a MEDIA line alone when the file is not there any
-            # more, which is the right call for a LIVE reply - the owner may still want
-            # to know what the agent tried to send. In a transcript it is the opposite:
-            # the file was delivered weeks ago and has since been tidied away, and an
-            # absolute path on this machine is not something a reader can do anything
-            # with. Named, and marked as gone.
-            kept = []
-            for line in body.split("\n"):
-                stripped = line.strip()
-                if stripped.startswith("MEDIA:") and len(stripped) > 6:
-                    gone = _clean_path(stripped[6:]) or stripped[6:].strip()
-                    name = os.path.basename(gone.rstrip("\\/")) or "archivo"
-                    files.append({"kind": kind_of(name), "name": name,
-                                  "missing": True, "human": ""})
-                    continue
-                kept.append(line)
-            row["content"] = "\n".join(kept).strip()
-            # And the owner's OWN attachments, which send() could only record as a block
-            # of prose in the message - Hermes refuses file parts, so naming the path is
-            # the only way the agent can reach one. Reopening a conversation therefore
-            # brought every voice note back as its transcript followed by a Windows path,
-            # with no way to hear what was actually said, which is the one thing a note
-            # has that a transcription does not.
-            #
-            # Only on the owner's turns: an agent that wrote this block into a reply
-            # would otherwise be choosing paths for a phone to fetch, which is the whole
-            # thing talk/file exists to prevent.
-            if str(row.get("role") or "") == "user":
-                row["content"], mine = read_files_in(
-                    row["content"], install_dir=install_dir, profile=profile)
-                files = list(mine) + list(files)
-            if files:
-                row["files"] = files
-        out.append(row)
-    return {"ok": True, "messages": out}
+        kept.append(line)
+    row["content"] = "\n".join(kept).strip()
+    # And the owner's OWN attachments, which send() could only record as a block
+    # of prose in the message - Hermes refuses file parts, so naming the path is
+    # the only way the agent can reach one. Reopening a conversation therefore
+    # brought every voice note back as its transcript followed by a Windows path,
+    # with no way to hear what was actually said, which is the one thing a note
+    # has that a transcription does not.
+    #
+    # Only on the owner's turns: an agent that wrote this block into a reply
+    # would otherwise be choosing paths for a phone to fetch, which is the whole
+    # thing talk/file exists to prevent.
+    if str(row.get("role") or "") == "user":
+        row["content"], mine = read_files_in(
+            row["content"], install_dir=install_dir, profile=profile)
+        files = list(mine) + list(files)
+    if files:
+        row["files"] = files
+    return row
+
+
+def _messages_of(profile, hermes, session_id):
+    """Every stored row of one conversation, undressed. Hermes ignores limit/offset on
+    this endpoint, so the window is taken here."""
+    if not _safe_session(session_id):
+        return None, {"ok": False, "detail": "Conversación no válida."}
+    key, port, err = _require(profile, hermes)
+    if err:
+        return None, err
+    ok, data, code = _http("http://%s:%d/api/sessions/%s/messages"
+                           % (HOST, port, urllib.parse.quote(session_id, safe="")), key)
+    if not ok:
+        _gate_gone(profile, hermes, code)
+        return None, {"ok": False, "detail": _explain(code, data)}
+    rows = data.get("data") if isinstance(data, dict) else data
+    return (rows if isinstance(rows, list) else []), None
+
+
+def history(profile=None, hermes=None, session_id="", install_dir=None,
+            limit=0, before=None):
+    """A conversation, or the end of one.
+
+    `limit=0` is the whole thing, which is what the desktop asks for - it is reading a
+    file on its own disk. The phone asks for a page: the LAST `limit` turns, and then
+    the `limit` before index `before` as the owner scrolls up. Indices count from the
+    start of the thread, so they stay valid while the agent is still answering at the
+    other end - counting from the end would quietly shift every page under the reader
+    each time a new turn arrived.
+    """
+    rows, err = _messages_of(profile, hermes, session_id)
+    if err:
+        return err
+    speech = [r for r in rows if _is_speech(r)]
+    total = len(speech)
+    limit = max(0, min(int(limit or 0), 500))
+    if not limit:
+        start, stop = 0, total
+    elif before is None:
+        start, stop = max(0, total - limit), total
+    else:
+        stop = max(0, min(int(before), total))
+        start = max(0, stop - limit)
+    window = speech[start:stop]
+    out = [_dress(r, install_dir=install_dir, profile=profile) for r in window]
+    return {"ok": True, "messages": out, "total": total, "start": start,
+            "end": start + len(out), "has_more": start > 0}
+
+
+
+# How far back a search looks, and how many conversations it opens to read.
+#
+# Reading one stored conversation off Hermes measured 20 ms here and they are read in
+# parallel, so looking inside four hundred of them costs about two seconds - cheap
+# enough that searching only the titles would be a worse answer for no gain. Titles are
+# usually absent anyway: Hermes names a session after its id, and what a person
+# remembers is a sentence from the middle of it.
+SEARCH_SESSIONS = 400
+SEARCH_READ = 240
+SEARCH_PAGE = 100
+SNIPPET_BEFORE = 60
+SNIPPET_AFTER = 110
+
+
+def _fold(text):
+    """Lowercased and stripped of accents, for matching only.
+
+    Spanish is the language this is used in and half the keyboards that type it do not
+    bother with the accents - a search for 'informe' that misses 'informé' is a search
+    that looks broken.
+    """
+    if not isinstance(text, str):
+        return ""
+    flat = unicodedata.normalize("NFKD", text)
+    flat = "".join(c for c in flat if not unicodedata.combining(c))
+    return flat.casefold()
+
+
+def _terms(query):
+    return [t for t in _fold(query).split() if t]
+
+
+def _hit(text, terms):
+    """Where the first term lands in `text`, or None if any term is missing.
+
+    All of them must be there - two words typed together are a narrowing, not a wider
+    net - but the snippet is cut around the first, which is the one the reader is
+    looking at while they type.
+    """
+    if not isinstance(text, str) or not text:
+        return None
+    flat = _fold(text)
+    # Folding is per-character here (NFKD can only add combining marks, which are then
+    # dropped), so an index into the folded text is an index into the original. The
+    # snippet is cut from the ORIGINAL, accents and capitals intact.
+    if len(flat) != len(text):
+        flat = text.casefold()
+        if len(flat) != len(text):
+            return None
+    for t in terms:
+        if t not in flat:
+            return None
+    return flat.find(terms[0])
+
+
+def _snippet(text, at, term_len):
+    """The matched words with enough either side to recognise them, in three parts.
+
+    Three parts rather than one string with indices into it: the phone counts a string
+    in UTF-16 and Python counts it in code points, and a conversation with one emoji in
+    it would put the highlight in the wrong place.
+
+    Each part is cut from the ORIGINAL text at the index the match was found at, and
+    only then has its whitespace tidied. The first version flattened the text first and
+    went looking for the word again in it, which landed two characters off whenever the
+    collapsing had moved anything - a highlight over "forme r" instead of "informe".
+    """
+    text = str(text)
+    at = max(0, min(int(at), len(text)))
+    term_len = max(0, min(int(term_len), len(text) - at))
+    start = max(0, at - SNIPPET_BEFORE)
+    stop = min(len(text), at + term_len + SNIPPET_AFTER)
+
+    def tidy(part):
+        return " ".join(part.split())
+
+    before = tidy(text[start:at])
+    after = tidy(text[at + term_len:stop])
+    # A space the tidying swallowed at either edge of the match is put back, or the
+    # highlight would appear glued to the word before it.
+    if before and at > 0 and text[at - 1].isspace():
+        before += " "
+    if after and at + term_len < len(text) and text[at + term_len].isspace():
+        after = " " + after
+    return {
+        "before": ("…" if start > 0 else "") + before,
+        "hit": text[at:at + term_len],
+        "after": after + ("…" if stop < len(text) else ""),
+    }
+
+
+def _search_one(profile, hermes, row, terms):
+    """One conversation, read and searched. Returns a match or None."""
+    rows, err = _messages_of(profile, hermes, str(row.get("id") or ""))
+    if err or not rows:
+        return None
+    for raw in rows:
+        if not _is_speech(raw):
+            continue
+        text = raw.get("content") or ""
+        at = _hit(text, terms)
+        if at is None:
+            continue
+        hit = dict(row)
+        hit["where"] = "message"
+        hit["who"] = str(raw.get("role") or "")
+        hit["snippet"] = _snippet(text, at, len(terms[0]))
+        return hit
+    return None
+
+
+def search(profile=None, hermes=None, query="", limit=25, offset=0, deep=True,
+           read=SEARCH_READ):
+    """The conversations where this was said.
+
+    Two passes, because they cost different amounts and the phone asks for them
+    separately: the titles and previews Hermes already handed over (free, instant), and
+    then the conversations themselves (one read each, in parallel). The phone shows the
+    first set while the second is still running, which is the difference between a
+    search that feels immediate and one that takes two seconds to show anything.
+    """
+    terms = _terms(query)
+    if not terms:
+        return {"ok": True, "sessions": [], "query": "", "has_more": False,
+                "read": 0, "scanned": 0}
+    key, port, err = _require(profile, hermes)
+    if err:
+        return err
+
+    # Every conversation worth looking at, newest first.
+    rows, off = [], 0
+    while len(rows) < SEARCH_SESSIONS:
+        page = sessions(profile, hermes, limit=SEARCH_PAGE, offset=off)
+        if not page.get("ok"):
+            return page
+        got = page.get("sessions") or []
+        rows.extend(r for r in got if isinstance(r, dict))
+        if not page.get("has_more") or not got:
+            break
+        off += SEARCH_PAGE
+    rows = rows[:SEARCH_SESSIONS]
+
+    found, seen = [], set()
+    for row in rows:
+        title = str(row.get("title") or "")
+        at = _hit(title, terms)
+        where, text = "title", title
+        if at is None:
+            text = str(row.get("preview") or "")
+            at = _hit(text, terms)
+            where = "preview"
+        if at is None:
+            continue
+        hit = dict(row)
+        hit["where"] = where
+        hit["snippet"] = _snippet(text, at, len(terms[0]))
+        found.append(hit)
+        seen.add(str(row.get("id") or ""))
+
+    read_n = 0
+    if deep:
+        import concurrent.futures
+
+        rest = [r for r in rows if str(r.get("id") or "") not in seen][:max(0, int(read))]
+        read_n = len(rest)
+        if rest:
+            with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=min(8, len(rest))) as ex:
+                for hit in ex.map(lambda r: _search_one(profile, hermes, r, terms),
+                                  rest):
+                    if hit:
+                        found.append(hit)
+
+    # Newest first, the same order the list itself is in: a search result that came back
+    # in relevance order would be a second ordering to learn for no gain - what people
+    # remember about a conversation is roughly when it happened.
+    found.sort(key=lambda r: -(float(r.get("last_active") or r.get("started_at") or 0)))
+    offset = max(0, int(offset or 0))
+    limit = max(1, min(int(limit or 25), 100))
+    page = found[offset:offset + limit]
+    return {"ok": True, "sessions": page, "query": query, "offset": offset,
+            "total": len(found), "has_more": offset + len(page) < len(found),
+            "scanned": len(rows), "read": read_n, "deep": bool(deep)}
 
 
 def _attached_note(picked):

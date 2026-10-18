@@ -128,8 +128,14 @@ def call_api(route, body, caps):
         try:
             from . import talk, talk_access
             prof = (body or {}).get("profile") or "default"
-            st = talk.status(prof, install_dir=INSTALL_DIR)
-            if not talk_access.allowed_from_phone(INSTALL_DIR, prof, st.get("enabled")):
+            # Two questions, cheapest first. Once the owner has used the switch for an
+            # agent the answer is in a small file here, and the gateway's own state -
+            # which costs a subprocess and an HTTP call - is never needed. It is only
+            # the default for an agent nobody has decided about.
+            decided = talk_access.decided_for_phone(INSTALL_DIR, prof)
+            if decided is None:
+                decided = talk.enabled_flag(prof)
+            if not decided:
                 return {"ok": False, "phone_off": True,
                         "detail": u"Este agente no está puesto para hablar desde el teléfono."}, 403
         except Exception as e:  # noqa: BLE001

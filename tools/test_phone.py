@@ -614,18 +614,24 @@ _through_once = through_relay
 
 
 def through_relay(method, path, body=None, token=""):
-    """One retry, and only for a reply that never arrived.
+    """Retried, and only for a reply that never arrived.
 
     Not a loop and not a blanket catch: a 403 is an answer and stays an answer. This
     is for the one failure the suite actually sees - a stream opened in the moment
-    after attaching that gets nothing at all - and if the second attempt also comes
-    back empty, that is a real fault and the suite says so.
+    after the house attaches that gets nothing at all.
+
+    Three attempts rather than two: with one retry the suite still came back red about
+    once in five runs, which is worse than a slow test. It is not a flaky ASSERTION -
+    nothing about the product is in doubt here - it is waiting for a rendezvous that
+    has been alive for a few milliseconds, and the wait grows until it is enough.
     """
-    try:
-        return _through_once(method, path, body, token)
-    except _EmptyThroughRelay:
-        time.sleep(1.0)
-        return _through_once(method, path, body, token)
+    for attempt in range(3):
+        try:
+            return _through_once(method, path, body, token)
+        except _EmptyThroughRelay:
+            if attempt == 2:
+                raise
+            time.sleep(0.5 * (attempt + 1))
 
 
 code, res = through_relay("GET", "/ping")
@@ -1114,15 +1120,244 @@ shutil.rmtree(_vd, ignore_errors=True)
 
 # Only the OWNER's turns. An agent that wrote this block into a reply would otherwise
 # be choosing paths for a phone to fetch, which is the whole thing talk/file prevents.
-_talksrc = io.open(os.path.join(ROOT, 'src', 'wizard', 'talk.py'),
-                   encoding='utf-8').read()
-# To the NEXT def, not to the first 'return messages': history() has an early one
-# for a session with nothing in it, and slicing there cut the function in half and
-# hid the very line this is checking.
-_hist = _talksrc[_talksrc.index('def history('):]
-_hist = _hist[:_hist.index(chr(10) + 'def ', 10)]
+# Asked of the code rather than read out of it: the same stored turn is dressed twice,
+# once as the owner's and once as the agent's, and only one of them may come back with
+# a file attached to it. The block is the one read_files_in is known to understand -
+# the test above built it and proved it works.
+_vd2 = tempfile.mkdtemp()
+_ad2 = talk_mod.attach_dir('daneel', _vd2)
+_note2 = os.path.join(_ad2, 'nota-2.m4a')
+io.open(_note2, 'wb').write(b'x' * 2048)
+_blk2 = ('Lo que dije.\n\n'
+         '[Archivos que te acabo de adjuntar, ya guardados en tu carpeta:\n'
+         '- nota-2.m4a (2 KB): ' + _note2 + '\n'
+         '\u00c1brelos con tus herramientas si necesitas lo que hay dentro.]')
+_as_owner = talk_mod._dress({'role': 'user', 'content': _blk2},
+                            install_dir=_vd2, profile='daneel')
+_as_agent = talk_mod._dress({'role': 'assistant', 'content': _blk2},
+                            install_dir=_vd2, profile='daneel')
+ok('the owner\'s own attachments come back as files',
+   len(_as_owner.get('files') or []) == 1 and _as_owner['content'] == 'Lo que dije.',
+   _as_owner)
 ok('and only the owner\'s own turns are read that way',
-   'read_files_in(' in _hist and '== "user"' in _hist)
+   not _as_agent.get('files') and '[Archivos' in _as_agent['content'], _as_agent)
+shutil.rmtree(_vd2, ignore_errors=True)
+
+# ── a conversation arrives a page at a time ─────────────────────────
+# A thread of sixty turns measured 157 KB, of which the phone threw away seven eighths
+# on arrival - tool calls, reasoning, compaction notes. Now the computer filters and
+# windows it, which only works if "a turn" means the same thing on both sides: a page
+# of twenty-five rows that comes out as four bubbles is not a page.
+_stored = []
+for _i in range(30):
+    _stored.append({'role': 'user', 'content': 'pregunta %d' % _i})
+    _stored.append({'role': 'assistant', 'content': 'respuesta %d' % _i,
+                    'tool_calls': None})
+    _stored.append({'role': 'assistant', 'content': 'mirando algo',
+                    'tool_calls': [{'name': 'read'}]})
+    _stored.append({'role': 'tool', 'content': 'resultado'})
+_stored.append({'role': 'assistant', 'content': '[CONTEXT COMPACTION] resumen'})
+_stored.append({'role': 'user', 'content': '   '})
+
+_saved_msgs = talk_mod._messages_of
+talk_mod._messages_of = lambda profile, hermes, sid: (list(_stored), None)
+try:
+    _all = talk_mod.history(None, None, session_id='s1')
+    ok('only what somebody actually said is a turn',
+       _all['total'] == 60 and len(_all['messages']) == 60, _all.get('total'))
+    ok('a tool call is not a turn, and neither is a compaction note',
+       not any('mirando' in m['content'] or 'COMPACTION' in m['content']
+               for m in _all['messages']))
+
+    _last = talk_mod.history(None, None, session_id='s1', limit=25)
+    ok('a page is the END of the conversation, which is where you left off',
+       len(_last['messages']) == 25 and _last['messages'][-1]['content'] == 'respuesta 29',
+       _last['messages'][-1]['content'])
+    ok('and it says where in the whole thread it begins',
+       (_last['start'], _last['end'], _last['has_more']) == (35, 60, True),
+       (_last['start'], _last['end'], _last['has_more']))
+
+    _back = talk_mod.history(None, None, session_id='s1', limit=25,
+                             before=_last['start'])
+    ok('the page before it ends exactly where that one starts',
+       _back['end'] == _last['start'] and _back['start'] == 10, _back)
+    _joined = [m['content'] for m in _back['messages'] + _last['messages']]
+    ok('two pages joined are the conversation, with nothing lost or repeated',
+       _joined == [m['content'] for m in _all['messages'][10:]], len(_joined))
+
+    _first = talk_mod.history(None, None, session_id='s1', limit=25, before=10)
+    ok('and the first page knows there is nothing before it',
+       _first['start'] == 0 and _first['has_more'] is False, _first)
+
+    # Indices count from the START for a reason: the agent may be answering while the
+    # owner reads, and a page measured from the end would shift under them.
+    _stored.append({'role': 'assistant', 'content': 'y una m\u00e1s'})
+    _after = talk_mod.history(None, None, session_id='s1', limit=25,
+                              before=_last['start'])
+    ok('a turn arriving while you read does not move the page you asked for',
+       [m['content'] for m in _after['messages']] ==
+       [m['content'] for m in _back['messages']])
+    _stored.pop()
+finally:
+    talk_mod._messages_of = _saved_msgs
+
+# ── and the list of conversations does too ────────────────────────────
+_asked = []
+_rows_by_offset = {
+    0: [{'id': 'a%d' % i, 'title': None, 'preview': 'hola %d' % i,
+         'last_active': 2000 - i} for i in range(15)],
+    15: [{'id': 'b%d' % i, 'title': None, 'preview': 'adi\u00f3s %d' % i,
+          'last_active': 1000 - i} for i in range(15)],
+}
+
+
+def _fake_http(url, key, data=None, method=None, timeout=25):
+    _asked.append(url)
+    if '/sessions?' in url:
+        off = int(url.split('offset=')[1])
+        rows = _rows_by_offset.get(off, [])
+        return True, {'data': rows, 'has_more': off == 0}, 200
+    return True, {'data': []}, 200
+
+
+_saved_http, _saved_req = talk_mod._http, talk_mod._require
+try:
+    talk_mod._http = _fake_http
+    talk_mod._require = lambda profile, hermes: ('k', 1234, None)
+    _p1 = talk_mod.sessions(None, None, limit=15)
+    _p2 = talk_mod.sessions(None, None, limit=15, offset=15)
+    ok('the list is asked for a page at a time',
+       'offset=0' in _asked[0] and 'offset=15' in _asked[1], _asked[:2])
+    ok('and the phone is told whether there is another page',
+       _p1['has_more'] is True and _p2['has_more'] is False)
+    ok('each page is the one that was asked for',
+       _p1['sessions'][0]['id'] == 'a0' and _p2['sessions'][0]['id'] == 'b0')
+finally:
+    talk_mod._http, talk_mod._require = _saved_http, _saved_req
+
+# ── searching inside them, not at their names ──────────────────────
+# Hermes rarely names a session, so a search over titles would find nothing. What a
+# person remembers is a sentence from the middle of a conversation.
+_talks = {
+    'uno': [{'role': 'user', 'content': u'Te paso el INFORM\u00c9 anual del viernes'}],
+    'dos': [{'role': 'assistant', 'content': u'Nada que ver aqu\u00ed'}],
+    'tres': [{'role': 'user', 'content': u'el informe de ventas, sin m\u00e1s'}],
+    'cuatro': [{'role': 'assistant', 'content': u'mirando', 'tool_calls': [{'n': 1}]}],
+}
+_rows2 = [{'id': 'uno', 'title': None, 'preview': 'hola', 'last_active': 300},
+          {'id': 'dos', 'title': None, 'preview': 'hola', 'last_active': 400},
+          {'id': 'tres', 'title': u'Informe de ventas', 'preview': '', 'last_active': 200},
+          {'id': 'cuatro', 'title': None, 'preview': '', 'last_active': 100}]
+_opened = []
+
+
+def _fake_sessions(profile=None, hermes=None, limit=20, offset=0):
+    return {'ok': True, 'sessions': _rows2 if not offset else [], 'has_more': False}
+
+
+def _fake_messages(profile, hermes, sid):
+    _opened.append(sid)
+    return list(_talks.get(sid, [])), None
+
+
+_saved_sessions, _saved_msgs2 = talk_mod.sessions, talk_mod._messages_of
+_saved_req2 = talk_mod._require
+try:
+    talk_mod.sessions = _fake_sessions
+    talk_mod._messages_of = _fake_messages
+    talk_mod._require = lambda profile, hermes: ('k', 1234, None)
+
+    _r = talk_mod.search(None, None, query=u'informe')
+    _ids = [h['id'] for h in _r['sessions']]
+    ok('a word said in the middle of a conversation finds it', 'uno' in _ids, _ids)
+    ok('accents and capitals are not part of the question',
+       any(h['id'] == 'uno' and h['snippet']['hit'] == u'INFORM\u00c9'
+           for h in _r['sessions']),
+       [h.get('snippet') for h in _r['sessions']])
+    ok('a title that matches is found without opening the conversation',
+       any(h['id'] == 'tres' and h['where'] == 'title' for h in _r['sessions']))
+    ok('and "tres" was never opened', 'tres' not in _opened, _opened)
+    ok('the ones that say nothing of the sort stay out', 'dos' not in _ids)
+    ok('newest first, the same order the list itself is in',
+       _ids == sorted(_ids, key=lambda i: -{r['id']: r['last_active']
+                                            for r in _rows2}[i]), _ids)
+
+    # The highlight is cut by the computer because it is the side that matched. If the
+    # three parts do not rebuild the sentence, the phone is drawing a different one.
+    _hit = [h for h in _r['sessions'] if h['id'] == 'uno'][0]['snippet']
+    ok('the snippet is the sentence, in three parts',
+       (_hit['before'] + _hit['hit'] + _hit['after']).replace(u'\u2026', '')
+       in u'Te paso el INFORM\u00c9 anual del viernes',
+       _hit)
+
+    _both = talk_mod.search(None, None, query=u'informe ventas')
+    ok('two words narrow it rather than widening it',
+       [h['id'] for h in _both['sessions']] == ['tres'],
+       [h['id'] for h in _both['sessions']])
+
+    _opened[:] = []
+    _shallow = talk_mod.search(None, None, query=u'informe', deep=False)
+    ok('a shallow search opens nothing', not _opened, _opened)
+    ok('and still finds what the titles say',
+       [h['id'] for h in _shallow['sessions']] == ['tres'])
+
+    ok('an empty search is not a search for everything',
+       talk_mod.search(None, None, query='   ')['sessions'] == [])
+finally:
+    talk_mod.sessions = _saved_sessions
+    talk_mod._messages_of = _saved_msgs2
+    talk_mod._require = _saved_req2
+
+# ── and the gateway is located once, not before every request ─────────────
+# `env_of` reads a file and `_configured_port` shells out to `hermes config get`:
+# together 1.93 seconds, and they were paid before EVERY call a phone made. Opening a
+# conversation spent two seconds deciding which port to knock on and twenty
+# milliseconds reading the conversation.
+_looks = []
+_saved_env, _saved_port = talk_mod.env_of, talk_mod._configured_port
+try:
+    talk_mod.env_of = lambda profile=None, hermes=None: (_looks.append('env')
+                                                         or {talk_mod.KEY_ENV: 'k'})
+    talk_mod._configured_port = lambda profile=None, hermes=None: (_looks.append('port')
+                                                                   or 4321)
+    talk_mod._forget_gate()
+    for _ in range(20):
+        talk_mod._require('ag', None)
+    ok('twenty requests ask the config once', _looks.count('port') == 1, _looks)
+
+    talk_mod._forget_gate('ag', None)
+    talk_mod._require('ag', None)
+    ok('turning the gateway on or off forgets where it was',
+       _looks.count('port') == 2, _looks)
+
+    # A port that has gone stale is not a thing to remember: nothing answers on it.
+    talk_mod._gate_gone('ag', None, 0)
+    talk_mod._require('ag', None)
+    ok('a port nothing answers on is looked up again', _looks.count('port') == 3, _looks)
+
+    talk_mod._gate_gone('ag', None, 401)
+    talk_mod._require('ag', None)
+    ok('but an answer that says no is still an answer, and the port stands',
+       _looks.count('port') == 3, _looks)
+finally:
+    talk_mod.env_of, talk_mod._configured_port = _saved_env, _saved_port
+    talk_mod._forget_gate()
+
+# Asking a phone to wait for the whole examination before every message was the other
+# half of it: `status()` costs an HTTP call on top, and remote.py called it per request.
+ok('the phone door asks the cheap question first',
+   'decided_for_phone' in io.open(os.path.join(ROOT, 'src', 'wizard', 'remote.py'),
+                                  encoding='utf-8').read())
+_acc = os.path.join(SAND, 'access-quick')
+os.makedirs(_acc, exist_ok=True)
+import wizard.talk_access as _access  # noqa: E402
+ok('an agent nobody has decided about has no answer of its own',
+   _access.decided_for_phone(_acc, 'nadie') is None)
+_access.set_flag(_acc, 'daneel', 'phone', False, True)
+ok('and one the owner has switched off says so without asking hermes',
+   _access.decided_for_phone(_acc, 'daneel') is False)
+_access.set_flag(_acc, 'daneel', 'phone', True, False)
+ok('as does one they switched on', _access.decided_for_phone(_acc, 'daneel') is True)
 
 # ── nine requests at once, one devices.json ───────────────────────────
 # The door is threaded and every authenticated request stamps the device's last_seen,

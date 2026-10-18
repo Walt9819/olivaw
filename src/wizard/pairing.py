@@ -107,6 +107,7 @@ ROUTES = {
     # talking
     "talk/sessions": "hablar",
     "talk/history": "hablar",
+    "talk/search": "hablar",
     "talk/new": "hablar",
     "talk/send": "hablar",
     "talk/file": "hablar",
