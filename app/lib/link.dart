@@ -91,6 +91,39 @@ String shortCode(String fingerprint) {
   return '${_words[n % _words.length]}-${_words[(n ~/ _words.length) % _words.length]}';
 }
 
+/// May this request be sent a second time?
+///
+/// A path that goes quiet is usually a path that died - but "usually" is not "always",
+/// and the request may have arrived and only the answer been lost. For a roster or a
+/// page of a conversation that costs nothing: ask again, get the same answer. For the
+/// four below it costs the owner a second copy of something they did once - a message
+/// sent twice, a conversation opened twice, a voice note filed twice - and no silent
+/// recovery is worth that.
+///
+/// Named rather than guessed from the verb: every route here is a POST, so there is no
+/// GET/POST line to hide behind, and a list that has to be edited when a route that
+/// creates something is added is the honest shape of the question.
+bool repeatableRoute(String path) {
+  const makesSomething = [
+    '/api/talk/send',     // a message
+    '/api/talk/new',      // a conversation
+    '/api/talk/attach',   // a file in the agent's folder
+    '/api/talk/voice',    // a voice note, and its transcription
+  ];
+  return !makesSomething.contains(path);
+}
+
+/// The computer never finished answering down this path.
+///
+/// Its own class because the caller can DO something about it: a request that times
+/// out is, far more often than not, a path that stopped leading anywhere while the
+/// phone was on it - a wifi left behind, a mast handed over - and the other path is
+/// sitting there working. Reported as a plain error it was shown to the owner
+/// instead, who could only try again down the same dead road.
+class LinkTimeout extends LinkError {
+  LinkTimeout(super.message);
+}
+
 class LinkError implements Exception {
   LinkError(this.message);
   final String message;
@@ -171,11 +204,17 @@ class Link {
   /// A JSON call. [auth] false only for /ping and /pair.
   /// How long to wait for the computer to finish answering.
   ///
-  /// Generous, because an agent thinking about a question legitimately takes a minute,
-  /// and 'escribiendo…' is the honest thing to show while it does. Bounded, because
-  /// the alternative is no timeout at all: a computer that goes away mid-answer leaves
-  /// the phone waiting for a reply that is never coming, with nothing to tap.
-  static const Duration replyWait = Duration(seconds: 90);
+  /// Bounded, because the alternative is no timeout at all: a computer that goes away
+  /// mid-answer leaves the phone waiting for a reply that is never coming, with
+  /// nothing to tap.
+  ///
+  /// Twenty-five seconds and not ninety. This is the wait for the ORDINARY routes -
+  /// a roster, a page of a conversation, a search - which the computer answers in
+  /// well under a second when it is there at all. The ones that legitimately take
+  /// minutes (sending a message, a transcription, an upload) say so themselves with
+  /// `thinkingWait`, and always did. Ninety seconds was ninety seconds of a phone
+  /// staring at a road that had been closed since it changed network.
+  static const Duration replyWait = Duration(seconds: 25);
   static const Duration thinkingWait = Duration(minutes: 10);
 
   Future<Map<String, dynamic>> call(
@@ -210,7 +249,7 @@ class Link {
           buf.add(chunk);
         }
       } on TimeoutException {
-        throw LinkError('El computadora tardó demasiado en responder.');
+        throw LinkTimeout('El computadora tardó demasiado en responder.');
       }
       return _parse(buf.toBytes());
     } finally {
@@ -282,6 +321,20 @@ class Link {
     if (canReachDirectly) {
       try {
         return await call(method, path, body: body, auth: auth, wait: wait);
+      } on LinkTimeout {
+        // Silence is the other way a path dies, and the commoner one on a phone: the
+        // address still accepts a connection - a carrier's middlebox, the router of a
+        // wifi this phone has left - and then nothing comes back. Same answer as for a
+        // refused connection: look for the computer where we are now, and failing that
+        // go round through the rendezvous.
+        //
+        // Unless saying it twice would mean doing it twice: silence after the request
+        // went out is the one case where it may actually have arrived.
+        if (!repeatableRoute(path)) rethrow;
+        if (await rediscover()) {
+          return await call(method, path, body: body, auth: auth, wait: wait);
+        }
+        if (!hasRelay) rethrow;
       } on SocketException {
         // The address we have is dead. Before giving up, look for the computer where we
         // are NOW: a laptop that moved from the study to the kitchen, a router that
@@ -310,7 +363,39 @@ class Link {
         if (!hasRelay) rethrow;
       }
     }
+    try {
+      return await call(method, path, body: body, auth: auth, viaRelay: true,
+          wait: wait);
+    } on LinkTimeout catch (e) {
+      return _relayAgain(method, path, body, auth, wait, e);
+    } on SocketException catch (e) {
+      return _relayAgain(method, path, body, auth, wait, e);
+    } on TimeoutException catch (e) {
+      // From the rendezvous itself rather than from the computer: the stream never
+      // opened. Relay.openStream has already dropped that connection.
+      return _relayAgain(method, path, body, auth, wait, e);
+    }
+  }
+
+  /// Once more, on a connection to the rendezvous built after the failure.
+  ///
+  /// The first attempt is what DISCOVERS that the socket the phone was holding died
+  /// with the network it was made on; retrying is what spares the owner having to
+  /// know that. Once, and not in a loop: if a freshly built connection fails too,
+  /// something is actually wrong and saying so is the right answer.
+  Future<Map<String, dynamic>> _relayAgain(String method, String path,
+      Map<String, dynamic>? body, bool auth, Duration? wait, Object failed) {
+    // The connection goes either way: it has just been shown not to work, and leaving
+    // it in place would hand it to the next request as well.
+    dropRelay();
+    if (!repeatableRoute(path)) throw failed;
     return call(method, path, body: body, auth: auth, viaRelay: true, wait: wait);
+  }
+
+  /// Let go of the rendezvous connection. The next call builds a new one.
+  void dropRelay() {
+    _relay?.close();
+    _relay = null;
   }
 
   /// The private ranges, where a computer on the same network as this phone lives.

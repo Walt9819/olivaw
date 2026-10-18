@@ -43,6 +43,32 @@ class Relay {
   bool _handshook = false;
   Future<void>? _connecting;
 
+  /// When something last arrived from the rendezvous, and the timer that cares.
+  ///
+  /// A phone that changes network - wifi to mobile data, or one mast to the next -
+  /// does not get an error on the socket it was holding. The old one simply stops
+  /// carrying anything, in both directions, for ever: writes are accepted by a kernel
+  /// that has nowhere to send them, and reads never return. Nothing here would have
+  /// noticed, so the connection was kept and every later request was posted into it.
+  ///
+  /// The rendezvous answers a WebSocket ping with a pong in about 40ms (measured
+  /// against the live one), so silence after a ping is a real answer: this connection
+  /// is gone, drop it and let the next request build a new one.
+  DateTime _heard = DateTime.now();
+  Timer? _beat;
+
+  /// How long a quiet connection goes before it is prodded, and before it is given up
+  /// on. Fields rather than constants so a test can run the same logic in milliseconds
+  /// instead of in half a minute.
+  static Duration tick = const Duration(seconds: 5);
+  static Duration quietBeforePing = const Duration(seconds: 20);
+  static Duration quietBeforeDead = const Duration(seconds: 35);
+
+  /// How long one request waits for its own stream to be handed to it. Short, because
+  /// everything it waits on is inside this phone; a field for the same reason as the
+  /// three above.
+  static Duration streamWait = const Duration(seconds: 5);
+
   bool get connected => _sock != null && _handshook;
 
   Future<void> connect() => _connecting ??= _connect();
@@ -90,21 +116,51 @@ class Relay {
       onDone: () => _down(''),
       cancelOnError: true,
     );
-    _loop ??= await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-    _loop!.listen((peer) {
-      if (_waiting.isEmpty) {
+    // Bound AND listened to together, and only when there is not one already.
+    //
+    // `_loop` outlives a connection on purpose - it is this app's own doorway and the
+    // streams piped through it are what make TLS possible over a websocket - but
+    // listening to it a second time throws "Stream was already listened to". Which
+    // meant that the FIRST time this connection was rebuilt, rebuilding it threw: a
+    // phone whose rendezvous socket had dropped for any reason at all - changed
+    // network, a mast handover, the rendezvous closing an idle room - could not make
+    // another one for as long as the app stayed open.
+    if (_loop == null) {
+      _loop = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      _loop!.listen((peer) {
+        // Skipping the ones that gave up while waiting: a completer is removed by
+        // the request that abandoned it, and this is the other side of that race.
+        while (_waiting.isNotEmpty) {
+          final next = _waiting.removeAt(0);
+          if (next.isCompleted) continue;
+          next.complete(peer);
+          return;
+        }
         peer.destroy();
-        return;
-      }
-      _waiting.removeAt(0).complete(peer);
-    });
+      });
+    }
     await ready.future.timeout(
       const Duration(seconds: 15),
       onTimeout: () => throw const SocketException('El punto de encuentro no respondió.'),
     );
   }
 
+  void _beats() {
+    _beat?.cancel();
+    _beat = Timer.periodic(tick, (_) {
+      if (_sock == null) return;
+      final quiet = DateTime.now().difference(_heard);
+      if (quiet > quietBeforeDead) {
+        // Asked, and nothing came back. This is the network the phone used to be on.
+        _down('sin respuesta');
+        return;
+      }
+      if (quiet > quietBeforePing) _frame(0x9, const []);
+    });
+  }
+
   void _onData(Uint8List chunk, Completer<void> ready) {
+    _heard = DateTime.now();
     _buf.add(chunk);
     if (!_handshook) {
       final data = _buf.toBytes();
@@ -121,6 +177,7 @@ class Relay {
         return;
       }
       _handshook = true;
+      _beats();
       _buf.clear();
       _buf.add(data.sublist(sep + 4));
       if (!ready.isCompleted) ready.complete();
@@ -223,12 +280,32 @@ class Relay {
     final sid = _next++;
     final wait = Completer<Socket>();
     _waiting.add(wait);
-    final local = await Socket.connect(
-      InternetAddress.loopbackIPv4,
-      _loop!.port,
-      timeout: const Duration(seconds: 5),
-    );
-    final peer = await wait.future.timeout(const Duration(seconds: 5));
+    Socket local;
+    Socket peer;
+    try {
+      local = await Socket.connect(
+        InternetAddress.loopbackIPv4,
+        _loop!.port,
+        timeout: streamWait,
+      );
+      peer = await wait.future.timeout(streamWait);
+    } catch (e) {
+      // Two things have to happen here, and neither used to.
+      //
+      // The half-opened request has to let go of its place in the queue: the next
+      // request's loopback connection is handed to whoever is at the front of it, so
+      // a completer left behind after a timeout was given the NEXT request's socket,
+      // and that one waited for a socket that had already been given away. One
+      // timeout and every request after it was answered with somebody else's stream,
+      // for as long as the app stayed open.
+      //
+      // And the connection itself has to go. A request that got no answer from the
+      // rendezvous is the evidence that this socket no longer leads anywhere - which
+      // after a change of network is exactly what has happened.
+      _waiting.remove(wait);
+      _down('$e');
+      rethrow;
+    }
     _streams[sid] = peer;
     _frame(0x2, _head(_kOpen, sid));
     peer.listen(
@@ -248,7 +325,13 @@ class Relay {
   void _down(String why) {
     _handshook = false;
     _connecting = null;
-    for (final s in _streams.values) {
+    _beat?.cancel();
+    _beat = null;
+    // Over a copy: destroying a stream runs its own onDone, which removes it from
+    // this very map, and iterating it while that happens throws "Concurrent
+    // modification during iteration" - out of the one function whose whole job is to
+    // leave the transport in a state something else can rebuild from.
+    for (final s in _streams.values.toList()) {
       s.destroy();
     }
     _streams.clear();
