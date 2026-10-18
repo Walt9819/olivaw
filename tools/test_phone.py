@@ -1654,6 +1654,21 @@ for _name in sorted(os.listdir(_lib)):
         _key = ''.join(x[1:-1] for x in re.findall(_LIT, _m.group(1)))
         if _key and _key not in _have:
             _untranslated.append('%s: %s' % (_name, _key[:60]))
+    # And a sentence CHOSEN inside the brackets: `tr(cond ? 'a' : 'b')` matches
+    # neither pattern above, so both of its sentences were invisible - the exact
+    # failure this check exists to catch, arriving through its own blind spot. The
+    # two keys are read out and checked like any other rather than merely reported:
+    # a scanner that says 'I cannot read this' is one more thing to learn to ignore.
+    # Across lines, because that is where dart format puts the `?` - the first
+    # version of this check stopped at the newline and so missed every ternary
+    # long enough to wrap, which is all of them. It stops at the first quote
+    # instead, so a call that simply STARTS with a sentence is not swept up.
+    for _m in re.finditer(r'\btrp?\(\s*[^\']{0,120}\?\s*(' + _LIT +
+                          r')\s*:\s*(' + _LIT + r')', _src):
+        for _g in (_m.group(1), _m.group(2)):
+            _key = _g[1:-1]
+            if _key and _key not in _have:
+                _untranslated.append('%s (in a choice): %s' % (_name, _key[:60]))
     # And the sentences handed to a widget that translates them later. Reading only
     # tr() call sites missed every one of these, and the loading screens went out
     # speaking Spanish on a German phone - which is exactly what this check exists

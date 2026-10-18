@@ -197,6 +197,9 @@ const Map<String, (String, String)> _table = {
 
   // ── past conversations ───────────────────────────────────────────────────────────
   'Conversaciones anteriores': ('Past conversations', 'Frühere Gespräche'),
+  'Esta conversación no tiene nada que leer.':
+      ('There is nothing to read in this conversation.',
+       'In diesem Gespräch gibt es nichts zu lesen.'),
   'Buscar en lo que os dijisteis': ('Search what you said to each other',
       'Durchsuche, was ihr euch gesagt habt'),
   'Buscado en {0} conversaciones': ('Searched {0} conversations',

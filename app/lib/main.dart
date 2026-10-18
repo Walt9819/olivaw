@@ -1118,6 +1118,43 @@ Future<void> loadOpenThreads() async {
     return (who, quoted, text.substring(m.end).trimLeft());
   }
 
+/// What the conversation area is showing.
+enum ChatView { off, connecting, loading, nothingYet, silent, messages }
+
+/// Which of them, from the flags the screen holds.
+///
+/// Written as a function of its inputs rather than as a chain of `else if` inside
+/// build() because the bug it exists to prevent is a path that forgets to set a flag:
+/// opening a past conversation used to leave `loadingHistory` false for the whole
+/// fetch, so a screen that was busy over mobile data rendered as "you have not said
+/// anything to each other" - which reads as a crash, not as waiting.
+///
+/// The distinction that matters is the last one: a conversation with nothing in it is
+/// not the same as a conversation that has not arrived. Only a thread that was
+/// actually FETCHED and came back with no readable turns is silent - and those exist,
+/// a routine's session is all tool calls and no speech.
+ChatView chatViewFor({
+  required bool talkOff,
+  required bool connecting,
+  required bool loadingHistory,
+  required bool ready,
+  required bool hasSession,
+  required bool loaded,
+  required bool hasMessages,
+  required bool hasError,
+}) {
+  if (talkOff) return ChatView.off;
+  if (connecting) return ChatView.connecting;
+  if (loadingHistory) return ChatView.loading;
+  if (hasMessages) return ChatView.messages;
+  // An error already explains itself in the strip above; spinning on top of it would
+  // promise something that is not coming.
+  if (hasError) return ChatView.nothingYet;
+  if (!ready) return ChatView.loading;
+  if (hasSession && !loaded) return ChatView.loading;
+  return hasSession ? ChatView.silent : ChatView.nothingYet;
+}
+
 class ChatTab extends StatefulWidget {
   const ChatTab({super.key, required this.link, required this.agent});
   final Link link;
@@ -1153,6 +1190,10 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
   int _histStart = 0;
   bool _histMore = false;
   bool _histBusy = false;
+
+  /// Whether the conversation on screen has actually been read from the computer.
+  /// An empty list means "not yet" until this is true, and "nothing was said" after.
+  bool _histLoaded = false;
   String _session = '';
   bool _sending = false;
   String _error = '';
@@ -1290,6 +1331,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       _msgs = _readable(h['messages'] as List? ?? []);
       _histStart = (h['start'] as num?)?.toInt() ?? 0;
       _histMore = h['has_more'] == true;
+      _histLoaded = true;
       _error = '';
     });
     _toBottom();
@@ -1931,6 +1973,11 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
     setState(() {
       _session = '';
       _msgs = [];
+      _histStart = 0;
+      _histMore = false;
+      // Nothing to fetch: this one is empty because it is new, not because it is
+      // still coming.
+      _histLoaded = true;
       _replyTo = null;
       _attached.clear();
       _error = '';
@@ -1965,17 +2012,21 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
     }
     final id = (chosen['id'] ?? '').toString();
     if (id.isEmpty) return;
+    // In the SAME frame the old conversation is cleared: there was an await between
+    // the two before this - saving which thread is open - and one frame of an empty
+    // chat is exactly the flash that reads as a crash.
     setState(() {
       _session = id;
       _msgs = [];
       _histStart = 0;
       _histMore = false;
+      _histLoaded = false;
+      _loadingHistory = true;
       _replyTo = null;
       _error = '';
     });
     _openThreads[widget.agent.slug] = id;
     await Store.saveThreads(_openThreads);
-    setState(() => _loadingHistory = true);
     try {
       await _history();
     } finally {
@@ -2235,6 +2286,18 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
     );
   }
 
+  /// What this screen is showing right now. See chatViewFor.
+  ChatView get _view => chatViewFor(
+        talkOff: _talkOff,
+        connecting: _connecting,
+        loadingHistory: _loadingHistory,
+        ready: _ready,
+        hasSession: _session.isNotEmpty,
+        loaded: _histLoaded,
+        hasMessages: _msgs.isNotEmpty,
+        hasError: _error.isNotEmpty,
+      );
+
   @override
   Widget build(BuildContext context) {
     return Column(children: [
@@ -2246,9 +2309,9 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
           child: Text(_error,
               style: TextStyle(fontSize: 12, color: context.c.ink)),
         ),
-      if (_talkOff)
+      if (_view == ChatView.off)
         _talkOffScreen(context)
-      else if (_connecting)
+      else if (_view == ChatView.connecting)
         const Expanded(
           child: Waiting(lines: [
             'Conectando con el agente…',
@@ -2256,19 +2319,25 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
             'Sigue en ello. Fuera de casa tarda un poco más.',
           ]),
         )
-      else if (_loadingHistory)
+      else if (_view == ChatView.loading)
         const Expanded(
           child: Waiting(lines: [
             'Abriendo la conversación…',
             'Trayendo lo que os dijisteis…',
           ]),
         )
-      else if (_msgs.isEmpty && _error.isEmpty && _ready)
+      else if (_view != ChatView.messages)
         Expanded(
           child: Center(
             child: Padding(
               padding: const EdgeInsets.all(32),
-              child: Text(tr('Todavía no os habéis dicho nada.'),
+              child: Text(
+                  // One tr() per sentence, never tr() around a choice between two:
+                  // the check that every sentence has English and German reads call
+                  // sites, and a ternary inside the brackets hides BOTH from it.
+                  _view == ChatView.silent
+                      ? tr('Esta conversación no tiene nada que leer.')
+                      : tr('Todavía no os habéis dicho nada.'),
                   textAlign: TextAlign.center,
                   style: TextStyle(color: context.c.muted)),
             ),

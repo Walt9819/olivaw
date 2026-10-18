@@ -45,7 +45,10 @@ void main() {
         (DateTime.now().subtract(d).millisecondsSinceEpoch / 1000).round();
 
     test('minutes, while it is still minutes', () {
-      final s = conversationWhen({'last_active': agoSecs(const Duration(minutes: 7))});
+      // Plus a few seconds: inMinutes truncates, and "exactly 7 minutes ago" is
+      // 6.999 by the time the code reads the clock.
+      final s = conversationWhen(
+          {'last_active': agoSecs(const Duration(minutes: 7, seconds: 5))});
       expect(s, contains('hace 7 min'));
     });
 
