@@ -290,6 +290,24 @@ class FakeWS(object):
         pass
 
 
+# Asked for a tab that is not open. Found against a real browser: the chooser fell back
+# to the frontmost page, which is how a password gets typed into whatever happened to be
+# in front of the agent.
+_pages = [{"type": "page", "url": "https://accounts.google.com/",
+           "webSocketDebuggerUrl": "ws://127.0.0.1:1/x"}]
+F._targets = lambda port: list(_pages)
+try:
+    F._page(9222, "about:blank")
+    ok("asking for a tab that is not open is refused", False, "it picked another")
+except F.Refused as e:
+    ok("asking for a tab that is not open is refused", True)
+    ok("and names the page it could not find", "about:blank" in str(e), str(e))
+ok("while asking for one that is open finds it",
+   F._page(9222, "accounts.google")["url"].startswith("https://accounts.google"))
+ok("and asking for nothing in particular takes the frontmost",
+   F._page(9222, "")["url"] == _pages[0]["url"])
+
+
 def run_fill(page_url, found, field="password"):
     FakeWS.sent = []
     F.browser_setup.port_for = lambda profile=None, **k: 9222

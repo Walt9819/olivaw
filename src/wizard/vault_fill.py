@@ -60,6 +60,12 @@ def _page(port, want_url=""):
         for t in pages:
             if want_url in (t.get("url") or ""):
                 return t
+        # Asked for a tab that is not open. Falling back to the frontmost one is how a
+        # password ends up typed into whatever happened to be in front - caught doing
+        # exactly that against a real browser. An agent that named a page meant that
+        # page.
+        raise Refused(u"No hay ninguna pestaña en «%s». Ábrela y vuelve a intentarlo."
+                      % want_url)
     return pages[0]
 
 

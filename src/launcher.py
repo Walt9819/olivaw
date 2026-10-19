@@ -111,7 +111,9 @@ try:
     from wizard import reply_skill as _replies
     from wizard import vault_skill as _keys
 except Exception:  # noqa: BLE001
-    _replies = None
+    # BOTH, or the guard is a trap: _ensure_vault_skill would raise NameError on a
+    # machine where this import is the thing that failed.
+    _replies = _keys = None
 
 
 # The update source is PINNED into the distributed code. A mutable `repo` in updater.config.json
