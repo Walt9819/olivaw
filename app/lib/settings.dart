@@ -20,6 +20,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import 'agent_info.dart';
+import 'keys.dart';
 import 'link.dart';
 import 'loading.dart';
 import 'native.dart';
@@ -650,6 +651,32 @@ class _AgentSettingsState extends State<AgentSettings> {
                           canEdit: widget.canEdit,
                         ),
                       )).then((_) => _loadTalk()),
+            ),
+            // Where the owner leaves a password, on the phone. The same vault the
+            // console writes to - one store, two windows onto it - and the same rule
+            // in both: a key can be added and replaced here and never read back.
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.vpn_key_outlined),
+              title: Text(tr('Llaves y contraseñas')),
+              subtitle: Text(
+                tr('Para que entre en sitios por ti. Se guardan en la computadora '
+                    'y no se ven nunca, aquí tampoco.'),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 11, color: context.c.muted),
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: _loading
+                  ? null
+                  : () => Navigator.of(context).push(MaterialPageRoute(
+                        builder: (_) => KeysScreen(
+                          link: widget.link,
+                          body: _profileBody,
+                          agentName: widget.name,
+                          canEdit: widget.canEdit,
+                        ),
+                      )),
             ),
             ListTile(
               contentPadding: EdgeInsets.zero,

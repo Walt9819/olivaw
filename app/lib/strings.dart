@@ -198,6 +198,180 @@ const Map<String, (String, String)> _table = {
 
   // ── past conversations ───────────────────────────────────────────────────────────
   'Conversaciones anteriores': ('Past conversations', 'Frühere Gespräche'),
+  'Seguir la conversación anterior':
+      ('Carry on the last conversation',
+       'Das letzte Gespräch fortsetzen'),
+  'Mientras tanto puedes escribir o grabar.':
+      ('You can write or record meanwhile.',
+       'Du kannst derweil schreiben oder aufnehmen.'),
+  'Todavía no has agrupado a nadie.':
+      ('You have not grouped anybody yet.',
+       'Du hast noch niemanden gruppiert.'),
+  'Crear un equipo':
+      ('Create a team',
+       'Ein Team erstellen'),
+  'Cambiar este equipo':
+      ('Change this team',
+       'Dieses Team ändern'),
+  'Ponle un nombre al equipo.':
+      ('Give the team a name.',
+       'Gib dem Team einen Namen.'),
+  'No pude guardar el equipo.':
+      ('I could not save the team.',
+       'Ich konnte das Team nicht speichern.'),
+  '¿Deshacer este equipo?':
+      ('Undo this team?',
+       'Dieses Team auflösen?'),
+  'Los agentes siguen ahí; dejan de estar agrupados.':
+      ('The agents stay; they just stop being grouped.',
+       'Die Agenten bleiben; sie sind nur nicht mehr gruppiert.'),
+  'Deshacer':
+      ('Undo',
+       'Auflösen'),
+  'No pude deshacerlo.':
+      ('I could not undo it.',
+       'Ich konnte es nicht auflösen.'),
+  'Nombre':
+      ('Name',
+       'Name'),
+  'iGalenus, Casa, Marketing':
+      ('iGalenus, Home, Marketing',
+       'iGalenus, Zuhause, Marketing'),
+  'Su símbolo':
+      ('Its mark',
+       'Sein Zeichen'),
+  'Quién está en él':
+      ('Who is on it',
+       'Wer dabei ist'),
+  'ahora en {0}':
+      ('now in {0}',
+       'jetzt in {0}'),
+  'Deshacer el equipo':
+      ('Undo the team',
+       'Team auflösen'),
+  'Llaves y contraseñas':
+      ('Keys and passwords',
+       'Schlüssel und Passwörter'),
+  'Para que entre en sitios por ti. Se guardan en la computadora y no se ven nunca, aquí tampoco.':
+      ('So it can sign in for you. Kept on the computer and never shown — not here either.',
+       'Damit er sich für dich anmelden kann. Auf dem Computer gespeichert und nie sichtbar — auch hier nicht.'),
+  'No pude leer las llaves.':
+      ('I could not read the keys.',
+       'Ich konnte die Schlüssel nicht lesen.'),
+  '¿Borrar esta llave?':
+      ('Delete this key?',
+       'Diesen Schlüssel löschen?'),
+  '{0} dejará de poder entrar ahí.':
+      ('{0} will no longer be able to get in there.',
+       '{0} kommt dort nicht mehr hinein.'),
+  'No':
+      ('No',
+       'Nein'),
+  'Borrar':
+      ('Delete',
+       'Löschen'),
+  'No pude borrarla.':
+      ('I could not delete it.',
+       'Ich konnte ihn nicht löschen.'),
+  'Permitida una vez, durante los próximos minutos.':
+      ('Allowed once, for the next few minutes.',
+       'Einmal erlaubt, für die nächsten Minuten.'),
+  'No pude permitirla.':
+      ('I could not allow it.',
+       'Ich konnte das nicht erlauben.'),
+  'Añadir':
+      ('Add',
+       'Hinzufügen'),
+  'Esa computadora no tiene dónde guardarlas a salvo, así que no guarda ninguna.':
+      ('That computer has nowhere safe to keep them, so it keeps none.',
+       'Dieser Computer hat keinen sicheren Ort dafür, also speichert er keine.'),
+  'Para que {0} pueda entrar en sitios por ti sin que la contraseña pase nunca por la conversación.':
+      ('So {0} can sign in for you without the password ever going through the conversation.',
+       'Damit {0} sich für dich anmelden kann, ohne dass das Passwort je durch das Gespräch geht.'),
+  'Todavía no le has dejado ninguna llave.':
+      ('You have not left it any keys yet.',
+       'Du hast ihm noch keine Schlüssel hinterlassen.'),
+  'Se guardan en el llavero de la computadora ({0}). Las escribe en la página él solo, como mucho {1} veces por hora, y sólo en el sitio de cada una. Nadie puede verlas después: ni él, ni esta app, ni tú.':
+      ('They are kept in the computer\'s own keychain ({0}). It types them into the page itself, at most {1} times an hour, and only on each key\'s own site. Nobody can see them afterwards: not it, not this app, not you.',
+       'Sie liegen im Schlüsselbund des Computers ({0}). Er tippt sie selbst auf der Seite ein, höchstens {1} Mal pro Stunde, und nur auf der jeweils eigenen Website. Danach kann sie niemand sehen: er nicht, diese App nicht, du nicht.'),
+  'cuenta guardada':
+      ('account saved',
+       'Konto gespeichert'),
+  'guarda {0}':
+      ('holds {0}',
+       'enthält {0}'),
+  'permitida ahora':
+      ('allowed right now',
+       'gerade erlaubt'),
+  'Permitir una vez':
+      ('Allow once',
+       'Einmal erlauben'),
+  '¿De qué sitio es?':
+      ('Which site is it for?',
+       'Für welche Seite?'),
+  'Escribe la contraseña que quieres guardar.':
+      ('Type the password you want to keep.',
+       'Gib das Passwort ein, das gespeichert werden soll.'),
+  'No pude guardarla.':
+      ('I could not save it.',
+       'Ich konnte es nicht speichern.'),
+  'Cambiar esta llave':
+      ('Change this key',
+       'Diesen Schlüssel ändern'),
+  'Añadir una llave':
+      ('Add a key',
+       'Einen Schlüssel hinzufügen'),
+  '¿De qué sitio?':
+      ('Which site?',
+       'Welche Seite?'),
+  '…o escribe cualquier otro abajo: sirve para cualquier sitio con usuario y contraseña.':
+      ('…or type any other below: this works for any site with a username and a password.',
+       '…oder schreib unten eine beliebige andere: das geht für jede Seite mit Benutzer und Passwort.'),
+  'Sitio (una palabra)':
+      ('Site (one word)',
+       'Seite (ein Wort)'),
+  'Cómo la llamas':
+      ('What you call it',
+       'Wie du ihn nennst'),
+  'Google de trabajo':
+      ('Work Google',
+       'Google für die Arbeit'),
+  'Página de acceso':
+      ('Sign-in page',
+       'Anmeldeseite'),
+  'La llave sólo se escribe en este sitio. Es lo que impide que una página falsa se la lleve.':
+      ('The key is only ever typed on this site. That is what stops a fake page taking it.',
+       'Der Schlüssel wird nur auf dieser Seite eingetippt. Das verhindert, dass eine gefälschte Seite ihn bekommt.'),
+  'Usuario o correo':
+      ('Username or email',
+       'Benutzer oder E-Mail'),
+  'Contraseña nueva':
+      ('New password',
+       'Neues Passwort'),
+  'Contraseña':
+      ('Password',
+       'Passwort'),
+  'Déjala vacía si no la cambias. No se puede ver la que hay.':
+      ('Leave it empty to keep the current one. There is no way to see it.',
+       'Leer lassen, um das bisherige zu behalten. Es lässt sich nicht ansehen.'),
+  'Se guarda en el llavero de la computadora. Nadie la ve después, tampoco tú.':
+      ('Kept in the computer\'s keychain. Nobody sees it afterwards, you included.',
+       'Liegt im Schlüsselbund des Computers. Danach sieht es niemand mehr, du auch nicht.'),
+  'Clave de 2 pasos (opcional)':
+      ('Two-step key (optional)',
+       'Zwei-Faktor-Schlüssel (optional)'),
+  'La clave larga que da el sitio al activar la verificación en dos pasos. Con ella escribe los 6 dígitos él solo.':
+      ('The long key the site gives you when you turn on two-step verification. With it, it types the six digits itself.',
+       'Der lange Schlüssel, den die Seite bei der Zwei-Faktor-Einrichtung zeigt. Damit tippt er die sechs Ziffern selbst.'),
+  'Pedirme permiso cada vez':
+      ('Ask me every time',
+       'Mich jedes Mal fragen'),
+  'Te lo pedirá por su canal, y tú lo das aquí con «Permitir una vez».':
+      ('It will ask you on its own channel, and you say yes here with «Allow once».',
+       'Er fragt dich über seinen Kanal, und du erlaubst es hier mit «Einmal erlauben».'),
+  'Mirando qué llaves tiene…':
+      ('Looking at which keys it has…',
+       'Schaue nach, welche Schlüssel er hat…'),
   'Esta conversación no tiene nada que leer.':
       ('There is nothing to read in this conversation.',
        'In diesem Gespräch gibt es nichts zu lesen.'),

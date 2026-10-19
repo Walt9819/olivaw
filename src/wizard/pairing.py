@@ -123,6 +123,14 @@ ROUTES = {
     # running them
     "agent/action": "operar",
     # the ones that are off until the owner says otherwise
+    # The owner's keys. Same gate as the rest of an agent's configuration: whoever
+    # may change what an agent is may manage what it can open. A phone can SAY a key
+    # exists, add one and replace one; there is no route that returns a value, here
+    # or anywhere, so nothing can read one back over this link.
+    "creds/list": "config",
+    "creds/save": "config",
+    "creds/forget": "config",
+    "creds/allow": "config",
     "agent/rename": "config",
     "agent/purpose": "config",
     "avatar/set": "config",
@@ -137,6 +145,10 @@ ROUTES = {
     "talk/enable": "config",
     "talk/disable": "config",
     "policy/save": "config",
+    # Managing the teams themselves, not just who is in them. Same gate: a phone that
+    # may change an agent's configuration may also say who works with whom.
+    "teams/group": "config",
+    "teams/ungroup": "config",
     "teams/assign": "config",
     "channel/": "config",
     "numbers/update": "config",

@@ -124,6 +124,19 @@ for route in ("provider/install", "telegram/capture", "session/login", "teams/ap
               "numbers/add", "rescue/start", "workspace/pick"):
     ok("and cannot reach %s even with every permission" % route,
        not pairing.allowed(route, ALL))
+# The owner's keys, from a phone. Managing them sits with the rest of an agent's
+# configuration - and there is no route anywhere that returns a value, so the worst a
+# phone with this permission can do is replace a password it cannot read.
+for _r in ("creds/list", "creds/save", "creds/forget", "creds/allow"):
+    ok("keys need 'config': %s" % _r,
+       pairing.allowed(_r, ["ver", "hablar", "config"])
+       and not pairing.allowed(_r, ["ver", "hablar", "tareas", "operar"]))
+ok("and a phone paired today cannot touch them until she says so",
+   not pairing.allowed("creds/save", list(pairing.DEFAULT_CAPS)))
+for _r in ("teams/group", "teams/ungroup", "teams/assign"):
+    ok("shaping the teams needs 'config': %s" % _r,
+       pairing.allowed(_r, ["ver", "config"]) and not pairing.allowed(_r, ["ver"]))
+
 ok("looking needs 'ver'", pairing.allowed("agents/list", ["ver"]))
 ok("talking needs 'hablar'", pairing.allowed("talk/send", ["ver", "hablar"])
    and not pairing.allowed("talk/send", ["ver"]))

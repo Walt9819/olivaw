@@ -2548,6 +2548,15 @@
   function secCreds() {
     var st = KEYS.st;
     if (!st) return '<p class="muted">Mirando…</p>';
+    // Three states, and the middle one used to be missing: a request that FAILED said
+    // "this computer has nowhere to keep them", which is alarming, wrong, and exactly
+    // what an owner sees while an update is restarting the thing she is talking to.
+    if (st.ok === false) {
+      return '<div class="card pad"><b>No pude preguntarle por las llaves.</b>' +
+        '<p class="small muted">' + esc(st.detail || "") + "</p>" +
+        '<div class="row"><button class="btn btn-soft btn-sm" id="kRetry">' +
+        "Probar otra vez</button></div></div>";
+    }
     if (!st.keeper) {
       return '<div class="card pad"><b>Este equipo no tiene dónde guardarlas.</b>' +
         '<p class="small muted">Las contraseñas se guardan en el llavero del propio ' +
@@ -2589,7 +2598,7 @@
     api("creds/list", { profile: targetProfile() }).then(function (st) {
       KEYS.st = st;
     }).catch(function (e) {
-      KEYS.st = { ok: false, keeper: null, detail: String(e && e.message || e) };
+      KEYS.st = { ok: false, detail: String(e && e.message || e) };
     }).then(function () {
       KEYS.busy = false;
       if (S.sec === "llaves") render();
@@ -2598,6 +2607,11 @@
 
   function eCreds() {
     if (!KEYS.st && !KEYS.busy) loadKeys();
+    if (el("kRetry")) el("kRetry").onclick = function () {
+      KEYS.st = null;
+      render();
+      loadKeys();
+    };
     if (el("kNew")) el("kNew").onclick = function () { KEYS.open = "+"; render(); };
     if (el("kCancel")) el("kCancel").onclick = function () { KEYS.open = ""; render(); };
     Array.prototype.forEach.call(

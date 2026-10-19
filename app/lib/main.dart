@@ -1194,6 +1194,12 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
   /// Whether the conversation on screen has actually been read from the computer.
   /// An empty list means "not yet" until this is true, and "nothing was said" after.
   bool _histLoaded = false;
+
+  /// The conversation this agent was last having, if there is one to go back to.
+  /// Empty once it has been opened, or once this one has become a conversation of its
+  /// own - an offer to "continue" over a message somebody has already sent is an
+  /// offer to throw it away.
+  String _resume = '';
   String _session = '';
   bool _sending = false;
   String _error = '';
@@ -1252,37 +1258,35 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
         });
         return;
       }
-      // Where you left off. The thread this phone had open comes first; failing that,
-      // the most recent conversation this agent had anywhere - including on Telegram,
-      // because it is the same agent and picking up mid-thought is the common case.
-      // A clean start is still one tap away, which is the right way round: carrying on
-      // is what you usually want, and starting over is a decision.
-      _session = _openThreads[widget.agent.slug] ?? '';
-      if (_session.isEmpty) {
-        final sessions = await widget.link
-            .reach('POST', '/api/talk/sessions', body: _body({'limit': 1}));
-        if (sessions['ok'] == true) {
-          final rows = sessions['sessions'] as List? ?? [];
-          if (rows.isNotEmpty && rows.first is Map) {
-            _session = ((rows.first as Map)['id'] ?? '').toString();
-            if (_session.isNotEmpty) {
-              _openThreads[widget.agent.slug] = _session;
-              await Store.saveThreads(_openThreads);
-            }
-          }
-        }
-      }
+      // Opening an agent opens a BLANK page, and offers the old conversation.
+      //
+      // Carrying on where you left off is what you usually want, so this used to fetch
+      // the last thread and wait for it. But waiting is the cost of the whole screen:
+      // the point of opening an agent is almost always to say something, and that is
+      // possible the instant the page is blank. So the thread is offered as a strip at
+      // the top instead - one tap, fetched while you are already typing - and the one
+      // thing it must never do is arrive on top of a message you have started.
+      _session = '';
+      _histLoaded = true;      // nothing is coming unless it is asked for
+      _resume = _openThreads[widget.agent.slug] ?? '';
       setState(() {
         _ready = true;
         _error = '';
       });
-      if (_session.isNotEmpty) {
-        setState(() => _loadingHistory = true);
-        try {
-          await _history();
-        } finally {
-          if (mounted) setState(() => _loadingHistory = false);
-        }
+      if (_resume.isEmpty) {
+        // Which conversation it WOULD be, asked for quietly in the background: the
+        // strip says "continue" or it says nothing, and either way the page is
+        // already usable.
+        widget.link
+            .reach('POST', '/api/talk/sessions', body: _body({'limit': 1}))
+            .then((sessions) {
+          if (!mounted || _session.isNotEmpty) return;
+          final rows = sessions['sessions'] as List? ?? [];
+          if (rows.isNotEmpty && rows.first is Map) {
+            setState(() =>
+                _resume = ((rows.first as Map)['id'] ?? '').toString());
+          }
+        }).catchError((_) {});
       }
     } catch (e) {
       setState(() => _error = humanError(e));
@@ -1401,6 +1405,70 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       if (mounted) setState(() => _histBusy = false);
     }
   }
+  /// The offer to go back to the last conversation.
+  ///
+  /// Not a modal, not a redirect: a line at the top of an empty page that can be
+  /// ignored entirely. Tapping it loads the thread while the composer stays live.
+  Widget _resumeStrip() {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(14, 12, 14, 0),
+      decoration: BoxDecoration(
+        color: context.c.panel2,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: context.c.line),
+      ),
+      child: ListTile(
+        dense: true,
+        leading: Icon(Icons.history, size: 20, color: context.c.accent),
+        title: Text(tr('Seguir la conversación anterior'),
+            style: TextStyle(fontSize: 13, color: context.c.ink)),
+        subtitle: Text(tr('Mientras tanto puedes escribir o grabar.'),
+            style: TextStyle(fontSize: 11, color: context.c.muted)),
+        trailing: _histBusy
+            ? SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: context.c.muted))
+            : null,
+        onTap: _histBusy ? null : _resumeThread,
+      ),
+    );
+  }
+
+  /// Fetch the last conversation into this screen, without taking it over.
+  Future<void> _resumeThread() async {
+    final id = _resume;
+    if (id.isEmpty || _histBusy) return;
+    setState(() => _histBusy = true);
+    try {
+      final h = await widget.link.reach('POST', '/api/talk/history',
+          body: _body({'session_id': id, 'limit': _page}));
+      if (!mounted || h['ok'] != true) return;
+      // Anything typed and SENT while this was in flight has started a conversation of
+      // its own, and the old one is no longer the one being had. Dropped rather than
+      // merged: two threads interleaved by arrival time is nobody's conversation.
+      if (_msgs.isNotEmpty || _session.isNotEmpty) {
+        setState(() => _resume = '');
+        return;
+      }
+      setState(() {
+        _session = id;
+        _msgs = _readable(h['messages'] as List? ?? []);
+        _histStart = (h['start'] as num?)?.toInt() ?? 0;
+        _histMore = h['has_more'] == true;
+        _histLoaded = true;
+        _resume = '';
+        _error = '';
+      });
+      _openThreads[widget.agent.slug] = id;
+      await Store.saveThreads(_openThreads);
+      _toBottom();
+    } finally {
+      if (mounted) setState(() => _histBusy = false);
+    }
+  }
+
   /// The top of a conversation that has more behind it.
   Widget _earlierRow() {
     // Asked for as it appears. The guard inside _earlier is what keeps a list that
@@ -2332,6 +2400,9 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
         )
       else if (_view != ChatView.messages)
         Expanded(
+          child: Column(children: [
+            if (_resume.isNotEmpty) _resumeStrip(),
+            Expanded(
           child: Center(
             child: Padding(
               padding: const EdgeInsets.all(32),
@@ -2345,10 +2416,14 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
                   textAlign: TextAlign.center,
                   style: TextStyle(color: context.c.muted)),
             ),
-          ),
+          )),
+          ]),
         )
       else
       Expanded(
+        child: Column(children: [
+          if (_resume.isNotEmpty) _resumeStrip(),
+          Expanded(
         child: ListView.builder(
           controller: _scroll,
           padding: const EdgeInsets.all(14),
@@ -2374,6 +2449,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
             );
           },
         ),
+      )]),
       ),
       if (_replyTo != null && !_talkOff && !_connecting) _replyStrip(),
       if (_attached.isNotEmpty && !_talkOff) _attachedStrip(),

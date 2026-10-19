@@ -1095,11 +1095,19 @@ class Handler(BaseHTTPRequestHandler):
         # EXISTS (through the agent, if it asks) and nothing more.
         if route == "creds/list":
             prof = _target_profile(body) or "default"
-            return {"ok": True, "agent": prof,
-                    "keeper": vault.keeper(), "keeper_label": vault.keeper_label(),
-                    "credentials": vault.entries(INSTALL_DIR, prof),
-                    "uses_per_hour": vault.USES_PER_HOUR,
-                    "audit": vault.audit(INSTALL_DIR, limit=12, agent=prof)}
+            try:
+                return {"ok": True, "agent": prof,
+                        "keeper": vault.keeper(),
+                        "keeper_label": vault.keeper_label(),
+                        "credentials": vault.entries(INSTALL_DIR, prof),
+                        "uses_per_hour": vault.USES_PER_HOUR,
+                        "audit": vault.audit(INSTALL_DIR, limit=12, agent=prof)}
+            except Exception as e:  # noqa: BLE001
+                # Answered rather than raised: a 500 here reaches the owner as "this
+                # computer cannot keep passwords", which is a different and much more
+                # worrying sentence than "something went wrong, try again".
+                return {"ok": False,
+                        "detail": u"No pude leer las llaves: %s" % str(e)[:160]}
         if route == "creds/save":
             prof = _target_profile(body) or "default"
             platform_id = (body.get("platform") or "").strip()

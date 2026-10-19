@@ -437,6 +437,87 @@ finally:
     os.chdir(_was)
 
 
+# ── the other two systems ───────────────────────────────────────
+# This suite runs on one machine and the product runs on three. A keychain command with
+# a wrong flag fails the same way as "no keychain here", so the shapes are pinned: what
+# is run, and - the part that matters - that the password goes in on STDIN and never as
+# an argument, where every other process on the machine could read it out of the
+# process list.
+section("macOS and Linux, from here")
+
+_ran = []
+
+
+class _Fake(object):
+    def __init__(self, out="", code=0):
+        self.stdout, self.returncode, self.stderr = out, code, ""
+
+
+def _fake_run(cmd, **kw):
+    _ran.append((list(cmd), kw.get("input")))
+    if cmd[0] == "security" and "find-generic-password" in cmd:
+        return _Fake(SECRET + "\n")
+    if cmd[0] == "secret-tool" and cmd[1] == "lookup":
+        return _Fake(SECRET)
+    return _Fake()
+
+
+_saved_run, _saved_which = V.subprocess.run, V._which
+_saved_platform = V.platform.system
+try:
+    V.subprocess.run = _fake_run
+    V._which = lambda name: "/usr/bin/" + name
+
+    # ── macOS ──────────────────────────────────────────────────────────────────
+    V.platform.system = lambda: "Darwin"
+    ok("a Mac is spotted by its keychain tool", V.keeper() == "keychain")
+    _ran[:] = []
+    V._seal(SAND, "heraldo/google/password", SECRET)
+    cmd, sent = _ran[-1]
+    ok("macOS: it is written with security(1)",
+       cmd[:2] == ["security", "add-generic-password"], cmd)
+    ok("and updates in place rather than piling up copies", "-U" in cmd, cmd)
+    ok("and the password goes in on stdin, never in the command line",
+       sent == SECRET and SECRET not in " ".join(cmd), cmd)
+    ok("and the slot is this agent's, this site's, this field's",
+       "heraldo/google/password" in cmd, cmd)
+    ok("macOS: reading it back asks for the same slot",
+       V._unseal(SAND, "heraldo/google/password") == SECRET, _ran[-1][0])
+    _ran[:] = []
+    V._unseal_forget(SAND, "heraldo/google/password")
+    ok("macOS: forgetting one deletes it from the keychain",
+       "delete-generic-password" in _ran[-1][0], _ran[-1][0])
+
+    # ── Linux ──────────────────────────────────────────────────────────────────
+    V.platform.system = lambda: "Linux"
+    ok("a Linux box is spotted by secret-tool", V.keeper() == "libsecret")
+    _ran[:] = []
+    V._seal(SAND, "forja/banco/password", SECRET)
+    cmd, sent = _ran[-1]
+    ok("Linux: it is written with secret-tool",
+       cmd[:2] == ["secret-tool", "store"], cmd)
+    ok("and the password goes in on stdin there too",
+       sent == SECRET and SECRET not in " ".join(cmd), cmd)
+    ok("Linux: reading it back returns exactly what went in",
+       V._unseal(SAND, "forja/banco/password") == SECRET)
+    _ran[:] = []
+    V._unseal_forget(SAND, "forja/banco/password")
+    ok("Linux: forgetting one clears it", "clear" in _ran[-1][0], _ran[-1][0])
+
+    # ── and a Linux box without it ─────────────────────────────────────────────
+    V._which = lambda name: None
+    ok("a Linux box with no keyring says so rather than guessing",
+       V.keeper() is None)
+    V.platform.system = lambda: "Darwin"
+    ok("and so does a Mac whose security tool is missing", V.keeper() is None)
+finally:
+    V.subprocess.run, V._which = _saved_run, _saved_which
+    V.platform.system = _saved_platform
+
+ok("and this machine is still itself afterwards", V.keeper() == REAL_KEEPER or
+   REAL_KEEPER is None)
+
+
 # ── a machine with nowhere to keep them ──────────────────────────────────────────────
 section("a machine with no keystore")
 
