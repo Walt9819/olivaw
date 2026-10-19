@@ -91,6 +91,30 @@ String shortCode(String fingerprint) {
   return '${_words[n % _words.length]}-${_words[(n ~/ _words.length) % _words.length]}';
 }
 
+/// How long a working rendezvous is tried before the computer's own address again.
+///
+/// Two minutes: long enough that a screenful of requests on mobile data pays the cost
+/// of the dead address once rather than once each, short enough that walking back in
+/// the front door puts the phone on the fast path again without it having to be told.
+const Duration preferRelayFor = Duration(minutes: 2);
+
+/// Which way round to try, this time.
+///
+/// Normally the computer's own address first: at home it is one hop away and the
+/// rendezvous is a detour through another continent. But once that address has failed
+/// and the rendezvous has answered, going on knocking at it first costs the FULL
+/// connect timeout on every single request - a carrier does not answer a packet
+/// addressed to somebody's living room, it just drops it - and that is most of what
+/// "it takes a while on mobile data" was.
+bool relayFirst({
+  required bool hasRelay,
+  required DateTime? relayWorked,
+  required DateTime now,
+}) {
+  if (!hasRelay || relayWorked == null) return false;
+  return now.difference(relayWorked) < preferRelayFor;
+}
+
 /// May this request be sent a second time?
 ///
 /// A path that goes quiet is usually a path that died - but "usually" is not "always",
@@ -180,7 +204,10 @@ class Link {
         pairing.host,
         pairing.port,
         onBadCertificate: accept,
-        timeout: const Duration(seconds: 12),
+        // Eight seconds, not twelve. This is a computer on the same wifi: it answers
+        // in milliseconds or it is not there. The whole of this timeout is paid when
+        // the phone is somewhere else and the carrier drops the packet in silence.
+        timeout: const Duration(seconds: 8),
       );
       _lastCert = offered;
       return s;
@@ -196,6 +223,10 @@ class Link {
   X509Certificate? get lastCertificate => _lastCert;
 
   bool get canReachDirectly => pairing.host.isNotEmpty;
+
+  /// When the rendezvous last answered after the computer's own address had not.
+  /// Null at home, where the address works and there is nothing to remember.
+  DateTime? _relayWorked;
 
   /// Set when rediscover() moved the computer to a new address. The screen that notices
   /// it is the one that can write it down - Link itself does not own the storage.
@@ -318,9 +349,14 @@ class Link {
     bool auth = true,
     Duration? wait,
   }) async {
-    if (canReachDirectly) {
+    final relayedRecently = relayFirst(
+        hasRelay: hasRelay, relayWorked: _relayWorked, now: DateTime.now());
+    if (canReachDirectly && !relayedRecently) {
       try {
-        return await call(method, path, body: body, auth: auth, wait: wait);
+        final out = await call(method, path, body: body, auth: auth, wait: wait);
+        // Home, or back home. Nothing to remember any more.
+        _relayWorked = null;
+        return out;
       } on LinkTimeout {
         // Silence is the other way a path dies, and the commoner one on a phone: the
         // address still accepts a connection - a carrier's middlebox, the router of a
@@ -363,6 +399,24 @@ class Link {
         if (!hasRelay) rethrow;
       }
     }
+    try {
+      final out = await _viaRelay(method, path, body, auth, wait);
+      if (canReachDirectly) _relayWorked = DateTime.now();
+      return out;
+    } catch (e) {
+      // Neither way worked - and if the computer's own address was skipped on the
+      // strength of a remembered failure, that memory has just been shown to be worth
+      // nothing. Forget it and knock on the door.
+      if (canReachDirectly && relayedRecently) {
+        _relayWorked = null;
+        return call(method, path, body: body, auth: auth, wait: wait);
+      }
+      rethrow;
+    }
+  }
+
+  Future<Map<String, dynamic>> _viaRelay(String method, String path,
+      Map<String, dynamic>? body, bool auth, Duration? wait) async {
     try {
       return await call(method, path, body: body, auth: auth, viaRelay: true,
           wait: wait);

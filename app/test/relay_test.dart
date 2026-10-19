@@ -10,7 +10,6 @@
 // A real rendezvous on loopback rather than a mock: the thing under test is socket
 // behaviour, and a mock of a socket would be a mock of the answer.
 
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';

@@ -597,6 +597,14 @@ def through_relay(method, path, body=None, token=""):
             break
     s.close()
     h, _, b = buf.partition(b"\r\n\r\n")
+    # Headers and then nothing: the socket broke between the two (the `except
+    # Exception: break` above). That came back as an empty dict and therefore as a
+    # red test about whatever the call was for, rather than about the one thing that
+    # actually happened - the relay carried half an answer. Same treatment as a
+    # reply that never started: say so, and let through_relay try again.
+    if h.strip() and (len(b) < (need or 1)):
+        raise _EmptyThroughRelay("%s %s (%d of %s bytes)"
+                                 % (method, path, len(b), need))
     if not h.strip():
         # Nothing at all came back. On a loaded machine the FIRST tunnel opened
         # after the house attaches does this about one run in five, and it used to
@@ -1142,6 +1150,56 @@ ok('the owner\'s own attachments come back as files',
 ok('and only the owner\'s own turns are read that way',
    not _as_agent.get('files') and '[Archivos' in _as_agent['content'], _as_agent)
 shutil.rmtree(_vd2, ignore_errors=True)
+
+# ── what a phone asks before it shows a conversation ───────────────────
+# `status()` answers three questions - configured, listening, answering - and costs
+# about six seconds to do it: two subprocesses, a file, and an HTTP call to a gateway
+# that may be busy thinking. The chat screen asked it before EVERY conversation it
+# opened and read two booleans out of the answer, which was most of the wait before
+# anything appeared at all. The console still asks the whole question, because "on but
+# not listening yet" is precisely what it has to be able to say.
+from wizard import wizard_server as _ws  # noqa: E402
+
+_ws.INSTALL_DIR = SAND
+_saved_status, _saved_enabled = talk_mod.status, talk_mod.enabled_flag
+_saved_which = _ws.which
+_asked_full = []
+
+
+def _loud_status(*a, **k):
+    _asked_full.append(a)
+    return {"ok": True, "enabled": True, "ready": True, "reachable": True}
+
+
+def _say(route, body):
+    return _ws.Handler.dispatch(None, "/api/" + route, body)
+
+
+try:
+    talk_mod.status = _loud_status
+    talk_mod.enabled_flag = lambda *a, **k: True
+    _ws.which = lambda name: ""
+    talk_access.set_flag(SAND, "default", "phone", True, True)
+
+    _quick = _say("talk/status", {"quick": True})
+    ok('the quick answer says whether this phone may talk',
+       _quick.get("ok") is True and _quick.get("phone") is True, _quick)
+    ok('and gets there without the six-second examination', not _asked_full, _asked_full)
+
+    _full = _say("talk/status", {})
+    ok('while the console still asks the whole question',
+       len(_asked_full) == 1 and _full.get("ready") is True, (_asked_full, _full))
+
+    # A phone that has been switched off for this agent is told so, and that answer
+    # does not need the examination either.
+    talk_access.set_flag(SAND, "default", "phone", False, True)
+    _off = _say("talk/status", {"quick": True})
+    ok('a phone that has been switched off is told so', _off.get("phone") is False, _off)
+    ok('and that answer still costs no examination', len(_asked_full) == 1, _asked_full)
+    talk_access.set_flag(SAND, "default", "phone", True, True)
+finally:
+    talk_mod.status, talk_mod.enabled_flag = _saved_status, _saved_enabled
+    _ws.which = _saved_which
 
 # ── a conversation arrives a page at a time ─────────────────────────
 # A thread of sixty turns measured 157 KB, of which the phone threw away seven eighths

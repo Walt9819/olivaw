@@ -109,6 +109,7 @@ const Map<String, (String, String)> _table = {
   'Tus agentes': ('Your agents', 'Deine Agenten'),
   'encendido': ('on', 'an'),
   'apagado': ('off', 'aus'),
+  'sin saber': ('not sure', 'unklar'),
   'Reintentar': ('Try again', 'Erneut versuchen'),
   'Si estás fuera de casa, tu computadora necesita tener configurado '
       'el punto de encuentro en «Tu teléfono».': (

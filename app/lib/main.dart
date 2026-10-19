@@ -445,7 +445,7 @@ class Agent {
       ? tr('encendido')
       : running == false
           ? tr('apagado')
-          : 'sin saber';
+          : tr('sin saber');
 }
 
 class Home extends StatefulWidget {
@@ -1237,7 +1237,11 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
     if (mounted) setState(() => _connecting = true);
     try {
       // Whether talking is switched on, first: everything below depends on it.
-      final st = await widget.link.reach('POST', '/api/talk/status', body: _body());
+      // `quick`: this screen reads two booleans out of that answer, and the full
+      // one costs the computer about six seconds to produce - which was most of the
+      // wait before a conversation appeared, on any network.
+      final st = await widget.link
+          .reach('POST', '/api/talk/status', body: _body({'quick': true}));
       // The PHONE switch, which is not the same question as whether the computer
       // offers a chat window. An agent can be on here and off there, and the point
       // of splitting them was that one answer could not mean both.

@@ -1088,6 +1088,25 @@ class Handler(BaseHTTPRequestHandler):
                                            body.get("markdown", ""), INSTALL_DIR)
         if route == "talk/status":
             prof = _target_profile(body)
+            # The phone asks a smaller question, and asks it before every conversation
+            # it opens.
+            #
+            # `status()` answers three - configured, listening, answering - and costs
+            # about six seconds to do it: two subprocesses, a file, and an HTTP call to
+            # a gateway that may be busy thinking. The phone reads two booleans out of
+            # all that, and both of them are in a small file here (or, failing that, in
+            # one cached config read). The console still asks the full question,
+            # because "it is on but not listening yet" is exactly what it has to be
+            # able to say.
+            if body.get("quick"):
+                decided = talk_access.decided_for_phone(INSTALL_DIR, prof)
+                on = (talk.enabled_flag(prof, which("hermes"))
+                      if decided is None else decided)
+                out = {"ok": True, "quick": True}
+                if decided is None:
+                    out["enabled"] = on
+                out.update(talk_access.flags(INSTALL_DIR, prof, on))
+                return out
             st = talk.status(prof, which("hermes"), INSTALL_DIR)
             # Two answers, not one. The gateway underneath is what carries a
             # conversation; whether this computer and whether a phone may HAVE one
@@ -1097,22 +1116,25 @@ class Handler(BaseHTTPRequestHandler):
             return st
         if route == "talk/access":
             prof = _target_profile(body)
-            st = talk.status(prof, which("hermes"), INSTALL_DIR)
+            # The switch itself, not the examination: this needs to know whether the
+            # gateway is ON, which is one cached config read, and `status()` would
+            # spend six seconds also finding out whether it is answering.
+            gateway_on = talk.enabled_flag(prof, which("hermes"))
             where = (body.get("where") or "").strip()
             on = bool(body.get("on"))
             try:
                 flags, want = talk_access.set_flag(INSTALL_DIR, prof, where, on,
-                                                   st.get("enabled"))
+                                                   gateway_on)
             except ValueError:
                 return {"ok": False, "detail": "No sé de qué switch me hablas."}
             res = {"ok": True}
             # The gateway follows the pair: on while either wants it, off when
             # neither does. A flag the transport cannot carry is a switch that lies.
-            if want and not st.get("enabled"):
+            if want and not gateway_on:
                 res = talk.enable(prof, which("hermes"), INSTALL_DIR)
                 if res.get("ok"):
                     res["restart"] = _queue_gateway_reload(prof)
-            elif not want and st.get("enabled"):
+            elif not want and gateway_on:
                 res = talk.disable(prof, which("hermes"))
             res.update(flags)
             return res

@@ -11,6 +11,51 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:olivaw/link.dart';
 
 void main() {
+  group('which road to try first', () {
+    final now = DateTime(2026, 10, 18, 18, 30);
+
+    test('the computer itself, when nothing says otherwise', () {
+      // At home the address is one hop away and the rendezvous is a detour through
+      // another continent.
+      expect(relayFirst(hasRelay: true, relayWorked: null, now: now), isFalse);
+    });
+
+    test('the rendezvous, once the address has failed and it has worked', () {
+      // The cost this avoids is the FULL connect timeout, on every request: a carrier
+      // does not answer a packet addressed to somebody's living room, it drops it.
+      expect(
+          relayFirst(
+              hasRelay: true,
+              relayWorked: now.subtract(const Duration(seconds: 30)),
+              now: now),
+          isTrue);
+    });
+
+    test('but not for ever - walking back in the door is not an event it hears', () {
+      expect(
+          relayFirst(
+              hasRelay: true,
+              relayWorked: now.subtract(preferRelayFor * 2),
+              now: now),
+          isFalse);
+    });
+
+    test('and never when there is no rendezvous to prefer', () {
+      expect(
+          relayFirst(
+              hasRelay: false,
+              relayWorked: now.subtract(const Duration(seconds: 5)),
+              now: now),
+          isFalse);
+    });
+
+    test('the window is minutes, not hours', () {
+      // A long memory would leave a phone at home talking to its computer through a
+      // datacentre; a short one pays the dead address again every few requests.
+      expect(preferRelayFor.inMinutes, inInclusiveRange(1, 5));
+    });
+  });
+
   group('asking again', () {
     test('reading anything twice costs nothing', () {
       for (final path in [
