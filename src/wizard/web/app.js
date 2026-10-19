@@ -52,7 +52,30 @@
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Wizard-Token": TOKEN },
       body: JSON.stringify(body || {})
-    }).then(function (r) { return r.json(); });
+    }).then(function (r) { return r.json(); }).then(function (out) {
+      // An Olivaw that updated underneath this window. Not this panel's problem - the
+      // whole window is out of date - so it is said once, at the top, rather than as
+      // whichever error the panel that happened to ask would have drawn.
+      if (out && out.stale_console) staleConsole(out.detail || "");
+      return out;
+    });
+  }
+
+  function staleConsole(detail) {
+    if (el("staleBar")) return;
+    var bar = document.createElement("div");
+    bar.id = "staleBar";
+    bar.className = "card pad";
+    bar.style.cssText = "position:fixed;left:16px;right:16px;top:16px;z-index:9999;" +
+      "border:1px solid var(--warn, #c98a00)";
+    bar.innerHTML = "<b>Olivaw se actualiz\u00f3 mientras esto estaba abierto.</b>" +
+      '<p class="small muted" style="margin:6px 0 10px">' + esc(detail) +
+      " Hasta que la cierres y la abras otra vez, algunas cosas de esta p\u00e1gina no " +
+      "van a funcionar.</p>" +
+      '<button class="btn btn-primary btn-sm" id="staleReload">Recargar</button>';
+    document.body.appendChild(bar);
+    var go = el("staleReload");
+    if (go) go.onclick = function () { location.reload(); };
   }
 
   function esc(s) {

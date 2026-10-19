@@ -167,6 +167,87 @@ except Exception:  # noqa: BLE001
 ok("the process itself is gone", _gone)
 
 
+# ── the console that outlived an update ─────────────────────────────
+# Reported from a Mac the morning after an update: «no pude preguntarle por las llaves
+# - ruta desconocida», under a panel that looked perfectly new. Both halves were true.
+# The supervisor restarts itself and its bridges when the code changes; the console is a
+# separate process started from an icon, and nobody restarted it. So the page came off
+# the disk new and the Python behind it was from before the update.
+#
+# Two things have to be true for nobody to meet that again: the update retires a console
+# it finds running, and a console that survives anyway explains itself instead of saying
+# "ruta desconocida".
+section("a console that outlived an update")
+
+sys.path.insert(0, os.path.join(ROOT, "src"))
+from wizard import wizard_server as WS  # noqa: E402
+
+_saved_running = WS.running_version
+_saved_disk = WS._version_on_disk
+try:
+    WS.running_version = lambda: "1.0.70"
+    WS._version_on_disk = lambda: "1.0.81"
+    # A route this build genuinely does not have, which is what an old console meets
+    # when a new page asks it for something added since.
+    _out = WS.Handler.dispatch(None, "/api/algo/que/no/existe", {})
+    ok("an unknown route on an out-of-date console is explained, not shrugged at",
+       _out.get("stale_console") is True, _out)
+    ok("and the sentence names both versions",
+       "1.0.70" in _out.get("detail", "") and "1.0.81" in _out.get("detail", ""),
+       _out.get("detail"))
+    ok("and says what to do about it",
+       "brirla" in _out.get("detail", ""), _out.get("detail"))
+
+    # A route that is genuinely nonsense, on a console that is perfectly current, is
+    # still just an unknown route - the explanation must not become the answer to
+    # everything.
+    WS._version_on_disk = lambda: "1.0.70"
+    _out = WS.Handler.dispatch(None, "/api/no/such/thing", {})
+    ok("while a current console still says plainly that it does not know the route",
+       _out.get("stale_console") is None and "desconocida" in _out.get("detail", ""),
+       _out)
+finally:
+    WS.running_version = _saved_running
+    WS._version_on_disk = _saved_disk
+
+# And the half that means nobody sees it at all: the update itself retires one.
+import launcher  # noqa: E402
+
+_retired = []
+_saved_read, _saved_alive = C.read, C.alive
+_saved_retire, _saved_clear = C.retire, C.clear
+try:
+    launcher.INSTALL_DIR = SAND
+    C.read = lambda install_dir: {"pid": 4242, "port": 4242}
+    C.alive = lambda note, timeout=1.5: {"app": "olivaw-console", "version": "1.0.70"}
+    C.retire = lambda note: (_retired.append(note) or True)
+    C.clear = lambda install_dir, only_mine=True: None
+    launcher._retire_console("1.0.81")
+    ok("an update retires a console left running on older code", len(_retired) == 1,
+       _retired)
+
+    _retired[:] = []
+    C.alive = lambda note, timeout=1.5: {"app": "olivaw-console", "version": "1.0.81"}
+    launcher._retire_console("1.0.81")
+    ok("but leaves alone one that is already the new code", not _retired, _retired)
+
+    _retired[:] = []
+    C.alive = lambda note, timeout=1.5: None
+    launcher._retire_console("1.0.81")
+    ok("and a note for a console that is not there kills nothing", not _retired)
+
+    def _boom(note):
+        raise OSError("no permission")
+
+    C.alive = lambda note, timeout=1.5: {"app": "olivaw-console", "version": "1.0.70"}
+    C.retire = _boom
+    launcher._retire_console("1.0.81")
+    ok("a console that cannot be retired does not fail the update", True)
+finally:
+    C.read, C.alive, C.retire, C.clear = (_saved_read, _saved_alive,
+                                          _saved_retire, _saved_clear)
+
+
 # ── tidying up ────────────────────────────────────────────────────────────────────────
 section("leaving")
 

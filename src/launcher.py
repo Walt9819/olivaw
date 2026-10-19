@@ -849,9 +849,45 @@ def apply_update(cfg, state, rel):
         shutil.rmtree(STAGING_DIR, ignore_errors=True)
 
     log(f"update ok: v{old_version} -> v{ver}")
+    _retire_console(ver)
     notify(cfg, _friendly_note(cfg, ver, rel.get("changelog", "")))
     state["launcher_changed"] = launcher_changed
     return True
+
+
+def _retire_console(ver):
+    """Stop a console left running from before this update.
+
+    The supervisor restarts itself and its bridges when the code changes, and the
+    console was the one thing nobody restarted. It is a separate process started from
+    an icon, and it goes on serving whatever Python it imported the day it opened - so
+    an owner who updates with the console open is left with today's page talking to
+    last week's routes, which reaches her as "ruta desconocida" under a panel that
+    looks perfectly new. Reported from a Mac the morning after an update.
+
+    Retired rather than reloaded: a web page cannot be told to re-import Python, and a
+    tab pointing at a port that has gone is an honest error she can act on.
+    """
+    try:
+        from wizard import console_one
+    except Exception:  # noqa: BLE001
+        return
+    try:
+        note = console_one.read(INSTALL_DIR)
+        if not note:
+            return
+        live = console_one.alive(note)
+        if live is None:
+            console_one.clear(INSTALL_DIR, only_mine=False)
+            return
+        if str(live.get("version") or "") == str(ver):
+            return                      # already the new code, nothing to do
+        if console_one.retire(note):
+            console_one.clear(INSTALL_DIR, only_mine=False)
+            log(f"update {ver}: retired the console still running "
+                f"v{live.get('version')} - reopen it to get the new one")
+    except Exception as e:  # noqa: BLE001
+        log(f"update {ver}: could not retire the console ({e})")
 
 
 def _run_migrations(cfg, manifest_path):

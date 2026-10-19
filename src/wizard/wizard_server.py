@@ -105,6 +105,17 @@ TOKEN = secrets.token_urlsafe(24)
 _RUNNING = None
 
 
+def _version_on_disk():
+    """What the install says NOW - which is not what this process is running."""
+    try:
+        here = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))))
+        with open(os.path.join(here, "VERSION"), encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
 def running_version():
     """The version of the code this process is actually executing.
 
@@ -1440,6 +1451,16 @@ class Handler(BaseHTTPRequestHandler):
             threading.Timer(0.5, _shutdown).start()
             return {"ok": True}
 
+        # A route this process has never heard of, on a machine whose disk has a
+        # newer Olivaw than the one this process is running, is not a mystery: it is a
+        # console that outlived an update, serving old Python under a page that came
+        # off the disk a second ago. Say that, rather than "ruta desconocida" - the
+        # owner can act on one of those sentences and not on the other.
+        on_disk = _version_on_disk()
+        if on_disk and on_disk != running_version():
+            return {"ok": False, "stale_console": True, "detail":
+                    u"Esta consola es de la versión %s y el equipo ya tiene la %s. "
+                    u"Ciérrala y vuelve a abrirla." % (running_version(), on_disk)}
         return {"ok": False, "detail": "ruta desconocida"}
 
     def _teams(self, what, body):
