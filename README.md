@@ -793,7 +793,7 @@ of the folder is a brick without the passphrase, and so is the machine itself un
 somebody unlocks it: that is the cost, and it buys the one property the OS keystores
 cannot, which is that an agent with a shell on that box cannot read the vault either.
 
-The encrypting is AES-GCM when  happens to be installed, and otherwise a
+The encrypting is AES-GCM when `cryptography` happens to be installed, and otherwise a
 deliberately small construction from the standard library: SHA-256 in counter mode for
 the keystream, HMAC-SHA256 over the ciphertext, encrypt-then-MAC, separate keys for each
 job, a fresh nonce per write, a constant-time compare, and the slot name mixed into the
