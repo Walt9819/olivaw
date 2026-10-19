@@ -73,7 +73,7 @@ def _fake_forget(install_dir, key):
 
 REAL_KEEPER = V.keeper()
 if REAL_KEEPER is None:
-    V.keeper = lambda: "fake"
+    V.keeper = lambda install_dir=None: "fake"
     V._seal, V._unseal, V._unseal_forget = _fake_seal, _fake_unseal, _fake_forget
     print("(no OS keystore here - standing one in)")
 else:
@@ -518,11 +518,160 @@ ok("and this machine is still itself afterwards", V.keeper() == REAL_KEEPER or
    REAL_KEEPER is None)
 
 
+def _read_sealed(install_dir):
+    try:
+        with io.open(os.path.join(install_dir, V.SEALED), encoding="utf-8") as fh:
+            import json as _json
+            return (_json.load(fh) or {}).get("values") or {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+# ── a machine with no keystore of its own ───────────────────────────
+# A Linux server has no keyring daemon and often no desktop, and that is exactly the
+# machine an agent runs on unattended. There, the owner sets a passphrase: the key is
+# derived from it, lives in this process and nowhere else, and the disk gets a salt, a
+# verifier and ciphertext.
+#
+# This is the only cipher code in the product that is ours rather than the operating
+# system's, so it is tested as such: every refusal it should make, and the identity it
+# should keep.
+from wizard import vault_lock as L  # noqa: E402
+
+section("a passphrase instead")
+
+_bare = tempfile.mkdtemp(prefix="olivaw-bare-")
+_saved_sys, _saved_which2 = V.platform.system, V._which
+V.platform.system = lambda: "Linux"
+V._which = lambda name: None       # no secret-tool, no keyring, nothing
+
+try:
+    ok("a bare machine says it has nowhere - until one is set",
+       V.keeper(_bare) is None and V.can_set_passphrase(_bare) is True)
+    ok("a short passphrase is refused",
+       L.set_passphrase(_bare, "corta")["ok"] is False)
+    ok("setting one works", L.set_passphrase(_bare, "una frase larga de prueba")["ok"])
+    ok("and the machine now has a keeper", V.keeper(_bare) == "passphrase")
+    ok("setting a second one is refused rather than losing the first",
+       L.set_passphrase(_bare, "otra frase larga aun")["ok"] is False)
+
+    V.put(_bare, "forja", "panel", {"password": SECRET},
+          url="https://panel.example/")
+    ok("a key saved under it comes back",
+       V.take(_bare, "forja", "panel", "password") == SECRET)
+
+    _blob = io.open(os.path.join(_bare, V.SEALED), encoding="utf-8").read()
+    ok("and nothing readable is on the disk", SECRET not in _blob)
+    ok("the file says which cipher wrote it, so a machine that gains a better one "
+       "can still read this", '"alg"' in _blob)
+
+    # ── the cipher itself ──────────────────────────────────────────────────────
+    _key = os.urandom(32)
+    for _n in (0, 1, 31, 32, 33, 1000):
+        _data = os.urandom(_n)
+        _box = L.seal(_key, _data, b"slot")
+        ok("sealing and opening %d bytes gives back the same bytes" % _n,
+           L.unseal(_key, _box, b"slot") == _data)
+
+    # Key separation, asserted on the construction rather than on behaviour: using
+    # one key for the stream cipher and for the MAC is a real weakness and a
+    # perfectly consistent one - everything still seals and opens, and nothing
+    # observable changes. The only way to catch it is to look.
+    _m = os.urandom(32)
+    ok("each job gets a key of its own from the master",
+       len({L._sub(_m, b"enc"), L._sub(_m, b"mac"), L._sub(_m, b"verify"),
+            L._sub(_m, b"aes")}) == 4)
+    ok("and the master itself is never used as one of them",
+       _m not in (L._sub(_m, b"enc"), L._sub(_m, b"mac")))
+
+    _box = L.seal(_key, b"hola", b"slot")
+    ok("two seals of the same thing are not the same ciphertext",
+       L.seal(_key, b"hola", b"slot")["c"] != _box["c"])
+
+    def _broken(what, change):
+        bad = dict(_box)
+        bad.update(change)
+        try:
+            L.unseal(_key, bad, b"slot")
+            ok(what, False, "it opened")
+        except L.Tampered:
+            ok(what, True)
+
+    import base64 as _b64mod
+    _ct = bytearray(_b64mod.b64decode(_box["c"]))
+    _ct[0] ^= 1
+    _broken("a changed ciphertext does not open",
+            {"c": _b64mod.b64encode(bytes(_ct)).decode()})
+    if "t" in _box:
+        _tag = bytearray(_b64mod.b64decode(_box["t"]))
+        _tag[0] ^= 1
+        _broken("a changed tag does not open",
+                {"t": _b64mod.b64encode(bytes(_tag)).decode()})
+    _broken("and neither does one from an unknown algorithm", {"alg": "rot13"})
+
+    try:
+        L.unseal(_key, _box, b"otro-slot")
+        ok("a blob moved to another slot does not open", False, "it opened")
+    except L.Tampered:
+        ok("a blob moved to another slot does not open", True)
+    try:
+        L.unseal(os.urandom(32), _box, b"slot")
+        ok("and another key does not open it either", False, "it opened")
+    except L.Tampered:
+        ok("and another key does not open it either", True)
+
+    # ── locking ────────────────────────────────────────────────────────────────
+    L.forget()
+    ok("after a reboot the vault is closed", L.state(_bare)["unlocked"] is False)
+    _why = denied("and an agent is told so, rather than given an error",
+                  lambda: V.take(_bare, "forja", "panel", "password"))
+    ok("in words it can repeat to the owner", u"contrase\u00f1a" in _why, _why)
+    ok("the wrong passphrase does not open it",
+       L.unlock(_bare, "no es esta")["ok"] is False)
+    ok("the right one does", L.unlock(_bare, "una frase larga de prueba")["ok"])
+    ok("and the keys work again",
+       V.take(_bare, "forja", "panel", "password") == SECRET)
+
+    # Held while it is being used, and not for ever: the owner unlocks in the morning
+    # and a machine left alone overnight closes itself.
+    ok("the key is held for hours, not minutes", L.HOLD_SECONDS >= 3600)
+    L._held["until"] = time.time() - 1
+    ok("and a held key that has aged out is gone", L.key() is None)
+    L.unlock(_bare, "una frase larga de prueba")
+
+    # ── changing it ────────────────────────────────────────────────────────────
+    _old_blob = dict((_read_sealed(_bare) or {}).get("forja/panel/password") or {})
+    ok("changing it needs the current one",
+       L.change_passphrase(_bare, "la que no es", "otra frase larga aqui",
+                           lambda a, b: None)["ok"] is False)
+    ok("changing it works",
+       L.change_passphrase(_bare, "una frase larga de prueba",
+                           "otra frase larga aqui",
+                           lambda a, b: V.reseal_all(_bare, a, b))["ok"])
+    ok("every value was re-sealed under the new one",
+       V.take(_bare, "forja", "panel", "password") == SECRET)
+    ok("and the old ciphertext is not what is on disk any more",
+       (_read_sealed(_bare) or {}).get("forja/panel/password") != _old_blob)
+    L.forget()
+    ok("the old passphrase no longer opens anything",
+       L.unlock(_bare, "una frase larga de prueba")["ok"] is False)
+    ok("the new one does", L.unlock(_bare, "otra frase larga aqui")["ok"])
+
+    # ── and it never takes precedence over the real thing ──────────────────────
+    V._which = lambda name: "/usr/bin/" + name
+    ok("a machine that HAS a keyring uses it, passphrase or not",
+       V.keeper(_bare) == "libsecret")
+finally:
+    V.platform.system, V._which = _saved_sys, _saved_which2
+    L.forget()
+    shutil.rmtree(_bare, ignore_errors=True)
+
+
 # ── a machine with nowhere to keep them ──────────────────────────────────────────────
 section("a machine with no keystore")
 
 saved_keeper = V.keeper
-V.keeper = lambda: None
+V.keeper = lambda install_dir=None: None
 try:
     V.put(SAND, "heraldo", "nope", {"password": "x"})
     ok("refuses to store rather than falling back to a file", False, "it stored it")

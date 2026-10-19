@@ -249,6 +249,33 @@ const Map<String, (String, String)> _table = {
   'Deshacer el equipo':
       ('Undo the team',
        'Team auflösen'),
+  'No pude hacerlo.':
+      ('I could not do it.',
+       'Ich konnte das nicht tun.'),
+  'Esa computadora no tiene llavero propio.':
+      ('That computer has no keychain of its own.',
+       'Dieser Computer hat keinen eigenen Schlüsselbund.'),
+  'Las llaves están cerradas.':
+      ('The keys are locked.',
+       'Die Schlüssel sind verschlossen.'),
+  'Ponle una contraseña maestra: la clave se hace con ella y vive sólo en su memoria, nunca en el disco. Después de cada reinicio habrá que escribirla otra vez.':
+      ('Give it a master password: the key is made from it and lives only in that computer\'s memory, never on disk. After every restart it has to be typed again.',
+       'Gib ihm ein Hauptpasswort: der Schlüssel entsteht daraus und liegt nur im Speicher dieses Computers, nie auf der Festplatte. Nach jedem Neustart muss es erneut eingegeben werden.'),
+  'Hay que escribir la contraseña maestra una vez después de cada reinicio. Mientras tanto los agentes no pueden entrar a ningún sitio.':
+      ('The master password has to be typed once after every restart. Until then the agents cannot sign in anywhere.',
+       'Das Hauptpasswort muss nach jedem Neustart einmal eingegeben werden. Bis dahin können sich die Agenten nirgends anmelden.'),
+  'Contraseña maestra':
+      ('Master password',
+       'Hauptpasswort'),
+  'Un momento…':
+      ('One moment…',
+       'Einen Moment…'),
+  'Poner esta contraseña':
+      ('Set this password',
+       'Dieses Passwort setzen'),
+  'Abrir las llaves':
+      ('Unlock the keys',
+       'Schlüssel aufschließen'),
   'Llaves y contraseñas':
       ('Keys and passwords',
        'Schlüssel und Passwörter'),

@@ -2557,12 +2557,36 @@
         '<div class="row"><button class="btn btn-soft btn-sm" id="kRetry">' +
         "Probar otra vez</button></div></div>";
     }
+    // No keystore of its own - a Linux server, most often. A passphrase is the way
+    // forward there, and the only one: the key is made from it, lives in memory, and
+    // the disk never sees it. The cost is that a reboot closes the vault until
+    // somebody types it, and that is said here rather than discovered later.
     if (!st.keeper) {
-      return '<div class="card pad"><b>Este equipo no tiene dónde guardarlas.</b>' +
-        '<p class="small muted">Las contraseñas se guardan en el llavero del propio ' +
-        'sistema (DPAPI en Windows, Llavero en Mac, libsecret en Linux). Aquí no ' +
-        'encuentro ninguno, y escribirlas en un archivo suelto sería justo lo que ' +
-        'esto evita, así que no guardo nada.</p></div>';
+      return '<div class="card pad"><b>Este equipo no tiene llavero propio.</b>' +
+        '<p class="small muted">Windows, Mac y un Linux de escritorio traen uno; este ' +
+        'no. Puedes ponerle una <b>contraseña maestra</b>: la clave se hace con ella ' +
+        'y vive sólo en memoria, nunca en el disco. Cada vez que se reinicie el ' +
+        'equipo tendrás que escribirla otra vez para que los agentes puedan usar las ' +
+        'llaves.</p>' +
+        '<label class="field"><span class="lab">Contraseña maestra ' +
+        '<span class="hint">al menos 8 caracteres, y no hay forma de recuperarla</span>' +
+        '</span><input type="password" id="kPhrase" autocomplete="new-password">' +
+        '</label>' +
+        '<div class="row"><button class="btn btn-primary btn-sm" id="kPhraseSet">' +
+        'Poner esta contraseña</button>' +
+        '<span class="pill" id="kPhrasePill" style="display:none"></span></div></div>';
+    }
+    // There IS a passphrase, and nobody has typed it since this computer started.
+    if (st.lock && st.lock.configured && !st.lock.unlocked) {
+      return '<div class="card pad"><b>Las llaves están cerradas.</b>' +
+        '<p class="small muted">Este equipo las guarda con una contraseña maestra, y ' +
+        'la clave no está en el disco: hay que escribirla una vez después de cada ' +
+        'reinicio. Mientras tanto los agentes no pueden entrar en ningún sitio.</p>' +
+        '<label class="field"><span class="lab">Contraseña maestra</span>' +
+        '<input type="password" id="kPhrase" autocomplete="current-password"></label>' +
+        '<div class="row"><button class="btn btn-primary btn-sm" id="kUnlock">' +
+        'Abrir las llaves</button>' +
+        '<span class="pill" id="kPhrasePill" style="display:none"></span></div></div>';
     }
     var list = (st.credentials || []).map(keysRow).join("");
     var audit = (st.audit || []).map(function (a) {
@@ -2577,6 +2601,13 @@
                  : '<div class="row" style="margin-top:10px">' +
                    '<button class="btn btn-soft btn-sm" id="kNew">Añadir una llave' +
                    "</button></div>") +
+      (st.lock && st.lock.unlocked
+        ? '<div class="row" style="margin-top:12px">' +
+          '<span class="small muted" style="flex:1">Abiertas con la contraseña ' +
+          'maestra en esta sesión.</span>' +
+          '<button class="btn btn-ghost btn-sm" id="kLock">Cerrarlas ahora</button>' +
+          "</div>"
+        : "") +
       '<p class="muted small" style="margin-top:14px">Se guardan en: ' +
       esc(st.keeper_label) + ". El agente puede escribirlas en su navegador, " +
       "como mucho " + esc(String(st.uses_per_hour)) + " veces por hora, y sólo en " +
@@ -2607,6 +2638,33 @@
 
   function eCreds() {
     if (!KEYS.st && !KEYS.busy) loadKeys();
+    if (el("kPhraseSet")) el("kPhraseSet").onclick = function () {
+      var phrase = (el("kPhrase") || {}).value || "";
+      runTest(el("kPhraseSet"), el("kPhrasePill"), function () {
+        return api("creds/passphrase", { do: "set", new: phrase }).then(function (r) {
+          if (el("kPhrase")) el("kPhrase").value = "";
+          if (r.ok) { KEYS.st = null; render(); loadKeys(); }
+          return r;
+        });
+      }, "Guardando\u2026");
+    };
+    if (el("kUnlock")) el("kUnlock").onclick = function () {
+      var phrase = (el("kPhrase") || {}).value || "";
+      runTest(el("kUnlock"), el("kPhrasePill"), function () {
+        return api("creds/unlock", { passphrase: phrase }).then(function (r) {
+          if (el("kPhrase")) el("kPhrase").value = "";
+          if (r.ok) { KEYS.st = null; render(); loadKeys(); }
+          return r;
+        });
+      }, "Abriendo\u2026");
+    };
+    if (el("kLock")) el("kLock").onclick = function () {
+      api("creds/lock", {}).then(function () {
+        KEYS.st = null;
+        render();
+        loadKeys();
+      });
+    };
     if (el("kRetry")) el("kRetry").onclick = function () {
       KEYS.st = null;
       render();

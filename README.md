@@ -785,8 +785,22 @@ It is never in the agent's context, never in argv, never in a log, never on a ne
 | the OS keystore | the values. DPAPI on Windows, Keychain on macOS, libsecret on Linux. No key of ours on disk, no cipher of ours to get wrong. |
 | `credentials-audit.log` | one line per use: which key, which page, when, and whether it worked. Never a value. |
 
-If the machine has no keystore, **nothing is stored**. A fallback that wrote the password
-to a file "for now" would be the whole problem, shipped.
+If the machine has none of those — a Linux server with no keyring daemon, which is
+exactly the kind of machine an agent runs on unattended — the owner sets a **master
+passphrase** instead. The key is derived from it with scrypt, lives only in the
+supervisor's memory, and the disk gets a salt, a verifier and ciphertext. A stolen copy
+of the folder is a brick without the passphrase, and so is the machine itself until
+somebody unlocks it: that is the cost, and it buys the one property the OS keystores
+cannot, which is that an agent with a shell on that box cannot read the vault either.
+
+The encrypting is AES-GCM when  happens to be installed, and otherwise a
+deliberately small construction from the standard library: SHA-256 in counter mode for
+the keystream, HMAC-SHA256 over the ciphertext, encrypt-then-MAC, separate keys for each
+job, a fresh nonce per write, a constant-time compare, and the slot name mixed into the
+MAC so a blob cannot be moved between entries. The algorithm is written into every blob,
+so a machine that gains a better one later still reads what it wrote. What is never an
+option is writing the password to a file "for now" — that would be the whole problem,
+shipped.
 
 **The owner adds one** in the console, under «Llaves y contraseñas», on the machine that
 will use it. That page is served from 127.0.0.1 and the value goes straight to the

@@ -128,6 +128,12 @@ ROUTES = {
     # exists, add one and replace one; there is no route that returns a value, here
     # or anywhere, so nothing can read one back over this link.
     "creds/list": "config",
+    # Setting and typing the passphrase from the phone, because the machine that needs
+    # one is a server with no screen - and the phone is then the only way in that does
+    # not mean an SSH tunnel.
+    "creds/passphrase": "config",
+    "creds/unlock": "config",
+    "creds/lock": "config",
     "creds/save": "config",
     "creds/forget": "config",
     "creds/allow": "config",

@@ -57,6 +57,16 @@ class _KeysScreenState extends State<KeysScreen> {
   List<Map<String, dynamic>> _rows = [];
   String _keeper = '';
   bool _canKeep = true;
+
+  /// A machine with no keystore of its own keeps them under a passphrase instead, and
+  /// the key for it lives only in that computer's memory. So there are two more states
+  /// this screen has to be able to show: nobody has set one, and nobody has typed it
+  /// since the computer started. On a server with no screen this phone is the only
+  /// place either can be done from.
+  bool _needsPhrase = false;
+  bool _locked = false;
+  final _phrase = TextEditingController();
+  bool _working = false;
   int _perHour = 12;
   bool _loading = true;
   String _error = '';
@@ -65,6 +75,15 @@ class _KeysScreenState extends State<KeysScreen> {
   void initState() {
     super.initState();
     _load();
+  }
+
+  @override
+  void dispose() {
+    // Out of memory with the screen: a passphrase sitting in a controller is one
+    // screenshot away from being somewhere else.
+    _phrase.text = '';
+    _phrase.dispose();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -78,6 +97,7 @@ class _KeysScreenState extends State<KeysScreen> {
             tr((res['detail'] ?? tr('No pude leer las llaves.')).toString()));
         return;
       }
+      final lock = (res['lock'] as Map?)?.cast<String, dynamic>() ?? const {};
       setState(() {
         _rows = [
           for (final r in (res['credentials'] as List? ?? []))
@@ -85,6 +105,8 @@ class _KeysScreenState extends State<KeysScreen> {
         ];
         _keeper = (res['keeper_label'] ?? '').toString();
         _canKeep = (res['keeper'] ?? '').toString().isNotEmpty;
+        _needsPhrase = lock['can_set'] == true;
+        _locked = lock['configured'] == true && lock['unlocked'] != true;
         _perHour = (res['uses_per_hour'] as num?)?.toInt() ?? 12;
         _error = '';
       });
@@ -149,12 +171,93 @@ class _KeysScreenState extends State<KeysScreen> {
     if (saved == true) _load();
   }
 
+  Future<void> _phraseCall(String route, Map<String, dynamic> body) async {
+    if (_phrase.text.isEmpty) return;
+    setState(() => _working = true);
+    try {
+      final res = await widget.link.reach('POST', route, body: body);
+      _phrase.text = '';
+      if (!mounted) return;
+      if (res['ok'] != true) {
+        _say(tr((res['detail'] ?? tr('No pude hacerlo.')).toString()));
+        return;
+      }
+      await _load();
+    } catch (e) {
+      if (mounted) _say(humanError(e));
+    } finally {
+      if (mounted) setState(() => _working = false);
+    }
+  }
+
+  /// Setting one, or typing it after a reboot. Same box, different question.
+  Widget _phraseCard(BuildContext context, {required bool setting}) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+          color: context.c.panel,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: context.c.line)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(
+            setting
+                ? tr('Esa computadora no tiene llavero propio.')
+                : tr('Las llaves están cerradas.'),
+            style: TextStyle(
+                fontWeight: FontWeight.w700, color: context.c.ink)),
+        const SizedBox(height: 6),
+        Text(
+            setting
+                ? tr('Ponle una contraseña maestra: la clave se hace con ella y vive '
+                    'sólo en su memoria, nunca en el disco. Después de cada reinicio '
+                    'habrá que escribirla otra vez.')
+                : tr('Hay que escribir la contraseña maestra una vez después de cada '
+                    'reinicio. Mientras tanto los agentes no pueden entrar a ningún '
+                    'sitio.'),
+            style: TextStyle(fontSize: 12, color: context.c.muted)),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _phrase,
+          obscureText: true,
+          autocorrect: false,
+          enableSuggestions: false,
+          style: TextStyle(color: context.c.ink),
+          decoration: InputDecoration(
+            isDense: true,
+            hintText: tr('Contraseña maestra'),
+            hintStyle: TextStyle(color: context.c.muted),
+            filled: true,
+            fillColor: context.c.panel2,
+            border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: context.c.line)),
+          ),
+        ),
+        const SizedBox(height: 10),
+        FilledButton(
+          onPressed: _working
+              ? null
+              : () => _phraseCall(
+                    setting ? '/api/creds/passphrase' : '/api/creds/unlock',
+                    setting
+                        ? widget.body({'do': 'set', 'new': _phrase.text})
+                        : widget.body({'passphrase': _phrase.text}),
+                  ),
+          child: Text(_working
+              ? tr('Un momento…')
+              : (setting ? tr('Poner esta contraseña') : tr('Abrir las llaves'))),
+        ),
+      ]),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: context.c.bg,
       appBar: AppBar(title: Text(tr('Llaves y contraseñas'))),
-      floatingActionButton: (!widget.canEdit || !_canKeep)
+      floatingActionButton: (!widget.canEdit || !_canKeep || _locked)
           ? null
           : FloatingActionButton.extended(
               onPressed: () => _edit(null),
@@ -172,7 +275,11 @@ class _KeysScreenState extends State<KeysScreen> {
                     child: Text(_error,
                         style: TextStyle(color: context.c.err, fontSize: 13)),
                   ),
-                if (!_canKeep)
+                if (_needsPhrase && widget.canEdit)
+                  _phraseCard(context, setting: true)
+                else if (_locked && widget.canEdit)
+                  _phraseCard(context, setting: false)
+                else if (!_canKeep)
                   _note(context,
                       tr('Esa computadora no tiene dónde guardarlas a salvo, '
                           'así que no guarda ninguna.')),

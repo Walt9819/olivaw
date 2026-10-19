@@ -53,6 +53,11 @@ import subprocess
 import threading
 import time
 
+try:
+    from . import vault_lock
+except ImportError:  # running from src/ rather than as a package
+    from wizard import vault_lock
+
 STORE = "credentials.json"
 SEALED = "credentials.sealed"
 AUDIT = "credentials-audit.log"
@@ -75,11 +80,16 @@ SERVICE = "olivaw-credentials"
 
 # ── where the values actually live ────────────────────────────────────────────────────
 
-def keeper():
+def keeper(install_dir=None):
     """Which keystore this machine has, or None.
 
     Decided by asking, not by assuming: a Linux box without libsecret and a Mac with the
-    Keychain disabled both exist, and the honest answer there is "I cannot keep this".
+    Keychain disabled both exist.
+
+    The operating system's own store comes first wherever there is one - it needs no
+    passphrase, survives a reboot, and is the thing already protecting everything else
+    the owner has saved. A passphrase is the answer for the machines that have none,
+    and a Linux server with no desktop is exactly that machine.
     """
     system = platform.system()
     if system == "Windows":
@@ -88,10 +98,20 @@ def keeper():
             ctypes.windll.crypt32  # noqa: B018 - raises if it is not there
             return "dpapi"
         except Exception:  # noqa: BLE001
-            return None
-    if system == "Darwin":
-        return "keychain" if _which("security") else None
-    return "libsecret" if _which("secret-tool") else None
+            pass
+    elif system == "Darwin":
+        if _which("security"):
+            return "keychain"
+    elif _which("secret-tool"):
+        return "libsecret"
+    if install_dir is not None and vault_lock.configured(install_dir):
+        return "passphrase"
+    return None
+
+
+def can_set_passphrase(install_dir):
+    """True when a passphrase is the way forward here: no OS store, none set yet."""
+    return keeper(install_dir) is None
 
 
 def _which(name):
@@ -99,10 +119,12 @@ def _which(name):
     return which(name)
 
 
-def keeper_label():
+def keeper_label(install_dir=None):
     return {"dpapi": "Windows (DPAPI)",
             "keychain": "Llavero de macOS",
-            "libsecret": "libsecret"}.get(keeper(), "")
+            "libsecret": "libsecret",
+            "passphrase": u"contraseña maestra de este equipo"}.get(
+                keeper(install_dir), "")
 
 
 class NoKeeper(Exception):
@@ -215,10 +237,32 @@ def _slug(text):
 
 # ── sealing one value ─────────────────────────────────────────────────────────────────
 
+class Locked(Exception):
+    """There is a passphrase on this machine and nobody has typed it yet."""
+
+
+def _sealed_path(install_dir):
+    return _path(install_dir, SEALED)
+
+
+def _passphrase_key(install_dir):
+    got = vault_lock.key()
+    if got is None:
+        raise Locked()
+    return got
+
+
 def _seal(install_dir, key, value, extra=b""):
-    kind = keeper()
+    kind = keeper(install_dir)
     if kind is None:
         raise NoKeeper()
+    if kind == "passphrase":
+        master = _passphrase_key(install_dir)
+        blob = vault_lock.seal(master, value, key.encode("utf-8"))
+        sealed = _read_json(_sealed_path(install_dir), {"version": 1, "values": {}})
+        sealed.setdefault("values", {})[key] = blob
+        _write_json(_sealed_path(install_dir), sealed)
+        return
     if kind == "dpapi":
         blob = _dpapi(value.encode("utf-8"), _entropy(key, extra), True)
         sealed = _read_json(_path(install_dir, SEALED), {"version": 1, "values": {}})
@@ -238,9 +282,16 @@ def _seal(install_dir, key, value, extra=b""):
 
 
 def _unseal(install_dir, key, extra=b""):
-    kind = keeper()
+    kind = keeper(install_dir)
     if kind is None:
         raise NoKeeper()
+    if kind == "passphrase":
+        master = _passphrase_key(install_dir)
+        sealed = _read_json(_sealed_path(install_dir), {"version": 1, "values": {}})
+        blob = (sealed.get("values") or {}).get(key)
+        if not isinstance(blob, dict):
+            return None
+        return vault_lock.unseal(master, blob, key.encode("utf-8")).decode("utf-8")
     if kind == "dpapi":
         sealed = _read_json(_path(install_dir, SEALED), {"version": 1, "values": {}})
         raw = (sealed.get("values") or {}).get(key)
@@ -257,7 +308,12 @@ def _unseal(install_dir, key, extra=b""):
 
 
 def _unseal_forget(install_dir, key):
-    kind = keeper()
+    kind = keeper(install_dir)
+    if kind == "passphrase":
+        sealed = _read_json(_sealed_path(install_dir), {"version": 1, "values": {}})
+        if (sealed.get("values") or {}).pop(key, None) is not None:
+            _write_json(_sealed_path(install_dir), sealed)
+        return
     if kind == "dpapi":
         sealed = _read_json(_path(install_dir, SEALED), {"version": 1, "values": {}})
         if (sealed.get("values") or {}).pop(key, None) is not None:
@@ -327,7 +383,7 @@ def put(install_dir, agent, platform_id, values, label="", url="", username="",
     she did not retype.
     """
     with _lock:
-        if keeper() is None:
+        if keeper(install_dir) is None:
             raise NoKeeper()
         key = entry_key(agent, platform_id)
         data = _store(install_dir)
@@ -440,7 +496,12 @@ def take(install_dir, agent, platform_id, field, approved=False):
             raise Denied(u"Esa llave ya se usó %d veces en la última hora; "
                          u"algo no está saliendo bien. Pregúntale a la dueña."
                          % len(recent))
-        value = _unseal(install_dir, _key(agent, platform_id, field))
+        try:
+            value = _unseal(install_dir, _key(agent, platform_id, field))
+        except Locked:
+            raise Denied(u"Las llaves de este equipo están cerradas con contraseña y "
+                         u"nadie la ha abierto todavía. Pídele a la dueña que las "
+                         u"abra.")
         if value is None:
             raise Denied(u"La llave está registrada pero su valor no está en el "
                          u"llavero de este equipo.")
@@ -456,6 +517,31 @@ def take(install_dir, agent, platform_id, field, approved=False):
 
 def note_fill(install_dir, agent, platform_id, field, where, ok, detail=""):
     _audit(install_dir, agent, platform_id, "filled:" + field, where, ok, detail)
+
+
+def reseal_all(install_dir, old_key, new_key):
+    """Every value, opened with the old key and closed with the new one.
+
+    Handed to vault_lock.change_passphrase, which owns the crypto and not the file. A
+    half-finished walk here would leave values nobody can open, so the new file is
+    written only once every one of them has been re-sealed in memory.
+    """
+    sealed = _read_json(_sealed_path(install_dir), {"version": 1, "values": {}})
+    values = sealed.get("values") or {}
+    fresh = {}
+    for key, blob in values.items():
+        raw = vault_lock.unseal(old_key, blob, key.encode("utf-8"))
+        fresh[key] = vault_lock.seal(new_key, raw, key.encode("utf-8"))
+    sealed["values"] = fresh
+    _write_json(_sealed_path(install_dir), sealed)
+
+
+def lock_state(install_dir):
+    """What the console needs to draw: whether there is a passphrase, and whether it
+    has been typed."""
+    st = vault_lock.state(install_dir)
+    st["can_set"] = can_set_passphrase(install_dir)
+    return st
 
 
 # ── one-time codes ────────────────────────────────────────────────────────────────────

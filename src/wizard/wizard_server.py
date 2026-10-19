@@ -1097,8 +1097,9 @@ class Handler(BaseHTTPRequestHandler):
             prof = _target_profile(body) or "default"
             try:
                 return {"ok": True, "agent": prof,
-                        "keeper": vault.keeper(),
-                        "keeper_label": vault.keeper_label(),
+                        "keeper": vault.keeper(INSTALL_DIR),
+                        "keeper_label": vault.keeper_label(INSTALL_DIR),
+                        "lock": vault.lock_state(INSTALL_DIR),
                         "credentials": vault.entries(INSTALL_DIR, prof),
                         "uses_per_hour": vault.USES_PER_HOUR,
                         "audit": vault.audit(INSTALL_DIR, limit=12, agent=prof)}
@@ -1133,6 +1134,25 @@ class Handler(BaseHTTPRequestHandler):
                 return {"ok": False, "detail": str(e)}
             res["credentials"] = vault.entries(INSTALL_DIR, prof)
             return res
+        # A machine with no keystore of its own - a Linux server, most often - keeps
+        # them under a passphrase instead. The key lives in this process and nowhere
+        # else, so these three are the whole of its lifecycle: choose one, type it
+        # after a reboot, and put it away.
+        if route == "creds/passphrase":
+            which_one = (body.get("do") or "set").strip()
+            if which_one == "change":
+                return vault.vault_lock.change_passphrase(
+                    INSTALL_DIR, body.get("old", ""), body.get("new", ""),
+                    lambda old, new: vault.reseal_all(INSTALL_DIR, old, new))
+            return vault.vault_lock.set_passphrase(INSTALL_DIR,
+                                                   body.get("new", ""))
+        if route == "creds/unlock":
+            res = vault.vault_lock.unlock(INSTALL_DIR, body.get("passphrase", ""))
+            res["lock"] = vault.lock_state(INSTALL_DIR)
+            return res
+        if route == "creds/lock":
+            vault.vault_lock.forget()
+            return {"ok": True, "lock": vault.lock_state(INSTALL_DIR)}
         if route == "creds/allow":
             prof = _target_profile(body) or "default"
             res = vault.allow_once(INSTALL_DIR, prof,
