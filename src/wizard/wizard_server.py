@@ -49,7 +49,7 @@ if __package__ in (None, ""):
                         cron_patch, cronjobs, hermes_ctl, image_setup, numbers, obsidian,
                         pairing, proposals, providers, relay_client, remote, renaming,
                         rescue, selfcare, session_health, talk, talk_access, telegram_health,
-                        usage, vault,
+                        console_one, usage, vault,
                         telegram_setup, usecases)
     from wizard import workspace as wsdir   # aliased: `workspace` is a local
                                             # variable name elsewhere in this file
@@ -62,7 +62,7 @@ else:
                    cronjobs, hermes_ctl, image_setup, numbers, obsidian, pairing,
                    proposals, providers, relay_client, remote, renaming, rescue,
                    selfcare, session_health, talk, talk_access, telegram_health, telegram_setup,
-                   usage, vault,
+                   console_one, usage, vault,
                    usecases)
     from . import workspace as wsdir        # aliased: see above
     from .procutil import http_json, which
@@ -101,6 +101,27 @@ TEST_PORT = 8788
 TEST_URL = "http://127.0.0.1:%d" % TEST_PORT
 
 TOKEN = secrets.token_urlsafe(24)
+
+_RUNNING = None
+
+
+def running_version():
+    """The version of the code this process is actually executing.
+
+    Read once and kept: VERSION on disk is rewritten by an update while this process
+    goes on running the modules it imported at start. The point of telling another
+    console our version is to say what we ARE, not what the folder now says.
+    """
+    global _RUNNING
+    if _RUNNING is None:
+        try:
+            here = os.path.dirname(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__))))
+            with open(os.path.join(here, "VERSION"), encoding="utf-8") as fh:
+                _RUNNING = fh.read().strip() or "?"
+        except OSError:
+            _RUNNING = "?"
+    return _RUNNING
 MAX_BODY_BYTES = 40 * 1024 * 1024   # see do_POST: the chat's attachments set this floor
 _test_bridge = None  # Popen of the throwaway bridge used by "probar el cerebro"
 
@@ -653,6 +674,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
+        # The one thing a console answers without a token, and the only thing worth
+        # answering: which app this is and which code it is RUNNING. Another console
+        # starting up reads it to decide whether to replace this one or simply hand
+        # the owner its address.
+        if path == "/who":
+            return self._json({"app": "olivaw-console",
+                               "version": running_version(), "pid": os.getpid()})
         if path == "/api/avatar":
             self._avatar()
         elif path == "/" or path.startswith("/web") or path in ("/app.css", "/app.js"):
@@ -1951,8 +1979,22 @@ def main():
             print("  (se recuperaron agentes registrados en la copia del código)")
     except Exception as e:  # noqa: BLE001
         print("  aviso: no se pudo revisar el registro de agentes: %s" % e)
+    # One console at a time. A second one started beside the first used to take
+    # another port and serve whatever Python it had loaded that day - which is how an
+    # owner ends up looking at today's page talking to Tuesday's routes.
+    what, where = console_one.take_over(INSTALL_DIR, running_version())
+    if what == "open":
+        print("\n  Ya hay una consola abierta. Te llevo a esa.\n")
+        try:
+            webbrowser.open(where)
+        except Exception:  # noqa: BLE001
+            print("   ", where)
+        return
+
     port = _free_port()
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    console_one.write(INSTALL_DIR, port, running_version())
+    atexit.register(lambda: console_one.clear(INSTALL_DIR))
     url = "http://127.0.0.1:%d/?t=%s" % (port, TOKEN)
     # `--sos` opens straight on the help console instead of the setup flow, so a shortcut can
     # take a stuck owner to Claude in one click (the bridge being down is exactly when the
