@@ -764,6 +764,74 @@ skip the wizard and configure from parameters (add `-NoWizard` / `HB_NO_WIZARD=1
 > so there's no manual paste when the `hermes` command is available. The paste-in snippet remains
 > only as a fallback for machines where the CLI isn't on PATH.
 
+## Keys and passwords (the agent uses them, never reads them)
+
+Chrome logs out. A Google session expires, a panel signs the agent out overnight, and
+then it is in front of a login form with no way past it. The two old ways past were both
+bad: stop and wait for the owner, or ask her for the password in the conversation —
+which sends it to the model provider, into their logs, and into a transcript that stays
+on disk.
+
+So the agent **orchestrates** the login and never learns the secret. It can see the page,
+decide which box is the password box, and say "fill it"; the value goes from the
+operating system's own keystore into Chrome's input field over the local DevTools socket.
+It is never in the agent's context, never in argv, never in a log, never on a network.
+
+**Where things live**
+
+| | |
+|---|---|
+| `credentials.json` | the rows: site, label, account, which fields exist, last use. **No secret material** — safe to read, copy or paste into a bug report. |
+| the OS keystore | the values. DPAPI on Windows, Keychain on macOS, libsecret on Linux. No key of ours on disk, no cipher of ours to get wrong. |
+| `credentials-audit.log` | one line per use: which key, which page, when, and whether it worked. Never a value. |
+
+If the machine has no keystore, **nothing is stored**. A fallback that wrote the password
+to a file "for now" would be the whole problem, shipped.
+
+**The owner adds one** in the console, under «Llaves y contraseñas», on the machine that
+will use it. That page is served from 127.0.0.1 and the value goes straight to the
+keystore; it is never sent anywhere, and nothing can read it back — not the page, not the
+agent, not the phone. The phone has no route to this at all: those three routes are
+absent from its permission table on purpose.
+
+**The agent spends one** with `src/tools/credentials.py`:
+
+```bash
+python credentials.py list                       # what it has - never a value
+python credentials.py fill google username
+python credentials.py fill google password --enter
+python credentials.py code github --enter        # the six digits, typed for it
+```
+
+**What it refuses, and why that is the feature**
+
+* **A page on another site.** A key saved for `google.com` goes into `google.com` or its
+  subdomains and nowhere else. An agent reads web pages, and a page is untrusted input:
+  "sign in at accounts-google.secure-login.example" is an instruction some model
+  somewhere will follow. A person can be fooled by that; a host comparison cannot. The
+  check runs **before** the value is unsealed, so a credential is not even taken out of
+  the keystore for a page it does not belong to.
+* **A password into a visible box.** A login form asks for it in a password field.
+* **Another agent's keys.** Enforced twice: in the row lookup and again by the keystore
+  key, which has the agent in it. The tool takes the agent from the workspace it is
+  running in rather than from a flag — every agent runs the same scripts as the same
+  user, so a flag is a request, not an identity.
+* **More than twelve uses an hour.** Twelve failed logins is how an account gets locked,
+  and a loop is the likeliest cause.
+* **A key the owner marked "ask me"** — until she has said yes.
+
+**What it does not protect against**, said plainly: an agent with a shell runs as the
+same user as this process, and the same user is who the keystore answers to. What this
+buys is that the secret is never in the transcript, never in the provider's logs, never
+usable on a lookalike site, scoped per agent, rate-limited, and written down every time
+it is used. For isolation beyond that the key would have to live somewhere the machine
+does not — a passphrase the owner types, held only in memory.
+
+Tested in `tools/test_vault.py` (61 checks): round-trip, no plaintext in any file the
+vault writes, per-agent scoping, the rate limit, the "ask me" flag, the site rule
+including lookalike domains, the filler's ordering (refused before unsealing), and the
+RFC 6238 vectors for the one-time codes.
+
 ## Olivaw on a phone
 
 The console is on the computer. The phone is a *different kind of contact point*: it can

@@ -109,6 +109,7 @@ except Exception:  # noqa: BLE001
 # an agent that does not know it can quote a message.
 try:
     from wizard import reply_skill as _replies
+    from wizard import vault_skill as _keys
 except Exception:  # noqa: BLE001
     _replies = None
 
@@ -1538,6 +1539,28 @@ def _ensure_image_skill():
             log(f"images: could not teach {r['profile']}: {r.get('detail', '')}")
 
 
+def _ensure_vault_skill():
+    """Tell every agent that the owner's keys exist - and are not to be asked for.
+
+    The tool alone would not have changed anything: an agent in front of a login wall
+    asks the owner for the password in the conversation, which is the one message that
+    loses it. Teaching is all this does; what an agent may actually open is decided by
+    what the owner put in the vault.
+    """
+    if not _keys:
+        return
+    try:
+        results = _keys.ensure_all(log=log, install_dir=INSTALL_DIR)
+    except Exception as e:  # noqa: BLE001
+        log(f"credentials: skill check failed: {e}")
+        return
+    for r in results:
+        if r.get("changed"):
+            log(f"credentials: taught {r['profile']} to use the owner's keys without "
+                f"reading them ({r.get('path')})")
+            _skill_needs_reload(r["profile"], "credentials")
+
+
 def _ensure_reply_skill():
     """Tell every agent it can answer one message in particular.
 
@@ -1682,6 +1705,7 @@ def main():
     _ensure_image_skill()
     _ensure_intercom_skill()
     _ensure_reply_skill()
+    _ensure_vault_skill()
     last_check = 0.0
     while True:
         try:

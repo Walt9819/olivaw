@@ -49,7 +49,7 @@ if __package__ in (None, ""):
                         cron_patch, cronjobs, hermes_ctl, image_setup, numbers, obsidian,
                         pairing, proposals, providers, relay_client, remote, renaming,
                         rescue, selfcare, session_health, talk, talk_access, telegram_health,
-                        usage,
+                        usage, vault,
                         telegram_setup, usecases)
     from wizard import workspace as wsdir   # aliased: `workspace` is a local
                                             # variable name elsewhere in this file
@@ -62,7 +62,7 @@ else:
                    cronjobs, hermes_ctl, image_setup, numbers, obsidian, pairing,
                    proposals, providers, relay_client, remote, renaming, rescue,
                    selfcare, session_health, talk, talk_access, telegram_health, telegram_setup,
-                   usage,
+                   usage, vault,
                    usecases)
     from . import workspace as wsdir        # aliased: see above
     from .procutil import http_json, which
@@ -1086,6 +1086,50 @@ class Handler(BaseHTTPRequestHandler):
         if route == "agent/purpose":
             return agent_info.save_purpose(_target_profile(body),
                                            body.get("markdown", ""), INSTALL_DIR)
+        # ── the keys the owner leaves for an agent ─────────────────────────────
+        #
+        # Only here, and deliberately: these routes are not in the phone's table at
+        # all. A password is typed on the machine that will use it, into a page served
+        # from 127.0.0.1, and never travels - not over the rendezvous, not over the
+        # local network, not through a conversation. The phone can see that a key
+        # EXISTS (through the agent, if it asks) and nothing more.
+        if route == "creds/list":
+            prof = _target_profile(body) or "default"
+            return {"ok": True, "agent": prof,
+                    "keeper": vault.keeper(), "keeper_label": vault.keeper_label(),
+                    "credentials": vault.entries(INSTALL_DIR, prof),
+                    "uses_per_hour": vault.USES_PER_HOUR,
+                    "audit": vault.audit(INSTALL_DIR, limit=12, agent=prof)}
+        if route == "creds/save":
+            prof = _target_profile(body) or "default"
+            platform_id = (body.get("platform") or "").strip()
+            if not platform_id:
+                return {"ok": False, "detail": "Falta de qué sitio es la llave."}
+            try:
+                res = vault.put(
+                    INSTALL_DIR, prof, platform_id,
+                    {"password": body.get("password") or "",
+                     "totp": body.get("totp") or ""},
+                    label=(body.get("label") or "").strip(),
+                    url=(body.get("url") or "").strip(),
+                    username=(body.get("username") or "").strip(),
+                    secret_username=bool(body.get("secret_username")),
+                    confirm=bool(body.get("confirm")),
+                    note=(body.get("note") or "").strip())
+            except vault.NoKeeper:
+                return {"ok": False, "detail":
+                        "Este equipo no tiene un llavero donde guardarla "
+                        "(DPAPI en Windows, Llavero en Mac, libsecret en Linux). "
+                        "No la guardo en un archivo suelto."}
+            except ValueError as e:
+                return {"ok": False, "detail": str(e)}
+            res["credentials"] = vault.entries(INSTALL_DIR, prof)
+            return res
+        if route == "creds/forget":
+            prof = _target_profile(body) or "default"
+            res = vault.forget(INSTALL_DIR, prof, (body.get("platform") or "").strip())
+            res["credentials"] = vault.entries(INSTALL_DIR, prof)
+            return res
         if route == "talk/status":
             prof = _target_profile(body)
             # The phone asks a smaller question, and asks it before every conversation

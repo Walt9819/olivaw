@@ -348,6 +348,13 @@
       lead: "Cuando ve algo que podría hacer por ti, lo propone aquí y espera. No construye " +
             "nada sin tu sí — y lo que descartes no vuelve a proponerlo.",
       render: function () { return secProposals(true); } },
+    { id: "llaves", scope: "agent", icon: "🔑", label: "Llaves y contraseñas",
+      title: "Las llaves que este agente puede usar",
+      lead: "Para entrar en sitios por ti — Google, un banco, un panel — sin que la " +
+            "contraseña pase nunca por la conversación. Tú la escribes aquí una vez; " +
+            "él la usa sin verla, sólo en el sitio para el que es, y cada uso queda " +
+            "anotado abajo.",
+      render: secCreds, wire: eCreds },
     { id: "uso", scope: "team", icon: "📊", label: "Cuánto trabajan",
       title: "Cuánto trabaja cada agente",
       lead: "Conversaciones, mensajes, herramientas y tokens — por agente y por equipo. Lo cuenta Hermes, que lleva la misma ficha de cada conversación sea cual sea el cerebro detrás, así que aquí salen igual Claude Code y Codex.",
@@ -2452,6 +2459,182 @@
   // line turns the diagram into a wall of six-point text.
   // ── how much work has been done ──────────────────────────────────────────────
   //
+  // ── the owner's keys ──────────────────────────────────────────
+  //
+  // This panel is the ONLY place a password is typed, and it is served from
+  // 127.0.0.1 on the machine that will use it. The value goes straight into the
+  // system's keychain; nothing sends it anywhere, and nothing can read it back - not
+  // this page, not the agent, not the phone. What comes back here afterwards is the
+  // row describing it: the site, the account, what it stores, when it was last used.
+  var KEYS = { st: null, busy: false, open: "" };
+
+  function keysRow(c) {
+    var bits = [];
+    if (c.username) bits.push("cuenta " + esc(c.username));
+    else if (c.secret_username) bits.push("cuenta guardada");
+    if (c.url) bits.push(esc(c.url.replace(/^https?:\/\//, "").replace(/\/$/, "")));
+    bits.push("guarda " + esc((c.fields || []).join(", ")));
+    if (c.last_used) bits.push("usada " + whenAgo(c.last_used));
+    else bits.push("sin usar todavía");
+    return '<div class="userow"><div class="row" style="align-items:center;gap:8px">' +
+      "<b>" + esc(c.label || c.platform) + "</b>" +
+      '<span class="pill">' + esc(c.platform) + "</span>" +
+      (c.confirm ? '<span class="pill">pide permiso</span>' : "") +
+      '<span style="flex:1"></span>' +
+      '<button class="btn btn-ghost btn-sm keyEdit" data-p="' + esc(c.platform) +
+      '">Cambiar</button>' +
+      '<button class="btn btn-ghost btn-sm keyDel" data-p="' + esc(c.platform) +
+      '">Borrar</button></div>' +
+      '<p class="muted small" style="margin:6px 0 0">' + bits.join(" · ") + "</p></div>";
+  }
+
+  function whenAgo(secs) {
+    var mins = Math.max(0, Math.round((Date.now() / 1000 - secs) / 60));
+    if (mins < 60) return "hace " + mins + " min";
+    if (mins < 1440) return "hace " + Math.round(mins / 60) + " h";
+    return "hace " + Math.round(mins / 1440) + " d";
+  }
+
+  function keysForm(c) {
+    c = c || {};
+    var known = !!c.platform;
+    return '<div class="card pad" id="keyForm">' +
+      "<b class=\"small\">" + (known ? "Cambiar la llave de " + esc(c.platform)
+                                     : "Añadir una llave") + "</b>" +
+      '<label class="field"><span class="lab">¿De qué sitio es? ' +
+      '<span class="hint">una palabra: google, github, banco</span></span>' +
+      '<input type="text" id="kPlat" value="' + esc(c.platform || "") + '"' +
+      (known ? " readonly" : "") + ' placeholder="google"></label>' +
+      '<label class="field"><span class="lab">Cómo la llamas ' +
+      '<span class="hint">para reconocerla en esta lista</span></span>' +
+      '<input type="text" id="kLabel" value="' + esc(c.label || "") +
+      '" placeholder="Google de Heraldo"></label>' +
+      '<label class="field"><span class="lab">Página de acceso ' +
+      '<span class="hint">la llave sólo se escribe en este sitio y en sus ' +
+      'subdominios — es lo que impide que una página falsa se la lleve</span></span>' +
+      '<input type="text" id="kUrl" value="' + esc(c.url || "") +
+      '" placeholder="https://accounts.google.com/"></label>' +
+      '<label class="field"><span class="lab">Usuario o correo</span>' +
+      '<input type="text" id="kUser" value="' + esc(c.username || "") +
+      '" placeholder="heraldo@igalenus.com" autocomplete="off"></label>' +
+      '<label class="field"><span class="lab">Contraseña ' +
+      '<span class="hint">' + (known ? "déjala vacía si no la cambias" :
+                                       "se guarda en el llavero del sistema") +
+      '</span></span>' +
+      '<input type="password" id="kPass" autocomplete="new-password"></label>' +
+      '<label class="field"><span class="lab">Código de 2 pasos ' +
+      '<span class="hint">opcional: la clave larga que da el sitio al activar la ' +
+      'verificación en dos pasos, para que pueda generar los 6 dígitos</span></span>' +
+      '<input type="password" id="kTotp" autocomplete="off"></label>' +
+      '<label class="row" style="gap:8px;align-items:center">' +
+      '<input type="checkbox" id="kConfirm"' + (c.confirm ? " checked" : "") + ">" +
+      '<span class="small">Pedirme permiso cada vez que la use</span></label>' +
+      '<div class="row" style="margin-top:10px">' +
+      '<button class="btn btn-primary btn-sm" id="kSave">Guardar</button>' +
+      '<button class="btn btn-ghost btn-sm" id="kCancel">Cancelar</button>' +
+      '<span class="pill" id="kPill" style="display:none"></span></div></div>';
+  }
+
+  function secCreds() {
+    var st = KEYS.st;
+    if (!st) return '<p class="muted">Mirando…</p>';
+    if (!st.keeper) {
+      return '<div class="card pad"><b>Este equipo no tiene dónde guardarlas.</b>' +
+        '<p class="small muted">Las contraseñas se guardan en el llavero del propio ' +
+        'sistema (DPAPI en Windows, Llavero en Mac, libsecret en Linux). Aquí no ' +
+        'encuentro ninguno, y escribirlas en un archivo suelto sería justo lo que ' +
+        'esto evita, así que no guardo nada.</p></div>';
+    }
+    var list = (st.credentials || []).map(keysRow).join("");
+    var audit = (st.audit || []).map(function (a) {
+      return '<div class="row small" style="gap:8px">' +
+        '<span class="muted" style="min-width:132px">' + esc(a.when.replace("T", " ")) +
+        "</span><span>" + esc(a.platform) + " · " + esc(a.what) + "</span>" +
+        '<span class="muted" style="flex:1">' + esc(a.where || "") + "</span>" +
+        (a.ok ? "" : '<span class="pill">no</span>') + "</div>";
+    }).join("");
+    return (list ? list : '<p class="muted">Todavía no le has dejado ninguna llave.</p>') +
+      (KEYS.open ? keysForm(KEYS.open === "+" ? null : keyOf(KEYS.open))
+                 : '<div class="row" style="margin-top:10px">' +
+                   '<button class="btn btn-soft btn-sm" id="kNew">Añadir una llave' +
+                   "</button></div>") +
+      '<p class="muted small" style="margin-top:14px">Se guardan en: ' +
+      esc(st.keeper_label) + ". El agente puede escribirlas en su navegador, " +
+      "como mucho " + esc(String(st.uses_per_hour)) + " veces por hora, y sólo en " +
+      "el sitio de cada una. No puede leerlas ni enseñárselas a nadie.</p>" +
+      (audit ? "<h3>Últimos usos</h3>" + audit : "");
+  }
+
+  function keyOf(platform) {
+    var rows = ((KEYS.st || {}).credentials) || [];
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].platform === platform) return rows[i];
+    }
+    return null;
+  }
+
+  function loadKeys() {
+    if (KEYS.busy) return;
+    KEYS.busy = true;
+    api("creds/list", { profile: targetProfile() }).then(function (st) {
+      KEYS.st = st;
+    }).catch(function (e) {
+      KEYS.st = { ok: false, keeper: null, detail: String(e && e.message || e) };
+    }).then(function () {
+      KEYS.busy = false;
+      if (S.sec === "llaves") render();
+    });
+  }
+
+  function eCreds() {
+    if (!KEYS.st && !KEYS.busy) loadKeys();
+    if (el("kNew")) el("kNew").onclick = function () { KEYS.open = "+"; render(); };
+    if (el("kCancel")) el("kCancel").onclick = function () { KEYS.open = ""; render(); };
+    Array.prototype.forEach.call(
+      document.querySelectorAll("#panel .keyEdit"), function (b) {
+        b.onclick = function () {
+          KEYS.open = b.getAttribute("data-p");
+          render();
+        };
+      });
+    Array.prototype.forEach.call(
+      document.querySelectorAll("#panel .keyDel"), function (b) {
+        b.onclick = function () {
+          var plat = b.getAttribute("data-p");
+          api("creds/forget", { profile: targetProfile(), platform: plat })
+            .then(function (r) {
+              if (r.credentials) KEYS.st.credentials = r.credentials;
+              KEYS.open = "";
+              toast(r.ok ? "Borrada." : (r.detail || "No pude borrarla."));
+              loadKeys();
+            });
+        };
+      });
+    if (el("kSave")) el("kSave").onclick = function () {
+      var body = {
+        profile: targetProfile(),
+        platform: (el("kPlat") || {}).value || "",
+        label: (el("kLabel") || {}).value || "",
+        url: (el("kUrl") || {}).value || "",
+        username: (el("kUser") || {}).value || "",
+        password: (el("kPass") || {}).value || "",
+        totp: (el("kTotp") || {}).value || "",
+        confirm: !!(el("kConfirm") || {}).checked
+      };
+      if (!body.platform.trim()) { toast("¿De qué sitio es?"); return; }
+      runTest(el("kSave"), el("kPill"), function () {
+        return api("creds/save", body).then(function (r) {
+          // Cleared the instant it has been handed over: a password sitting in a form
+          // field is one screenshot, one shoulder, one 'inspect element' away.
+          if (el("kPass")) el("kPass").value = "";
+          if (el("kTotp")) el("kTotp").value = "";
+          if (r.ok) { KEYS.open = ""; loadKeys(); }
+          return r;
+        });
+      }, "Guardando…");
+    };
+  }
+
   // The numbers are Hermes': it keeps a row per conversation - messages, tool calls,
   // tokens in and out - the same way whichever brain is behind the bridge. So this
   // asks no brain anything, and Claude Code and Codex need no special case. What the

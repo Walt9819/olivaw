@@ -150,10 +150,12 @@ TURN_BRIEF = (
 _SECRET_NAMES = frozenset((
     ".env", ".env.local", ".netrc", "auth.json", "credentials", "credentials.json",
     ".anthropic_oauth.json", "google_token.json", "token.json", "tokens.json",
+    "credentials.sealed", "credentials-audit.log",
     "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "shadow", "sam", "security",
 ))
 _SECRET_EXT = frozenset((
     ".key", ".pem", ".pfx", ".p12", ".jks", ".keystore", ".ppk", ".asc", ".gpg", ".kdbx",
+    ".sealed",
 ))
 _SECRET_DIRS = frozenset((
     ".ssh", ".aws", ".gnupg", ".azure", ".kube", ".docker", "gcloud",
