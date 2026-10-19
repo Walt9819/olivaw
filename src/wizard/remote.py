@@ -144,6 +144,13 @@ def call_api(route, body, caps):
             return {"ok": False, "detail": u"No pude comprobar el permiso."}, 503
     try:
         return _api().dispatch("/api/" + route, body or {}), 200
+    except ValueError as e:
+        # The owner's own mistake, spelled out for her in Spanish by the module that
+        # found it - "Ponle un nombre al equipo", "No había un enlace entre X e Y".
+        # The console has always handed those back as they are; this door wrapped them
+        # in "error interno", which sends her looking for a bug in Olivaw instead of
+        # reading the sentence.
+        return {"ok": False, "detail": u"%s" % e}, 400
     except Exception as e:  # noqa: BLE001
         log("api %s failed: %s" % (route, e))
         return {"ok": False, "detail": u"error interno: %s" % e}, 500

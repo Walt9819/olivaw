@@ -1164,6 +1164,31 @@ ok('and only the owner\'s own turns are read that way',
    not _as_agent.get('files') and '[Archivos' in _as_agent['content'], _as_agent)
 shutil.rmtree(_vd2, ignore_errors=True)
 
+# ── a refusal the owner can read ─────────────────────────────────────
+# Modules here raise ValueError with a sentence written FOR the owner - «Ponle un nombre
+# al equipo». The console has always handed those back as they are; this door wrapped
+# them in «error interno», which sends her looking for a bug instead of reading it.
+class _Cranky(object):
+    def dispatch(self, path, body):
+        if body.get("boom"):
+            raise RuntimeError("algo se rompió de verdad")
+        raise ValueError(u"Ponle un nombre al equipo.")
+
+
+_real_shim = remote._shim
+try:
+    remote._shim = _Cranky()
+    _out, _code = remote.call_api("teams/group", {}, ["ver", "config"])
+    ok("a mistake of the owner's comes back as her own sentence",
+       _code == 400 and _out.get("detail") == u"Ponle un nombre al equipo.", (_code, _out))
+    ok("and is not dressed up as an internal error",
+       "interno" not in str(_out.get("detail")), _out)
+    _out, _code = remote.call_api("teams/group", {"boom": True}, ["ver", "config"])
+    ok("while a real fault is still a 500, and says so",
+       _code == 500 and "interno" in _out.get("detail", ""), (_code, _out))
+finally:
+    remote._shim = _real_shim
+
 # ── what a phone asks before it shows a conversation ───────────────────
 # `status()` answers three questions - configured, listening, answering - and costs
 # about six seconds to do it: two subprocesses, a file, and an HTTP call to a gateway
