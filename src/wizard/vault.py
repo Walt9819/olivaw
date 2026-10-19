@@ -313,6 +313,7 @@ def entries(install_dir, agent=None):
             "last_used": int(row.get("last_used") or 0),
             "uses": int(row.get("uses") or 0),
             "note": row.get("note", ""),
+            "allowed_until": int(row.get("allow_until") or 0),
         })
     return out
 
@@ -378,6 +379,33 @@ def forget(install_dir, agent, platform_id):
 
 # ── spending one ──────────────────────────────────────────────────────────────────────
 
+# How long an owner's "go ahead" lasts, and how many times it can be spent. One use,
+# a few minutes: the agent asks because it is in front of the form NOW, and an
+# allowance that outlived the moment would quietly turn "ask me every time" into "ask
+# me once, ever".
+ALLOW_MINUTES = 5
+
+
+def allow_once(install_dir, agent, platform_id, minutes=ALLOW_MINUTES):
+    """The owner says yes to the next use of one key.
+
+    Without this the 'ask me first' switch was a switch that only said no: the agent
+    was told to ask, and there was nothing for the owner to press when it did.
+    """
+    with _lock:
+        key = entry_key(agent, platform_id)
+        data = _store(install_dir)
+        row = (data.get("entries") or {}).get(key)
+        if not isinstance(row, dict):
+            return {"ok": False, "detail": "No hay ninguna llave as\u00ed."}
+        row["allow_until"] = int(time.time() + max(1, int(minutes)) * 60)
+        data["entries"][key] = row
+        _save_store(install_dir, data)
+        _audit(install_dir, agent, platform_id, "allowed",
+               "%d min" % int(minutes), True)
+        return {"ok": True, "until": row["allow_until"]}
+
+
 class Denied(Exception):
     """Said no, and why. The reason is for the agent and for the audit line."""
 
@@ -401,9 +429,11 @@ def take(install_dir, agent, platform_id, field, approved=False):
             raise Denied(u"Este agente no tiene una llave para «%s»." % platform_id)
         if field not in (row.get("fields") or []):
             raise Denied(u"Esa llave no guarda «%s»." % field)
-        if row.get("confirm") and not approved:
-            raise Denied(u"Esta llave pide permiso de la dueña cada vez. "
-                         u"Pídeselo y vuelve a intentarlo.")
+        allowed = approved or int(row.get("allow_until") or 0) > int(time.time())
+        if row.get("confirm") and not allowed:
+            raise Denied(u"Esta llave pide permiso de la dueña cada vez. Pídeselo "
+                         u"—ella lo da en la consola, en «Llaves y contraseñas»— y "
+                         u"vuelve a intentarlo.")
         now = int(time.time())
         recent = _recent_uses(row, now)
         if len(recent) >= USES_PER_HOUR:
@@ -414,6 +444,8 @@ def take(install_dir, agent, platform_id, field, approved=False):
         if value is None:
             raise Denied(u"La llave está registrada pero su valor no está en el "
                          u"llavero de este equipo.")
+        # Spent: one yes is one use, not a window somebody forgot to close.
+        row.pop("allow_until", None)
         row["recent"] = recent + [now]
         row["last_used"] = now
         row["uses"] = int(row.get("uses") or 0) + 1

@@ -2481,6 +2481,14 @@
       '<span class="pill">' + esc(c.platform) + "</span>" +
       (c.confirm ? '<span class="pill">pide permiso</span>' : "") +
       '<span style="flex:1"></span>' +
+      // The other half of "ask me first". Without a button the switch only ever said
+      // no: the agent was told to ask, and there was nothing to press when it did.
+      (c.confirm
+        ? (c.allowed_until * 1000 > Date.now()
+            ? '<span class="pill">permitida ahora</span>'
+            : '<button class="btn btn-soft btn-sm keyAllow" data-p="' +
+              esc(c.platform) + '">Permitir una vez</button>')
+        : "") +
       '<button class="btn btn-ghost btn-sm keyEdit" data-p="' + esc(c.platform) +
       '">Cambiar</button>' +
       '<button class="btn btn-ghost btn-sm keyDel" data-p="' + esc(c.platform) +
@@ -2528,7 +2536,9 @@
       '<input type="password" id="kTotp" autocomplete="off"></label>' +
       '<label class="row" style="gap:8px;align-items:center">' +
       '<input type="checkbox" id="kConfirm"' + (c.confirm ? " checked" : "") + ">" +
-      '<span class="small">Pedirme permiso cada vez que la use</span></label>' +
+      '<span class="small">Pedirme permiso cada vez que la use ' +
+      '<span class="hint">te lo pedir\u00e1 por su canal, y t\u00fa lo das aqu\u00ed con ' +
+      '\u00abPermitir una vez\u00bb</span></span></label>' +
       '<div class="row" style="margin-top:10px">' +
       '<button class="btn btn-primary btn-sm" id="kSave">Guardar</button>' +
       '<button class="btn btn-ghost btn-sm" id="kCancel">Cancelar</button>' +
@@ -2595,6 +2605,18 @@
         b.onclick = function () {
           KEYS.open = b.getAttribute("data-p");
           render();
+        };
+      });
+    Array.prototype.forEach.call(
+      document.querySelectorAll("#panel .keyAllow"), function (b) {
+        b.onclick = function () {
+          api("creds/allow", { profile: targetProfile(),
+                               platform: b.getAttribute("data-p") })
+            .then(function (r) {
+              toast(r.ok ? "Permitida para los pr\u00f3ximos minutos, una vez."
+                         : (r.detail || "No pude permitirla."));
+              loadKeys();
+            });
         };
       });
     Array.prototype.forEach.call(

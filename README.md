@@ -818,7 +818,10 @@ python credentials.py code github --enter        # the six digits, typed for it
   user, so a flag is a request, not an identity.
 * **More than twelve uses an hour.** Twelve failed logins is how an account gets locked,
   and a loop is the likeliest cause.
-* **A key the owner marked "ask me"** — until she has said yes.
+* **A key the owner marked "ask me"** — until she has said yes. The agent is refused
+  and told to ask; she presses «Permitir una vez» in the console, and that yes is good
+  for one use in the next five minutes. A switch that could only ever say no would be
+  a switch nobody could use.
 
 **What it does not protect against**, said plainly: an agent with a shell runs as the
 same user as this process, and the same user is who the keystore answers to. What this

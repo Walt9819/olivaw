@@ -189,6 +189,26 @@ ok("and the refusal tells the agent what to do about it",
 ok("with the owner's yes, it works",
    V.take(SAND, "forja", "banco", "password", approved=True) == "otra-cosa")
 
+# And the yes she actually gives, which is a button in the console rather than a flag
+# passed in code. Without it the switch only ever said no.
+V.allow_once(SAND, "forja", "banco")
+ok("the owner's go-ahead lets the next use through",
+   V.take(SAND, "forja", "banco", "password") == "otra-cosa")
+denied("and it is spent by that one use, not left open",
+       lambda: V.take(SAND, "forja", "banco", "password"))
+# Aged rather than asked for in the past: allow_once clamps to at least a minute, on
+# purpose, so the way an allowance dies is the clock.
+V.allow_once(SAND, "forja", "banco")
+_d = V._store(SAND)
+_d["entries"]["forja/banco"]["allow_until"] = int(time.time()) - 1
+V._save_store(SAND, _d)
+denied("a go-ahead that has run out is no go-ahead",
+       lambda: V.take(SAND, "forja", "banco", "password"))
+ok("and the console can see one that is live",
+   (V.allow_once(SAND, "forja", "banco") or {}).get("ok") and
+   [e for e in V.entries(SAND, "forja") if e["platform"] == "banco"][0]["allowed_until"] > 0)
+V.take(SAND, "forja", "banco", "password")
+
 
 # ── changing and removing ────────────────────────────────────────────────────────────
 section("changing one")

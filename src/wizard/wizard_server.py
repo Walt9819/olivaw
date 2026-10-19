@@ -1125,6 +1125,12 @@ class Handler(BaseHTTPRequestHandler):
                 return {"ok": False, "detail": str(e)}
             res["credentials"] = vault.entries(INSTALL_DIR, prof)
             return res
+        if route == "creds/allow":
+            prof = _target_profile(body) or "default"
+            res = vault.allow_once(INSTALL_DIR, prof,
+                                   (body.get("platform") or "").strip())
+            res["credentials"] = vault.entries(INSTALL_DIR, prof)
+            return res
         if route == "creds/forget":
             prof = _target_profile(body) or "default"
             res = vault.forget(INSTALL_DIR, prof, (body.get("platform") or "").strip())
