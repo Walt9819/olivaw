@@ -154,7 +154,7 @@ void main() {
 
   group('picking the old conversation up again', () {
     test('an empty screen takes it', () {
-      expect(canResumeOver(const [], false), isTrue);
+      expect(canResumeOver(const []), isTrue);
     });
 
     test('a screen holding only a message that never left still takes it', () {
@@ -164,18 +164,23 @@ void main() {
       expect(
           canResumeOver([
             {'role': 'user', 'text': 'no salió', 'failed': true}
-          ], false),
+          ]),
           isTrue);
     });
 
     test('but not once something has actually been said here', () {
       // Dropping sixty old turns on top of a message that went through would be
       // throwing that message away.
-      expect(canResumeOver([said('ya dije algo')], false), isFalse);
+      expect(canResumeOver([said('ya dije algo')]), isFalse);
     });
 
-    test('nor once this screen has a conversation of its own', () {
-      expect(canResumeOver(const [], true), isFalse);
+    test('one that went through among ones that did not still blocks it', () {
+      expect(
+          canResumeOver([
+            {'role': 'user', 'text': 'esta sí', 'failed': false},
+            {'role': 'user', 'text': 'esta no', 'failed': true},
+          ]),
+          isFalse);
     });
   });
 }

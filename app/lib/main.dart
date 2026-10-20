@@ -1127,10 +1127,13 @@ final Map<String, List<Map<String, dynamic>>> _unsent = {};
 /// bottom and the old turns go in above it. Getting this wrong is quiet in both
 /// directions: too strict and a failed message blocks the offer for good, too loose
 /// and a sent one is overwritten.
-bool canResumeOver(List<Map<String, dynamic>> msgs, bool hasSession) {
-  if (hasSession) return false;
-  return msgs.every((m) => m['failed'] == true);
-}
+///
+/// Words, then, and not a session id: a send that failed after opening the
+/// conversation leaves one behind with nothing in it, and refusing the offer over an
+/// empty session would mean one lost message costs the owner the thread they were in
+/// the middle of.
+bool canResumeOver(List<Map<String, dynamic>> msgs) =>
+    msgs.every((m) => m['failed'] == true);
 
 bool saidAlready(List<Map<String, dynamic>> tail, String outgoing) {
   final want = outgoing.replaceAll(RegExp(r'\s+'), ' ').trim();
@@ -1329,7 +1332,21 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       };
 
   Future<void> _start() async {
-    if (mounted) setState(() => _connecting = true);
+    if (!mounted) return;
+    setState(() {
+      _connecting = true;
+      // Anything written to this agent that never left the phone comes back with the
+      // screen - and it comes back FIRST, before the computer is asked anything.
+      //
+      // It used to be restored further down, after the status request had answered,
+      // which meant the one time it did not happen was the one time it mattered: a
+      // phone that cannot reach the computer is a phone whose messages are not
+      // getting through, so that is exactly when there is something waiting. Walking
+      // out of the chat and back in, with no signal, lost it. These words are local;
+      // they owe the computer nothing.
+      _msgs = [...?_unsent[widget.agent.slug]];
+      _histLoaded = true;
+    });
     try {
       // Whether talking is switched on, first: everything below depends on it.
       // `quick`: this screen reads two booleans out of that answer, and the full
@@ -1359,11 +1376,6 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       _histLoaded = true;      // nothing is coming unless it is asked for
       _resume = _openThreads[widget.agent.slug] ?? '';
       setState(() {
-        // Anything written to this agent that never left the phone comes back with
-        // the screen. A failed message used to live only in the list it was drawn
-        // in, so backing out of the chat - which is exactly what you do when
-        // something will not send - threw the words away for good.
-        _msgs = [...?_unsent[widget.agent.slug]];
         _ready = true;
         _error = '';
       });
@@ -1588,7 +1600,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       // its own, and the old one is no longer the one being had. Dropped rather than
       // merged: two threads interleaved by arrival time is nobody's conversation.
       final stuck = _msgs.where((m) => m['failed'] == true).toList();
-      if (!canResumeOver(_msgs, _session.isNotEmpty)) {
+      if (!canResumeOver(_msgs)) {
         setState(() => _resume = '');
         return;
       }
@@ -1803,11 +1815,23 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       final shown = reply.isEmpty ? tr('(sin respuesta)') : reply;
       _unqueue(mine);
       mine['failed'] = false;
+      // And this is a conversation of its own now, so the old one is no longer being
+      // offered. canResumeOver has refused to open it from this moment on anyway -
+      // the strip simply went on sitting there saying otherwise, above a live thread,
+      // showing the last line of a different one. A message that FAILED does not do
+      // this: nothing was said to anybody, and the offer still stands.
+      _resume = '';
       // The screen may be gone - somebody walked out of the chat while the agent was
       // thinking - and the answer still arrived. Drawing it is optional; telling them
       // about it is not.
       if (mounted) {
         setState(() {
+          // Whatever the status request said, or failed to say when the screen was
+          // opened with no signal: a turn that just came back from this agent is a
+          // better answer to "can I talk to it" than any question about it. Without
+          // this, rescuing a message offline left the owner looking at the reply with
+          // a composer that still said «no disponible» underneath.
+          _ready = true;
           _msgs = [
             ..._msgs.where(_notThinking),
             {
@@ -1908,37 +1932,50 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
   /// you that - and the thing the owner wants to press is next to their own words.
   Widget _failedRow(Map<String, dynamic> m, Color ink) {
     final faded = ink.withValues(alpha: 0.85);
+    // A Wrap rather than a Row: the sentence and the two buttons stay side by side
+    // while they fit and drop onto two lines when they do not, as a whole block each.
+    // As one Row the sentence was squeezed into whatever the buttons left over - on a
+    // German phone "Wurde nicht gesendet." came out as three stacked words beside the
+    // button, which is what a real phone showed and no test had thought to ask.
     return Padding(
       padding: const EdgeInsets.only(top: 6),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
+      child: Wrap(
+        crossAxisAlignment: WrapCrossAlignment.center,
+        spacing: 6,
         children: [
-          Icon(Icons.error_outline, size: 15, color: faded),
-          const SizedBox(width: 5),
-          Flexible(
-            child: Text(tr('No se envió.'),
-                style: TextStyle(fontSize: 12, color: faded)),
-          ),
-          const SizedBox(width: 4),
-          TextButton(
-            onPressed: _sending ? null : () => _retry(m),
-            style: TextButton.styleFrom(
-              foregroundColor: ink,
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              minimumSize: const Size(0, 32),
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          // Flexible, because a Row measures a child that is not flexible at its
+          // natural width - so a sentence in a language longer than Spanish runs out
+          // of the bubble instead of wrapping inside it.
+          Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(Icons.error_outline, size: 15, color: faded),
+            const SizedBox(width: 5),
+            Flexible(
+              child: Text(tr('No se envió.'),
+                  style: TextStyle(fontSize: 12, color: faded)),
             ),
-            child: Text(tr('Reintentar'),
-                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
-          ),
-          IconButton(
-            onPressed: _sending ? null : () => _discard(m),
-            icon: Icon(Icons.close, size: 16, color: faded),
-            tooltip: tr('Descartar'),
-            visualDensity: VisualDensity.compact,
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-          ),
+          ]),
+          Row(mainAxisSize: MainAxisSize.min, children: [
+            Flexible(
+                child: TextButton(
+              onPressed: _sending ? null : () => _retry(m),
+              style: TextButton.styleFrom(
+                foregroundColor: ink,
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                minimumSize: const Size(0, 32),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: Text(tr('Reintentar'),
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
+            )),
+            IconButton(
+              onPressed: _sending ? null : () => _discard(m),
+              icon: Icon(Icons.close, size: 16, color: faded),
+              tooltip: tr('Descartar'),
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+            ),
+          ]),
         ],
       ),
     );

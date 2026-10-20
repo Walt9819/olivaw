@@ -205,6 +205,76 @@ void main() {
     expect(find.text('Reintentar'), findsOneWidget);
   });
 
+  testWidgets('and it survives coming back with nothing answering at all',
+      (tester) async {
+    // The version of that which actually happens. The send failed because the
+    // computer could not be reached, and when the owner opens the agent again it
+    // still cannot - so the screen cannot ask whether talking is even switched on.
+    // The words are on this phone and owe that question nothing, but they used to be
+    // restored after it, which meant the one time they were not restored was the one
+    // time there was something to restore.
+    final link = linkThatWorks();
+    link.breaks['/api/talk/send'] = LinkError('No encuentro tu computadora.');
+    final agent = agentNamed('a-sin-senal');
+
+    await tester.pumpWidget(screen(link, agent));
+    await breathe(tester);
+    await type(tester, 'manda ese correo');
+    await tester.tap(find.byIcon(Icons.send));
+    await breathe(tester);
+    expect(find.text('No se envió.'), findsOneWidget);
+
+    // Out of the chat, and now nothing answers at all.
+    await tester.pumpWidget(MaterialApp(
+        theme: olivawLight, home: const Scaffold(body: Text('otra pantalla'))));
+    await breathe(tester, 4);
+    for (final route in ['/api/talk/status', '/api/talk/sessions',
+        '/api/talk/history', '/api/talk/new']) {
+      link.breaks[route] = LinkError('No encuentro tu computadora.');
+    }
+    await tester.pumpWidget(screen(link, agent));
+    await breathe(tester);
+
+    expect(find.text('manda ese correo'), findsOneWidget);
+    expect(find.text('Reintentar'), findsOneWidget);
+    // And the screen does not tell them they have never said anything.
+    expect(find.text('Todavía no os habéis dicho nada.'), findsNothing);
+  });
+
+  testWidgets('and rescuing it there gives the owner the box back', (tester) async {
+    // The screen could not ask whether talking was on, so it assumed not and left the
+    // composer dead. A reply from the agent settles the question.
+    final link = linkThatWorks();
+    link.breaks['/api/talk/send'] = LinkError('No encuentro tu computadora.');
+    final agent = agentNamed('a-caja');
+
+    await tester.pumpWidget(screen(link, agent));
+    await breathe(tester);
+    await type(tester, 'manda ese correo');
+    await tester.tap(find.byIcon(Icons.send));
+    await breathe(tester);
+
+    await tester.pumpWidget(MaterialApp(
+        theme: olivawLight, home: const Scaffold(body: Text('otra pantalla'))));
+    await breathe(tester, 4);
+    for (final route in ['/api/talk/status', '/api/talk/sessions',
+        '/api/talk/history']) {
+      link.breaks[route] = LinkError('No encuentro tu computadora.');
+    }
+    await tester.pumpWidget(screen(link, agent));
+    await breathe(tester);
+    expect(tester.widget<TextField>(find.byType(TextField)).enabled, isFalse);
+
+    // The road comes back, and the message is rescued.
+    link.breaks.remove('/api/talk/send');
+    link.answers['/api/talk/send'] = {'ok': true, 'reply': 'Hecho.'};
+    await tester.tap(find.text('Reintentar'));
+    await breathe(tester);
+
+    expect(find.text('Hecho.'), findsOneWidget);
+    expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
+  });
+
   testWidgets('giving up on it puts the words back in the box', (tester) async {
     // Discarding has to be how a message gets rewritten, not how it gets lost.
     final link = linkThatWorks();
@@ -222,6 +292,40 @@ void main() {
     expect(find.text('No se envió.'), findsNothing);
     final box = tester.widget<TextField>(find.byType(TextField));
     expect(box.controller?.text, 'manda ese correo');
+  });
+
+  testWidgets('the failure line is not squeezed into a column beside the button',
+      (tester) async {
+    // On the Fold's cover screen, in German, it was: the sentence and the two buttons
+    // were one Row, so "Wurde nicht gesendet." got whatever width the button left
+    // over and came out as three stacked words. The default test surface is 800
+    // logical pixels wide and hides it completely, so this asks on a real one.
+    tester.view.physicalSize = const Size(904, 2316);
+    tester.view.devicePixelRatio = 2.625;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    setLanguage(Lang.de);
+
+    final link = linkThatWorks();
+    link.breaks['/api/talk/send'] = LinkError('No encuentro tu computadora.');
+
+    await tester.pumpWidget(screen(link, agentNamed('a-aleman')));
+    await breathe(tester);
+    await type(tester, 'manda ese correo');
+    await tester.tap(find.byIcon(Icons.send));
+    await breathe(tester);
+
+    final line = find.text('Wurde nicht gesendet.');
+    expect(line, findsOneWidget);
+    // Measured as a share of the bubble rather than as a number of lines: how many
+    // lines a sentence needs is a question about the font, and the font here is the
+    // test one, where every glyph is a square. The bug was that the sentence got
+    // whatever the buttons left over - about a quarter of the bubble - so what has
+    // to be true is that it gets most of it.
+    final bubble = tester.getSize(find.text('manda ese correo')).width;
+    expect(tester.getSize(line).width, greaterThan(bubble * 0.6));
+    // And neither block ran out of the bubble on the way.
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('the offer to carry on says what the conversation was about',
@@ -247,5 +351,76 @@ void main() {
 
     expect(find.text('Seguir la conversación anterior'), findsOneWidget);
     expect(find.text('Hermes: Sí, esta mañana.'), findsOneWidget);
+  });
+
+  testWidgets('and it goes away once this screen is a conversation of its own',
+      (tester) async {
+    // It was already refusing to open at that point - dropping sixty old turns on
+    // top of a message that went through would throw that message away - so a strip
+    // still sitting there, showing the last line of a different conversation above a
+    // live one, was saying something that was not true any more.
+    final link = linkThatWorks();
+    link.answers['/api/talk/sessions'] = {
+      'ok': true,
+      'sessions': [
+        {'id': 's9'}
+      ],
+    };
+    link.answers['/api/talk/history'] = {
+      'ok': true,
+      'start': 0,
+      'messages': [
+        {'role': 'assistant', 'content': 'Sí, esta mañana.'},
+      ],
+    };
+    link.answers['/api/talk/send'] = {'ok': true, 'reply': 'Hecho.'};
+
+    await tester.pumpWidget(screen(link, agentNamed('a-oferta')));
+    await breathe(tester);
+    expect(find.text('Seguir la conversación anterior'), findsOneWidget);
+
+    await type(tester, 'otra cosa');
+    await tester.tap(find.byIcon(Icons.send));
+    await breathe(tester);
+
+    expect(find.text('Hecho.'), findsOneWidget);
+    expect(find.text('Seguir la conversación anterior'), findsNothing);
+  });
+
+  testWidgets('but a message that failed leaves the offer standing', (tester) async {
+    // The other side of the same rule: nothing was said to anybody, so the old
+    // conversation is still the one that was going on - and it arrives above the
+    // message still waiting to go, not instead of it.
+    final link = linkThatWorks();
+    link.answers['/api/talk/sessions'] = {
+      'ok': true,
+      'sessions': [
+        {'id': 's9'}
+      ],
+    };
+    link.answers['/api/talk/history'] = {
+      'ok': true,
+      'start': 0,
+      'messages': [
+        {'role': 'assistant', 'content': 'Sí, esta mañana.'},
+      ],
+    };
+    link.breaks['/api/talk/send'] = LinkError('No encuentro tu computadora.');
+
+    await tester.pumpWidget(screen(link, agentNamed('a-oferta-rota')));
+    await breathe(tester);
+    await type(tester, 'otra cosa');
+    await tester.tap(find.byIcon(Icons.send));
+    await breathe(tester);
+
+    expect(find.text('No se envió.'), findsOneWidget);
+    expect(find.text('Seguir la conversación anterior'), findsOneWidget);
+
+    // And opening it puts the old turns above the one that never left.
+    await tester.tap(find.text('Seguir la conversación anterior'));
+    await breathe(tester);
+    expect(find.text('Sí, esta mañana.'), findsOneWidget);
+    expect(find.text('otra cosa'), findsOneWidget);
+    expect(find.text('No se envió.'), findsOneWidget);
   });
 }
