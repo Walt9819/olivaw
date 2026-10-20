@@ -148,6 +148,21 @@ const Map<String, (String, String)> _table = {
   ),
   'Sin respuesta': ('No answer', 'Keine Antwort'),
   '(sin respuesta)': ('(no answer)', '(keine Antwort)'),
+  // On the owner's own bubble when it never reached the computer, beside the button
+  // that sends it again. Past tense and final on purpose: 'no se pudo enviar' invites
+  // the reading that it might still go on its own, and it will not.
+  'No se envió.': ('It was not sent.', 'Wurde nicht gesendet.'),
+  // After pressing "send it again" and finding it had got there after all: the
+  // request went out, the answer was lost on the way back, and nothing was sent a
+  // second time. Without this the retry looks like it did nothing.
+  'Ese mensaje ya había llegado.': (
+    'That message had already arrived.',
+    'Diese Nachricht war bereits angekommen.'
+  ),
+  // Who said the line shown under the offer to carry on the last conversation. The
+  // agent's own name goes there when the last word was the agent's.
+  'Tú': ('You', 'Du'),
+  'Un archivo': ('A file', 'Eine Datei'),
   'Adjuntar': ('Attach', 'Anhängen'),
   'Foto o imagen': ('Photo or image', 'Foto oder Bild'),
   'Archivo': ('File', 'Datei'),

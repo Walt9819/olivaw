@@ -1096,6 +1096,91 @@ Future<void> loadOpenThreads() async {
   _openThreads.addAll(await Store.loadThreads());
 }
 
+/// Messages that never reached the computer, by agent.
+///
+/// In memory and nowhere else, deliberately: the conversations live on the computer
+/// precisely so that a phone which is lost is not carrying a copy of them, and a
+/// message that failed to send is no different - it is the same words. What this map
+/// buys is the thing a phone really does lose, which is not a crash but a thumb:
+/// backing out of a chat, or opening another agent, while a message is sitting there
+/// unsent. Before this, leaving the screen was enough to throw it away.
+final Map<String, List<Map<String, dynamic>>> _unsent = {};
+
+/// Whether the end of a conversation already contains this message.
+///
+/// Asked before anything is sent a SECOND time. A send that times out is the one case
+/// where the request went out and only the answer was lost, and these agents do
+/// things - a second copy of "send that email" is not a cosmetic duplicate. The link
+/// refuses to repeat /api/talk/send for exactly that reason; a retry is the owner's
+/// decision, and this is what keeps that decision from quietly costing them twice.
+///
+/// Compared on the words, because nothing in the protocol hands back an id for a
+/// message - and the words are what would be said twice.
+/// May the last conversation still be dropped into this screen?
+///
+/// Not once anything has actually been SAID here: an offer to carry on the previous
+/// conversation, landing on top of a message somebody has already sent, is an offer to
+/// throw that message away.
+///
+/// A message that FAILED is not one of those. It was never said to anybody, and the
+/// conversation it was written for is the one arriving - so it keeps its place at the
+/// bottom and the old turns go in above it. Getting this wrong is quiet in both
+/// directions: too strict and a failed message blocks the offer for good, too loose
+/// and a sent one is overwritten.
+bool canResumeOver(List<Map<String, dynamic>> msgs, bool hasSession) {
+  if (hasSession) return false;
+  return msgs.every((m) => m['failed'] == true);
+}
+
+bool saidAlready(List<Map<String, dynamic>> tail, String outgoing) {
+  final want = outgoing.replaceAll(RegExp(r'\s+'), ' ').trim();
+  if (want.isEmpty) return false;
+  for (final m in tail) {
+    if (m['role'] != 'user') continue;
+    final said = (m['text'] ?? '').toString().replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (said == want) return true;
+  }
+  return false;
+}
+
+/// The line under "continue the last conversation": the last thing said in it.
+///
+/// The strip used to offer a conversation and say nothing about which one, so the
+/// only way to find out what it was about was to open it - and opening it is the one
+/// thing the strip exists to make optional. The computer's own `preview` is no help
+/// here: it is the FIRST message of the session, which for a conversation of sixty
+/// turns is wherever it started rather than where it was left.
+///
+/// Markdown is flattened rather than rendered. A hint is one line of plain words, and
+/// an agent's last turn is as likely as not to open with a heading or a bullet.
+String resumeHint(Map<String, dynamic> last, String agentName) {
+  var text = (last['text'] ?? '').toString();
+  // A reply quotes what it answers. The quote is not what was last said.
+  final r = splitReply(text);
+  if (r != null) text = r.$3;
+  text = text
+      .replaceAll(RegExp(r'^\s*#{1,6}\s+', multiLine: true), '')
+      .replaceAll(RegExp(r'^\s*[-*+]\s+', multiLine: true), '')
+      .replaceAll(RegExp(r'[*_`>]'), '')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+  if (text.isEmpty) {
+    // A turn can be a file and nothing else - a photo sent without a word, or a
+    // recording the computer could not make out.
+    final files = (last['files'] as List? ?? []);
+    final voice = files.any((f) => f is Map && f['kind'] == 'audio');
+    text = voice
+        ? tr('Nota de voz')
+        : files.isEmpty
+            ? ''
+            : tr('Un archivo');
+  }
+  if (text.isEmpty) return '';
+  if (text.length > 160) text = '${text.substring(0, 160)}…';
+  final who = last['role'] == 'user' ? tr('Tú') : agentName.trim();
+  return who.isEmpty ? text : '$who: $text';
+}
+
 /// A message that begins with a quote is a reply. Returns (who, what they said,
 /// the rest), or null.
 ///
@@ -1200,6 +1285,10 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
   /// own - an offer to "continue" over a message somebody has already sent is an
   /// offer to throw it away.
   String _resume = '';
+
+  /// The last thing said in that conversation, once it has been asked for. Empty
+  /// until then, and the strip simply says less.
+  String _resumeHint = '';
   String _session = '';
   bool _sending = false;
   String _error = '';
@@ -1270,9 +1359,15 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       _histLoaded = true;      // nothing is coming unless it is asked for
       _resume = _openThreads[widget.agent.slug] ?? '';
       setState(() {
+        // Anything written to this agent that never left the phone comes back with
+        // the screen. A failed message used to live only in the list it was drawn
+        // in, so backing out of the chat - which is exactly what you do when
+        // something will not send - threw the words away for good.
+        _msgs = [...?_unsent[widget.agent.slug]];
         _ready = true;
         _error = '';
       });
+      _resumeLast();
       if (_resume.isEmpty) {
         // Which conversation it WOULD be, asked for quietly in the background: the
         // strip says "continue" or it says nothing, and either way the page is
@@ -1285,6 +1380,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
           if (rows.isNotEmpty && rows.first is Map) {
             setState(() =>
                 _resume = ((rows.first as Map)['id'] ?? '').toString());
+            _resumeLast();
           }
         }).catchError((_) {});
       }
@@ -1410,20 +1506,37 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
   /// Not a modal, not a redirect: a line at the top of an empty page that can be
   /// ignored entirely. Tapping it loads the thread while the composer stays live.
   Widget _resumeStrip() {
-    return Container(
-      margin: const EdgeInsets.fromLTRB(14, 12, 14, 0),
-      decoration: BoxDecoration(
+    // What it was about, when the computer has said. While it is being fetched - and
+    // while the thread itself is being opened - the strip says the thing that is
+    // true then instead: none of this is in the way of writing.
+    final hint = (_resumeHint.isNotEmpty && !_histBusy) ? _resumeHint : '';
+    // Material rather than a decorated box: the tile paints its ink on the nearest
+    // Material above it, and a box with its own background in between hides the
+    // splash entirely. This strip is a thing you tap, and it was answering taps
+    // without showing that it had - the border moves onto the tile's own shape, which
+    // is also what clips the ink to the rounded corners.
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
+      child: Material(
         color: context.c.panel2,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: context.c.line),
-      ),
-      child: ListTile(
+        child: ListTile(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(color: context.c.line),
+        ),
         dense: true,
+        isThreeLine: hint.isNotEmpty,
         leading: Icon(Icons.history, size: 20, color: context.c.accent),
         title: Text(tr('Seguir la conversación anterior'),
             style: TextStyle(fontSize: 13, color: context.c.ink)),
-        subtitle: Text(tr('Mientras tanto puedes escribir o grabar.'),
-            style: TextStyle(fontSize: 11, color: context.c.muted)),
+        subtitle: hint.isEmpty
+            ? Text(tr('Mientras tanto puedes escribir o grabar.'),
+                style: TextStyle(fontSize: 11, color: context.c.muted))
+            : Text(hint,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 11, color: context.c.muted)),
         trailing: _histBusy
             ? SizedBox(
                 width: 16,
@@ -1433,7 +1546,33 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
             : null,
         onTap: _histBusy ? null : _resumeThread,
       ),
+      ),
     );
+  }
+
+  /// The last thing said in the conversation being offered.
+  ///
+  /// One small request, in the background, after the page is already usable - the
+  /// same bargain the offer itself is made on. `limit` is small but not 1: the
+  /// computer filters tool calls and reasoning out of a transcript already, and this
+  /// side filters again, so asking for a handful leaves something to show if the very
+  /// last row is one the phone throws away.
+  Future<void> _resumeLast() async {
+    final id = _resume;
+    if (id.isEmpty) return;
+    try {
+      final h = await widget.link.reach('POST', '/api/talk/history',
+          body: _body({'session_id': id, 'limit': 3}));
+      // Not for the conversation being offered any more: the owner has opened one,
+      // started another, or this answer simply lost a race with a newer question.
+      if (!mounted || h['ok'] != true || _resume != id) return;
+      final rows = _readable(h['messages'] as List? ?? []);
+      if (rows.isEmpty) return;
+      setState(() => _resumeHint = resumeHint(rows.last, widget.agent.name));
+    } catch (_) {
+      // A hint that could not be fetched is a hint not shown. The offer still works,
+      // and an error strip over a line of nicety would be a worse screen.
+    }
   }
 
   /// Fetch the last conversation into this screen, without taking it over.
@@ -1448,13 +1587,14 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       // Anything typed and SENT while this was in flight has started a conversation of
       // its own, and the old one is no longer the one being had. Dropped rather than
       // merged: two threads interleaved by arrival time is nobody's conversation.
-      if (_msgs.isNotEmpty || _session.isNotEmpty) {
+      final stuck = _msgs.where((m) => m['failed'] == true).toList();
+      if (!canResumeOver(_msgs, _session.isNotEmpty)) {
         setState(() => _resume = '');
         return;
       }
       setState(() {
         _session = id;
-        _msgs = _readable(h['messages'] as List? ?? []);
+        _msgs = [..._readable(h['messages'] as List? ?? []), ...stuck];
         _histStart = (h['start'] as num?)?.toInt() ?? 0;
         _histMore = h['has_more'] == true;
         _histLoaded = true;
@@ -1543,35 +1683,54 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
     // A message can be files alone - an agent that is sent a screenshot and nothing
     // else has still been asked something.
     if ((text.isEmpty && _attached.isEmpty) || _sending) return;
-    final files = [for (final f in _attached) f['id']];
-    final shownNames = [for (final f in _attached) (f['name'] ?? '').toString()];
     final outgoing = _withQuote(text);
+    final mine = <String, dynamic>{
+      'role': 'user',
+      'text': outgoing,
+      // What is drawn, and what goes on the wire. The same thing here; not for a
+      // voice note, where the bubble shows the transcript and the agent is sent that
+      // transcript under whatever is being replied to.
+      'sendText': outgoing,
+      'files': [for (final f in _attached) (f['name'] ?? '').toString()],
+      'sendFiles': [for (final f in _attached) f['id']],
+    };
     setState(() {
-      _sending = true;
-      _msgs = [
-        ..._msgs,
-        {'role': 'user', 'text': outgoing, 'files': shownNames},
-        {'role': 'assistant', 'pending': true},
-      ];
+      _msgs = [..._msgs, mine];
       _input.clear();
       _attached.clear();
       _replyTo = null;
     });
+    await _deliver(mine);
+  }
+
+  /// Everything except the bubble that says the agent is thinking.
+  static bool _notThinking(Map<String, dynamic> m) =>
+      m['role'] != 'assistant' || m['pending'] != true;
+
+  /// One message on its way to the computer - the first time, or the fifth.
+  ///
+  /// `mine` is already the last bubble in the conversation and carries everything
+  /// needed to send it again: the words, the files, and the conversation it belongs
+  /// to. That is the whole point. A send that failed used to leave the bubble sitting
+  /// there looking exactly like one that had arrived, with the words cleared out of
+  /// the box underneath and no way to get them back - and on a phone that walks
+  /// between wifi and mobile data, which is the phone this is for, that happens often
+  /// enough to lose real messages.
+  Future<void> _deliver(Map<String, dynamic> mine) async {
+    if (_sending) return;
+    final outgoing = (mine['sendText'] ?? mine['text'] ?? '').toString();
+    final files = [for (final f in (mine['sendFiles'] as List? ?? [])) f];
+    setState(() {
+      _sending = true;
+      _error = '';
+      mine['failed'] = false;
+      _msgs = [
+        ..._msgs.where(_notThinking),
+        {'role': 'assistant', 'pending': true},
+      ];
+    });
     _toBottom();
     try {
-      // The conversation is created by the first thing said in it.
-      if (_session.isEmpty) {
-        final made = await widget.link.reach('POST', '/api/talk/new', body: _body());
-        if (made['ok'] != true) {
-          throw LinkError(tr((made['detail'] ?? tr('No se pudo abrir la conversación.')).toString()));
-        }
-        _session = ((made['session'] as Map?)?['id'] ?? made['id'] ?? '').toString();
-        if (_session.isEmpty) {
-          throw LinkError('El computadora no abrió ninguna conversación.');
-        }
-        _openThreads[widget.agent.slug] = _session;
-        await Store.saveThreads(_openThreads);
-      }
       // From here the agent may take minutes. The service keeps this app out of the
       // range where Android freezes it, so putting the phone away does not lose the
       // wait. The computer would finish the turn either way - this is about whether
@@ -1583,6 +1742,53 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
         if (!await Native.canNotify()) await Native.askNotify();
       }
       await Native.waitStart(widget.agent.name);
+      // The conversation this message belongs to. A retry after the screen was closed
+      // and opened again has no session in hand any more, and the thread it was
+      // written in is the thread it should still go to.
+      if (_session.isEmpty) _session = (mine['session'] ?? '').toString();
+      // The conversation is created by the first thing said in it.
+      if (_session.isEmpty) {
+        final made = await widget.link.reach('POST', '/api/talk/new', body: _body());
+        if (made['ok'] != true) {
+          throw LinkError(tr((made['detail'] ?? tr('No se pudo abrir la conversación.')).toString()));
+        }
+        _session = ((made['session'] as Map?)?['id'] ?? made['id'] ?? '').toString();
+        if (_session.isEmpty) {
+          throw LinkError(tr('La computadora no abrió ninguna conversación.'));
+        }
+        _openThreads[widget.agent.slug] = _session;
+        await Store.saveThreads(_openThreads);
+      } else if (mine['tried'] == true) {
+        // It may already be there. Silence after a request has gone out is the one
+        // failure that can mean "it arrived and the answer was lost", and these
+        // agents DO things - a second copy of "send that email" is not a cosmetic
+        // duplicate. So before saying it twice, look at what the computer has.
+        if (await _alreadyThere(outgoing)) {
+          _unqueue(mine);
+          // What the computer has IS the conversation now, so it is read back whole -
+          // including the answer, if the agent has finished one. Anything else still
+          // waiting to be sent is put back underneath afterwards: the reload knows
+          // nothing about those, and they would otherwise vanish off a screen that
+          // still has them queued.
+          final waiting = [...?_unsent[widget.agent.slug]];
+          setState(() => _msgs = _msgs.where(_notThinking).toList());
+          await _history();
+          if (!mounted) return;
+          if (waiting.isNotEmpty) {
+            setState(() => _msgs = [
+                  ..._msgs.where((x) => !waiting.any((y) => identical(x, y))),
+                  ...waiting,
+                ]);
+          }
+          // Said out loud, because the owner pressed a button that promised to send
+          // it and nothing was sent. Silence here looks like the retry did nothing.
+          _say(tr('Ese mensaje ya había llegado.'));
+          _toBottom();
+          return;
+        }
+      }
+      mine['session'] = _session;
+      mine['tried'] = true;
       final res = await widget.link.reach('POST', '/api/talk/send',
           body: _body({
             'session_id': _session,
@@ -1595,30 +1801,147 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       // find it would also drag in every tool call the agent made on the way.
       final reply = (res['reply'] ?? '').toString().trim();
       final shown = reply.isEmpty ? tr('(sin respuesta)') : reply;
-      setState(() {
-        _msgs = [
-          ..._msgs.where((m) => m['pending'] != true),
-          {
-            'role': 'assistant',
-            'text': shown,
-            if (res['files'] is List) 'files': res['files'],
-          },
-        ];
-      });
-      _toBottom();
+      _unqueue(mine);
+      mine['failed'] = false;
+      // The screen may be gone - somebody walked out of the chat while the agent was
+      // thinking - and the answer still arrived. Drawing it is optional; telling them
+      // about it is not.
+      if (mounted) {
+        setState(() {
+          _msgs = [
+            ..._msgs.where(_notThinking),
+            {
+              'role': 'assistant',
+              'text': shown,
+              if (res['files'] is List) 'files': res['files'],
+            },
+          ];
+        });
+        _toBottom();
+      }
       // Only when they are not already looking at it.
       if (!_inFront) {
         await Native.notify(widget.agent.name, shown);
       }
     } catch (e) {
-      setState(() {
-        _msgs = _msgs.where((m) => m['pending'] != true).toList();
-        _error = humanError(e);
-      });
+      // Filed first and redrawn second, in that order and deliberately: leaving the
+      // chat is precisely what somebody does while a message refuses to go, and the
+      // words have to survive that. They are plain data in a map; only the redraw
+      // needs a screen.
+      _queue(mine);
+      mine['failed'] = true;
+      mine['pending'] = false;
+      if (mounted) {
+        setState(() {
+          _msgs = _msgs.where(_notThinking).toList();
+          _error = humanError(e);
+        });
+      }
     } finally {
       await Native.waitStop();
       if (mounted) setState(() => _sending = false);
     }
+  }
+
+  /// Is this message already in the conversation on the computer?
+  ///
+  /// A failure to ask is not a reason to refuse: silence here means only that we do
+  /// not know, and between a message said twice and a message lost, the owner pressed
+  /// a button that says "send it again".
+  Future<bool> _alreadyThere(String outgoing) async {
+    if (_session.isEmpty) return false;
+    try {
+      final h = await widget.link.reach('POST', '/api/talk/history',
+          body: _body({'session_id': _session, 'limit': 4}));
+      if (h['ok'] != true) return false;
+      return saidAlready(_readable(h['messages'] as List? ?? []), outgoing);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Send it again, picking up at whichever step failed.
+  Future<void> _retry(Map<String, dynamic> m) async {
+    if (_sending) return;
+    // A recording whose words never came back has to be listened to again first.
+    if (m['needsVoice'] == true) return _deliverVoice(m);
+    return _deliver(m);
+  }
+
+  /// Take a message that never left back out of the conversation.
+  ///
+  /// The words go back into the box rather than nowhere. Discarding is how somebody
+  /// rewrites a message that is not going to go through as it stands, and it must not
+  /// be the one gesture on this screen that loses it. A recording is the exception -
+  /// there is nothing to put back in a box - so that one really does go.
+  void _discard(Map<String, dynamic> m) {
+    _unqueue(m);
+    final back = m['voice'] == true ? '' : (m['text'] ?? '').toString();
+    setState(() {
+      _msgs = _msgs.where((x) => !identical(x, m)).toList();
+      if (back.isNotEmpty) {
+        // Without the quote: the reply it was answering is chosen again by swiping,
+        // and a composer full of markdown is not a message anybody wrote.
+        _input.text = splitReply(back)?.$3 ?? back;
+        _input.selection = TextSelection.collapsed(offset: _input.text.length);
+      }
+    });
+  }
+
+  void _queue(Map<String, dynamic> m) {
+    final list = _unsent.putIfAbsent(widget.agent.slug, () => []);
+    if (!list.any((x) => identical(x, m))) list.add(m);
+  }
+
+  void _unqueue(Map<String, dynamic> m) {
+    final list = _unsent[widget.agent.slug];
+    if (list == null) return;
+    list.removeWhere((x) => identical(x, m));
+    if (list.isEmpty) _unsent.remove(widget.agent.slug);
+  }
+
+  /// What a message that did not get through offers.
+  ///
+  /// On the bubble rather than in the strip at the top: the strip says what went
+  /// wrong, and this says which message it went wrong for. In a conversation where
+  /// two things were sent and one of them failed, the top of the screen cannot tell
+  /// you that - and the thing the owner wants to press is next to their own words.
+  Widget _failedRow(Map<String, dynamic> m, Color ink) {
+    final faded = ink.withValues(alpha: 0.85);
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.error_outline, size: 15, color: faded),
+          const SizedBox(width: 5),
+          Flexible(
+            child: Text(tr('No se envió.'),
+                style: TextStyle(fontSize: 12, color: faded)),
+          ),
+          const SizedBox(width: 4),
+          TextButton(
+            onPressed: _sending ? null : () => _retry(m),
+            style: TextButton.styleFrom(
+              foregroundColor: ink,
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              minimumSize: const Size(0, 32),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            child: Text(tr('Reintentar'),
+                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
+          ),
+          IconButton(
+            onPressed: _sending ? null : () => _discard(m),
+            icon: Icon(Icons.close, size: 16, color: faded),
+            tooltip: tr('Descartar'),
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+          ),
+        ],
+      ),
+    );
   }
 
   /// Talking is switched on for this agent, so there is somewhere for a message to go.
@@ -1924,19 +2247,43 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
   /// conversation shows. The computer does the listening, and the words it heard are
   /// what the agent reads and what gets folded away under the note for checking.
   Future<void> _sendVoice(PickedFile note) async {
+    if (_sending) return;
     final mine = <String, dynamic>{
       'role': 'user',
       'text': '',
       'voice': true,
+      // Kept apart from the bubble's own `files`, which is what the computer said
+      // about the note once it had filed it. These two are what a retry needs.
+      'voiceName': note.name,
       'audioBytes': note.bytes,
+      'needsVoice': true,
       'files': [
         {'name': note.name, 'kind': 'audio'}
       ],
       'pending': true,
     };
+    setState(() => _msgs = [..._msgs, mine]);
+    _toBottom();
+    await _deliverVoice(mine);
+  }
+
+  /// A recording on its way up: first the words, then the message.
+  ///
+  /// Two requests, and either of them can fail. Split from _deliver so that sending
+  /// again picks up at the step that failed - a note that was transcribed and then
+  /// failed to send does not need listening to twice, and the owner should not be
+  /// paying a second transcription for a lost wifi.
+  Future<void> _deliverVoice(Map<String, dynamic> mine) async {
+    if (mine['needsVoice'] != true) return _deliver(mine);
+    if (_sending) return;
+    final bytes = mine['audioBytes'] as Uint8List?;
+    final name = (mine['voiceName'] ?? '').toString();
+    if (bytes == null || name.isEmpty) return;
     setState(() {
       _sending = true;
-      _msgs = [..._msgs, mine];
+      _error = '';
+      mine['failed'] = false;
+      mine['pending'] = true;
     });
     _toBottom();
     try {
@@ -1948,8 +2295,12 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       // One call does both: the recording is kept in the agent's folder AND read out
       // into words. Keeping it is the point of showing a transcript at all - a name
       // Whisper got wrong can still be checked against what was actually said.
+      //
+      // Sending this one twice can leave two copies of the recording in the agent's
+      // folder, and that is the right side to err on: a duplicate file costs disk,
+      // and the alternative costs the owner the only copy of what they said.
       final heard = await widget.link.reach('POST', '/api/talk/voice',
-          body: _body({'name': note.name, 'data': base64Encode(note.bytes)}),
+          body: _body({'name': name, 'data': base64Encode(bytes)}),
           wait: Link.thinkingWait);
       if (heard['ok'] != true) {
         throw LinkError(
@@ -1958,65 +2309,40 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       final text = (heard['text'] ?? '').toString().trim();
       if (text.isEmpty) throw LinkError(tr('No entendí nada en esa nota.'));
       final rec = (heard['file'] as Map?)?.cast<String, dynamic>() ??
-          <String, dynamic>{'name': note.name, 'kind': 'audio'};
+          <String, dynamic>{'name': name, 'kind': 'audio'};
       setState(() {
         mine['text'] = text;
+        // The quote is consumed here, where the words first exist - not on arrival of
+        // the reply, which is after the owner may have swiped at something else.
+        mine['sendText'] = _withQuote(text);
+        mine['sendFiles'] = rec['id'] != null ? [rec['id']] : <dynamic>[];
         mine['files'] = [rec];
         mine['pending'] = false;
-        _msgs = [..._msgs, {'role': 'assistant', 'pending': true}];
-      });
-      _toBottom();
-
-      if (_session.isEmpty) {
-        final made = await widget.link.reach('POST', '/api/talk/new', body: _body());
-        if (made['ok'] != true) {
-          throw LinkError(
-              tr((made['detail'] ?? tr('No se pudo abrir la conversación.')).toString()));
-        }
-        _session = ((made['session'] as Map?)?['id'] ?? made['id'] ?? '').toString();
-        if (_session.isEmpty) {
-          throw LinkError(tr('La computadora no abrió ninguna conversación.'));
-        }
-        _openThreads[widget.agent.slug] = _session;
-        await Store.saveThreads(_openThreads);
-      }
-      // The agent gets the words - it cannot listen - with the recording attached so
-      // its own tools can open the thing that was actually said.
-      final res = await widget.link.reach('POST', '/api/talk/send',
-          body: _body({
-            'session_id': _session,
-            'text': _withQuote(text),
-            if (rec['id'] != null) 'files': [rec['id']],
-          }),
-          wait: Link.thinkingWait);
-      if (res['ok'] != true) {
-        throw LinkError(tr((res['detail'] ?? tr('Sin respuesta')).toString()));
-      }
-      final reply = (res['reply'] ?? '').toString().trim();
-      final shown = reply.isEmpty ? tr('(sin respuesta)') : reply;
-      setState(() {
+        mine['needsVoice'] = false;
         _replyTo = null;
-        _msgs = [
-          ..._msgs.where((m) => m['pending'] != true || m == mine),
-          {
-            'role': 'assistant',
-            'text': shown,
-            if (res['files'] is List) 'files': res['files'],
-          },
-        ];
       });
-      _toBottom();
-      if (!_inFront) await Native.notify(widget.agent.name, shown);
     } catch (e) {
-      setState(() {
-        _msgs = _msgs.where((m) => m['pending'] != true || m == mine).toList();
-        mine['pending'] = false;
-        _error = humanError(e);
-      });
-    } finally {
       await Native.waitStop();
-      if (mounted) setState(() => _sending = false);
+      _queue(mine);
+      mine['pending'] = false;
+      mine['failed'] = true;
+      if (mounted) {
+        setState(() {
+          _error = humanError(e);
+          _sending = false;
+        });
+      }
+      return;
     }
+    // The service stays up across the two requests rather than stopping between them:
+    // the gap is where Android would be free to freeze the app, and the wait is one
+    // wait as far as the owner is concerned.
+    if (!mounted) {
+      await Native.waitStop();
+      return;
+    }
+    setState(() => _sending = false);
+    await _deliver(mine);
   }
 
   Future<void> _recordCancel() async {
@@ -2519,7 +2845,11 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
                   borderRadius: BorderRadius.circular(16),
                   // The match being looked at gets a ring. Without it, scrolling to a
                   // result lands you in a wall of bubbles with no idea which one it is.
-                  border: (_isCurrentHit(m) || _isFlashed(m))
+                  // So does a message that never left: the one other bubble on this
+                  // screen that must not read as an ordinary, delivered one.
+                  border: (_isCurrentHit(m) ||
+                          _isFlashed(m) ||
+                          m['failed'] == true)
                       ? Border.all(color: context.c.warn, width: 2)
                       : mine
                           ? null
@@ -2527,6 +2857,28 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
                 ),
                 child: Builder(builder: (bc) {
                   final ink = mine ? context.c.accentInk : context.c.ink;
+                  // A message that never left says so underneath itself, next to the
+                  // button that sends it again. Wrapped round the ordinary body
+                  // rather than replacing it: what failed is still a message, still
+                  // the one the owner wrote, and still worth reading back.
+                  if (m['failed'] == true) {
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [_bubbleBody(bc, m, mine, ink), _failedRow(m, ink)],
+                    );
+                  }
+                  return _bubbleBody(bc, m, mine, ink);
+                }),
+              ),
+            );
+  }
+
+  /// What is drawn inside a bubble: the words, the quote above them when it is a
+  /// reply, the files under them - or the single widget that is all three at once,
+  /// which is what a voice note is.
+  Widget _bubbleBody(
+      BuildContext bc, Map<String, dynamic> m, bool mine, Color ink) {
                   // A voice note on its way up is pending too, but it is a note, not an
                   // agent thinking - it has a recording to show and a spinner of its own.
                   if (m['pending'] == true && m['voice'] != true) {
@@ -2599,9 +2951,6 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
                         ),
                     ],
                   );
-                }),
-              ),
-            );
   }
 }
 
