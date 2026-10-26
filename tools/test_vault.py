@@ -413,6 +413,45 @@ try:
         ok("a flag naming somebody else is refused", True)
     ok("and the refusal names both", "heraldo" in _said and "forja" in _said, _said)
 
+    # ── standing somewhere else ──────────────────────────────────────────────────
+    # A turn cds. The agent's process starts in its workspace, and the first time it
+    # looks at a file anywhere else it is no longer standing there - at which point
+    # the old check matched nothing and quietly answered "default", handing an agent
+    # the MAIN agent's keys. Measured on a live install: in its own workspace Heraldo
+    # saw none of its keys, and one folder away it saw the owner's two.
+    #
+    # The supervisor passes each agent its workspace as CLAUDE_BRIDGE_WORKSPACE and
+    # the bridge starts the turn there. That says where the agent lives rather than
+    # where its shell is standing, and no cd can change it.
+    _elsewhere = os.path.join(SAND, "nowhere")
+    os.makedirs(_elsewhere, exist_ok=True)
+    os.chdir(_elsewhere)
+    os.environ["CLAUDE_BRIDGE_WORKSPACE"] = _ws_heraldo
+    try:
+        ok("an agent that has cd-ed away is still itself",
+           CLI.whoami("") == "heraldo")
+        # The hole: with nothing matching, a stated --agent used to be honoured, so
+        # the one case an agent can arrange for itself was the one that let it name
+        # somebody else.
+        try:
+            CLI.whoami("default")
+            ok("and it still may not claim to be the main agent", False, "allowed")
+        except SystemExit:
+            ok("and it still may not claim to be the main agent", True)
+    finally:
+        os.environ.pop("CLAUDE_BRIDGE_WORKSPACE", None)
+
+    # With no workspace to go on at all - somebody running this by hand - the main
+    # agent is the answer, but a flag still cannot turn that into somebody else.
+    os.chdir(_elsewhere)
+    ok("outside everything, it is the main agent", CLI.whoami("") == "default")
+    try:
+        CLI.whoami("heraldo")
+        ok("and a flag cannot make it another agent", False, "allowed")
+    except SystemExit:
+        ok("and a flag cannot make it another agent", True)
+    os.chdir(_ws_heraldo)
+
     # Nothing this tool prints may contain a value - there is no command that returns
     # one, and `list` is the one that comes closest.
     import contextlib

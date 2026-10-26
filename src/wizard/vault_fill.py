@@ -49,6 +49,31 @@ def _targets(port):
                       u"¿Está encendido su modo navegador?" % str(e)[:80])
 
 
+def _browser_port(agent):
+    """The port this agent's own browser is answering on, right now.
+
+    Not browser_setup.port_for() alone: that is the function that ALLOCATES a port for a
+    new window, and when the configured one is not cleanly this agent's it falls through
+    to "the first free port". A free port is by definition one with no browser on it, so
+    the mistake arrived as a connection error from somewhere deep in the fill instead of
+    as a sentence about the browser.
+
+    Typing a password is not a moment for guessing which window is which, so this
+    verifies the port is answering as a browser before anything is unsealed, and says so
+    plainly when it is not.
+    """
+    port = browser_setup.port_for(agent if agent != "default" else None)
+    try:
+        urllib.request.urlopen("http://127.0.0.1:%d/json/version" % int(port),
+                               timeout=TIMEOUT).read()
+    except Exception:  # noqa: BLE001
+        raise Refused(
+            u"No encuentro el navegador de este agente (debería estar en el puerto "
+            u"%s y ahí no contesta nadie). Ábrelo desde la consola, en «Navegador», "
+            u"y vuelve a intentarlo." % port)
+    return port
+
+
 def _page(port, want_url=""):
     """The page to type into: the one asked for, else the frontmost real page."""
     pages = [t for t in _targets(port)
@@ -157,7 +182,7 @@ def fill(install_dir, agent, platform_id, field, approved=False, selector="",
         raise Refused(u"Esa llave guarda %s, no «%s»."
                       % (", ".join(row["fields"]) or u"nada", field))
 
-    port = browser_setup.port_for(agent if agent != "default" else None)
+    port = _browser_port(agent)
     target = _page(port, page_url)
     here = target.get("url") or ""
     if row["url"] and not same_site(row["url"], here):

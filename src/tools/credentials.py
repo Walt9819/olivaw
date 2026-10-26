@@ -58,28 +58,57 @@ def install_dir():
     return agents_registry.install_root()
 
 
+def _inside(path, workspaces):
+    """The agent whose workspace contains `path`, or ""."""
+    if not path:
+        return ""
+    here = os.path.realpath(path)
+    for ws, slug in workspaces:
+        if here == ws or here.startswith(ws + os.sep):
+            return slug
+    return ""
+
+
 def whoami(stated=""):
     """Which agent is running this.
 
-    Taken from the workspace this is running IN, not from a flag: every agent runs the
-    same scripts as the same user, so a flag is a request, not an identity. The folder
-    the process is standing in is the one thing that differs between them.
+    Taken from the workspace, not from a flag: every agent runs the same scripts as the
+    same user, so a flag is a request, not an identity.
 
-    A stated --agent is allowed to AGREE and nothing else. Disagreeing is worth saying
-    out loud rather than quietly honouring, because the only reason to pass a name that
-    is not yours is to use keys that are not yours.
+    Which workspace, though, is the part that was wrong. It used to be "whatever folder
+    this process is standing in", and a turn moves out of that folder the first time the
+    agent cds anywhere. When nothing matched, the answer was a silent "default" - so an
+    agent in its own workspace found none of its keys, while the same agent one folder
+    away was handed the DEFAULT agent's. Backwards in both directions at once.
+
+    The supervisor passes each agent its workspace as CLAUDE_BRIDGE_WORKSPACE and the
+    bridge runs the turn with cwd set to it. The variable is the better of the two: it
+    says where the agent LIVES rather than where its shell is standing, and no amount of
+    cd changes it. The directory is still read, as the answer for anyone running this by
+    hand.
+
+    A stated --agent may AGREE and nothing else - including when the workspace says
+    "default". That last part is the hole this closes: `--agent` used to become a real
+    identity the moment the directory failed to match, which is exactly the case an
+    agent can arrange for itself.
     """
-    here = os.path.realpath(os.getcwd())
-    found = ""
-    for row in agents_registry.list_agents(install_dir()):
+    rows = agents_registry.list_agents(install_dir())
+    workspaces = []
+    for row in rows:
         ws = os.path.realpath(row.get("workspace") or "")
-        if ws and (here == ws or here.startswith(ws + os.sep)):
-            found = row.get("slug") or row.get("profile") or ""
-            break
-    if stated and found and vault._slug(stated) != vault._slug(found):
-        raise SystemExit(u"Estás en el espacio de %s, así que esas son las llaves que "
-                         u"puedo usar, no las de %s." % (found, stated))
-    return found or vault._slug(stated or "default")
+        slug = row.get("slug") or row.get("profile") or ""
+        if ws and slug:
+            workspaces.append((ws, slug))
+    found = (_inside(os.environ.get("CLAUDE_BRIDGE_WORKSPACE") or "", workspaces)
+             or _inside(os.getcwd(), workspaces))
+    # No extra agent owns this workspace, so this is the main agent. Its workspace is
+    # not in the registry - only the extra ones are - which is why this is an answer
+    # and not a fallback.
+    me = found or "default"
+    if stated and vault._slug(stated) != vault._slug(me):
+        raise SystemExit(u"Estas llaves se usan desde el espacio de %s, así que son "
+                         u"las suyas las que puedo usar, no las de %s." % (me, stated))
+    return me
 
 
 def cmd_list(args):
@@ -90,9 +119,14 @@ def cmd_list(args):
         return 0
     if not rows:
         print(u"No tienes ninguna llave guardada.")
-        print(u"Si necesitas entrar en algún sitio, pídele a la dueña que la añada en "
-              u"la consola, en «Llaves y contraseñas». Nunca le pidas la contraseña "
-              u"por aquí.")
+        # Said explicitly, because the owner is usually looking at a console with keys
+        # in it while the agent reports having none: they are held per agent, and one
+        # saved for another agent is not yours. Without this line both sides think the
+        # other is broken.
+        print(u"Las llaves se guardan por agente, y la que tenga otro no es tuya.")
+        print(u"Si necesitas entrar en algún sitio, pídele a la dueña que añada una "
+              u"para TI (%s) en la consola, en «Llaves y contraseñas». Nunca le pidas "
+              u"la contraseña por aquí." % agent)
         return 0
     print(u"Llaves de %s:" % agent)
     for r in rows:
