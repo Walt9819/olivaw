@@ -51,6 +51,16 @@ EXEMPT = {
     os.path.join("wizard", "obsidian.py"): "GUI app (Obsidian)",
 }
 
+# Programs that do not exist on Windows, so spawning them cannot open a window there.
+# Named rather than guessed: the list is short, every entry is a platform's own
+# credential tool, and a spawn of anything else in those files is still audited.
+NOT_ON_WINDOWS = {
+    "security",      # macOS Keychain
+    "secret-tool",   # Linux libsecret
+    "open",          # macOS
+    "xdg-open",      # Linux
+}
+
 # Spawns that pass a literal creationflags instead of quiet(), justified per file.
 INLINE_OK = {
     # documented stdlib-only module: must not import the rest of Olivaw
@@ -101,6 +111,24 @@ def is_hidden(call, inline_name):
     return False
 
 
+def _first_arg_program(call):
+    """The program a spawn runs, when it is written as a literal list. "" otherwise.
+
+    Only the literal form is read on purpose: a command built at runtime could be
+    anything, and anything is exactly what this audit must keep checking.
+    """
+    if not call.args:
+        return ""
+    first = call.args[0]
+    if isinstance(first, (ast.List, ast.Tuple)) and first.elts:
+        head = first.elts[0]
+        if isinstance(head, ast.Constant) and isinstance(head.value, str):
+            return head.value
+    if isinstance(first, ast.Constant) and isinstance(first.value, str):
+        return first.value
+    return ""
+
+
 def test_every_spawn_in_src_is_windowless():
     audited = 0
     for path in py_files(SRC):
@@ -109,6 +137,8 @@ def test_every_spawn_in_src_is_windowless():
             continue
         tree = ast.parse(io.open(path, encoding="utf-8").read())
         for call in spawn_calls(tree):
+            if _first_arg_program(call) in NOT_ON_WINDOWS:
+                continue
             audited += 1
             ok(is_hidden(call, INLINE_OK.get(rel)),
                "%s:%d spawns a child without hiding its console" % (rel, call.lineno))

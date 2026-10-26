@@ -53,6 +53,11 @@ def main():
                     encoding="utf-8").read()
     rendered = set(re.findall(r'id="([A-Za-z0-9_]+)"', src))
     rendered |= set(re.findall(r'chLine\("([A-Za-z0-9_]+)"\)', src))
+    # An element built in code carries its id as a property rather than as an
+    # attribute inside a template string: bar.id = "staleBar". Reading only id="..."
+    # reported every one of those as never rendered - a scanner crying wolf about code
+    # that is perfectly fine, and a scanner people learn to ignore is worse than none.
+    rendered |= set(re.findall(r'\.id\s*=\s*"([A-Za-z0-9_]+)"', src))
     rendered |= set(re.findall(r'id="([A-Za-z0-9_]+)"', shell))
     # Ids the code looks up.
     referenced = set(re.findall(r'\bel\("([A-Za-z0-9_]+)"\)', src))

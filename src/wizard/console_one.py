@@ -93,8 +93,13 @@ def retire(note):
     try:
         if os.name == "nt":
             import subprocess
+
+            from winspawn import quiet
+            # quiet(), or retiring a console flashes a console - which is precisely
+            # what the owner is not supposed to see and what tools/test_nowindow.py
+            # exists to stop.
             subprocess.run(["taskkill", "/PID", str(pid), "/F"],
-                           capture_output=True, check=False)
+                           capture_output=True, check=False, **quiet())
         else:
             import signal
             os.kill(pid, signal.SIGTERM)

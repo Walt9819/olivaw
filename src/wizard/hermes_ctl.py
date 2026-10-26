@@ -226,9 +226,60 @@ def pairing_revoke(platform, user_id, hermes=None, profile=None):
     return {"ok": r["ok"], "detail": (r["out"] or r["err"])[:300]}
 
 
+# Where the status of OTHER agents begins. Everything below it is about somebody else
+# and must not answer a question about this one.
+_GW_OTHERS = re.compile(r"(?im)^\s*other profiles\b")
+
+# A line saying this gateway is NOT up. Checked first, because every one of these
+# sentences contains a word that also appears in the ones saying it IS up.
+_GW_DOWN = re.compile(
+    r"\bnot\s+(?:currently\s+)?(?:running|active|online|supervised|installed)\b"
+    r"|\binactive\b|\bstopped\b|\bno\s+gateway\b", re.I)
+
+# A pid is the one thing every "it is up" line has and no "it is down" line does - and
+# the only signal that survives the wording changing between platforms.
+_GW_PID = re.compile(r"\bpid\b\W{0,3}\d+", re.I)
+_GW_UP = re.compile(r"\b(running|active|online|supervised)\b", re.I)
+
+
+def gateway_running_from(out):
+    """Is THIS gateway up, from what `hermes gateway status` printed?
+
+    Three real outputs it has to get right:
+
+        Windows, up       "Gateway process running (PID: 146524)"
+        Mac under launchd "Gateway is supervised by launchd (PID 767)"
+        either, down      "Gateway process not running"
+
+    A substring search for run|active|online answers the first correctly and the other
+    two backwards: the Mac line contains no "running" at all, and "not running"
+    contains "running" (as "inactive" contains "active"). Wrong in the first direction
+    starts a second gateway every fifteen minutes against one that is working - the Mac
+    did it 291 times in a day. Wrong in the second leaves a dead agent alone and tells
+    nobody, which is the worse of the two.
+
+    Line by line, and only down to the "Other profiles" heading, because the command
+    prints every other agent and its pid underneath - so the question "is daneel up"
+    was being answered by whichever agent happened to be.
+    """
+    head = _GW_OTHERS.split(out or "", 1)[0]
+    for line in head.splitlines():
+        line = line.strip()
+        if not line or _GW_DOWN.search(line):
+            continue
+        # A line naming a pid, or saying it is up, settles it - and wins over a
+        # "not supervised" beside it: one of those is the gateway and the other is a
+        # remark about how it was started.
+        if _GW_PID.search(line) or _GW_UP.search(line):
+            return True
+    # Nothing said it was up. Said so explicitly or said nothing at all, the answer the
+    # supervisor acts on is the same, and "start it" is the recoverable mistake.
+    return False
+
+
 def gateway_status(hermes=None, profile=None):
     r = _run(["gateway", "status"], hermes, timeout=30, profile=profile)
-    running = r["ok"] and re.search(r"run|active|online", r["out"], re.I) is not None
+    running = r["ok"] and gateway_running_from(r["out"])
     return {"ok": r["ok"], "running": bool(running), "detail": (r["out"] or r["err"])[:400]}
 
 

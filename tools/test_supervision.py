@@ -210,6 +210,52 @@ def main():
     finally:
         L._hctl, L.subprocess.Popen, L.log = real_hctl, real_popen, real_log
 
+    # ── reading what `hermes gateway status` prints ──────────────────────────────
+    # The policy above is only half the defence. It limits how often a doomed start is
+    # retried; it cannot help when Olivaw is asking the wrong question to begin with -
+    # and it was. Reported from a Mac: every agent's gateway "exiting after ~16s", 291
+    # times in one day. Nothing had crashed. A running gateway was being read as
+    # stopped, so the supervisor started a second one, Hermes refused it, and the
+    # policy below duly backed off and tried again later. Forever.
+    #
+    # Everything here is a real output, copied from the machine that printed it.
+    section("reading what `hermes gateway status` prints")
+    from wizard.hermes_ctl import gateway_running_from as reads
+
+    windows_up = (u"\u2713 Windows login item installed: Hermes_Gateway.vbs\n"
+                  u"\u2713 Gateway process running (PID: 146524)\n")
+    check("a running gateway on Windows is running", reads(windows_up) is True)
+
+    # The reported bug. Under launchd the sentence contains no "running" at all, so a
+    # search for run|active|online called a perfectly healthy gateway dead.
+    check("and one supervised by launchd on a Mac is too",
+          reads("Gateway is supervised by launchd (PID 767)") is True)
+
+    # The same mistake pointing the other way, and the worse of the two: a stopped
+    # gateway read as healthy is an agent that goes silent and nobody is told.
+    check("'not running' is not running",
+          reads(u"\u2717 Gateway process not running") is False)
+    check("nor is 'is not running'", reads("Gateway is not running") is False)
+    check("and 'inactive' is not 'active'", reads("Status: inactive") is False)
+    check("nor is 'stopped' a kind of running", reads("Gateway stopped") is False)
+    check("nothing at all is not running", reads("") is False)
+
+    # `gateway status` prints every OTHER profile and its pid underneath. Asked about
+    # one agent, the check was being answered by whichever agent happened to be up.
+    others = (u"\u2717 Gateway process not running\n"
+              u"\n"
+              u"Other profiles:\n"
+              u"  \u2713 analecta   \u2713 PID 123968\n"
+              u"  \u2713 baco       \u2713 PID 158044\n")
+    check("another agent's pid does not answer for this one", reads(others) is False)
+
+    mixed = (u"\u2713 Gateway process running (PID: 1)\n"
+             u"\n"
+             u"Other profiles:\n"
+             u"  \u2717 baco       not running\n")
+    check("and another agent being down does not stop this one being up",
+          reads(mixed) is True)
+
     print("\n%d passed, %d failed" % (len(PASSED), len(FAILED)))
     for f in FAILED:
         print("  - " + f)
