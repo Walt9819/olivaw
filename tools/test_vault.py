@@ -452,6 +452,40 @@ try:
         ok("and a flag cannot make it another agent", True)
     os.chdir(_ws_heraldo)
 
+    # ── how each platform spells a path ──────────────────────────────────────────
+    # macOS and Windows treat two spellings of one path as one path, and macOS is
+    # case-PRESERVING, so the same folder can arrive spelled either way. Comparing
+    # exactly meant one of those spellings fell through to "the main agent" - the
+    # 1.0.86 bug again, through a Mac-shaped door.
+    #
+    # realpath is stubbed and the flag forced, because the first version of this test
+    # passed on Windows for a Windows reason: realpath there corrects the case off the
+    # filesystem, and a Mac does not.
+    _real_realpath, _real_fold = os.path.realpath, CLI.FOLD_CASE
+    try:
+        # The stub speaks this platform's separator, so the test is about CASE and
+        # not about slashes: on a Mac both sides are / and the comparison below uses
+        # os.sep, which is also /.
+        os.path.realpath = lambda p: p.replace(chr(47), os.sep)
+        _ws = [("/Users/walt/.olivaw/agents/heraldo/workspace", "heraldo")]
+        _other = "/users/walt/.olivaw/agents/heraldo/workspace"
+
+        CLI.FOLD_CASE = True
+        ok("on a Mac, the same workspace spelled differently is the same agent",
+           CLI._inside(_other, _ws) == "heraldo")
+        ok("and a folder inside it, spelled differently, too",
+           CLI._inside(_other + "/notas", _ws) == "heraldo")
+        ok("a different workspace is still not it",
+           CLI._inside("/Users/walt/.olivaw/agents/popeye/workspace", _ws) == "")
+
+        CLI.FOLD_CASE = False
+        ok("on Linux, where case is part of the name, it is not the same folder",
+           CLI._inside(_other, _ws) == "")
+        ok("but the exact spelling still matches",
+           CLI._inside(_ws[0][0], _ws) == "heraldo")
+    finally:
+        os.path.realpath, CLI.FOLD_CASE = _real_realpath, _real_fold
+
     # Nothing this tool prints may contain a value - there is no command that returns
     # one, and `list` is the one that comes closest.
     import contextlib

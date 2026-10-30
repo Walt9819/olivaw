@@ -57,10 +57,32 @@
       // whole window is out of date - so it is said once, at the top, rather than as
       // whichever error the panel that happened to ask would have drawn.
       if (out && out.stale_console) staleConsole(out.detail || "");
+      // And the same thing worked out from this side, which is the only way it can be
+      // worked out at all for a console old enough to predate the server-side check.
+      // This file is read off disk on every request, so the page is always today's; a
+      // route the page knows about coming back "unknown" can only mean the process
+      // answering it is older than the page. No cooperation needed from a process that
+      // is, by definition, not running the code that would cooperate.
+      else if (out && out.ok === false && /ruta desconocida/i.test(out.detail || "")) {
+        staleConsole("Esta ventana es más nueva que el Olivaw que le responde.");
+      }
+      // The same window a day later: the port is still the console's, but the key in
+      // the address is from the session that opened it. Said once at the top, because
+      // it is true of the whole window - panel by panel it reads as "everything is
+      // broken" when the remedy is to open the console again.
+      else if (out && out.ok === false && /no autorizado/i.test(out.detail || "")) {
+        staleConsole("Esta ventana se abrió con una clave de antes.");
+      }
       return out;
     });
   }
 
+  // `detail` is the one sentence about WHY, and it differs: Olivaw updated underneath
+  // this window, or this page is newer than the process answering it, or the key in
+  // the address is from a previous session. What to do about it is the same in all
+  // three, and it is not "reload": the address in the bar - key and all - is exactly
+  // what is out of date, so sending it again changes nothing. Opening the console from
+  // its icon is where a fresh address comes from.
   function staleConsole(detail) {
     if (el("staleBar")) return;
     var bar = document.createElement("div");
@@ -68,14 +90,11 @@
     bar.className = "card pad";
     bar.style.cssText = "position:fixed;left:16px;right:16px;top:16px;z-index:9999;" +
       "border:1px solid var(--warn, #c98a00)";
-    bar.innerHTML = "<b>Olivaw se actualiz\u00f3 mientras esto estaba abierto.</b>" +
+    bar.innerHTML = "<b>Esta ventana ya no est\u00e1 al d\u00eda.</b>" +
       '<p class="small muted" style="margin:6px 0 10px">' + esc(detail) +
-      " Hasta que la cierres y la abras otra vez, algunas cosas de esta p\u00e1gina no " +
-      "van a funcionar.</p>" +
-      '<button class="btn btn-primary btn-sm" id="staleReload">Recargar</button>';
+      " Ci\u00e9rrala y vuelve a abrir Olivaw desde su icono: hasta entonces, algunas " +
+      "cosas de esta p\u00e1gina no van a funcionar.</p>";
     document.body.appendChild(bar);
-    var go = el("staleReload");
-    if (go) go.onclick = function () { location.reload(); };
   }
 
   function esc(s) {

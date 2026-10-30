@@ -248,12 +248,55 @@ finally:
                                           _saved_retire, _saved_clear)
 
 
+# ── the address it serves on ──────────────────────────────────────
+# A fresh ephemeral port every launch is fine until somebody pins the window. Chrome's
+# "Install as app" freezes the whole URL, port and all, so that icon goes on opening
+# wherever the console was the day it was made. One owner's pinned app spent a week
+# opening a console from before an update - today's page over last week's routes - and
+# then, once that process died, a dead page.
+section("the address the console serves on")
+
+from wizard import wizard_server as WS2  # noqa: E402
+
+_probe = __import__("socket").socket()
+_probe.bind(("127.0.0.1", 0))
+_mine = _probe.getsockname()[1]
+_probe.close()
+
+ok("the port we had last time is the port we take again",
+   WS2._free_port(_mine) == _mine)
+
+# Unless somebody else is on it, in which case any port beats refusing to start.
+_held = __import__("socket").socket()
+_held.bind(("127.0.0.1", 0))
+_held.listen(1)
+_taken = _held.getsockname()[1]
+try:
+    _got = WS2._free_port(_taken)
+    ok("a port somebody else holds is given up, not fought over", _got != _taken)
+    ok("and what we get instead is a real port", isinstance(_got, int) and _got > 0)
+finally:
+    _held.close()
+
+ok("with nothing remembered, any free port will do",
+   isinstance(WS2._free_port(0), int))
+
+
 # ── tidying up ────────────────────────────────────────────────────────────────────────
 section("leaving")
 
 C.write(SAND, 1234, "1.2.3")
 C.clear(SAND)
-ok("a console clears its own note on the way out", not C.read(SAND))
+# Not deleted: emptied of everything that claimed to be running. The address stays,
+# because that is what a window somebody pinned needs to find next time, and it is the
+# one part of the note that does not die with the process.
+_left = C.read(SAND)
+ok("a console stops claiming to be running on the way out", not _left.get("pid"))
+ok("and stops claiming a version", not _left.get("version"))
+ok("but the address it served on is remembered", _left.get("port") == 1234)
+ok("so nobody is found there", C.alive(_left, timeout=0.4) is None)
+ok("and the next console starts rather than opening it",
+   C.take_over(SAND, "1.2.3")[0] == "start")
 
 C.write(SAND, 1234, "1.2.3")
 got = C.read(SAND)

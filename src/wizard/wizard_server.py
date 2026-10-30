@@ -1985,7 +1985,27 @@ def _shutdown():
     os._exit(0)
 
 
-def _free_port():
+def _free_port(prefer=0):
+    """A port to serve on - the one we had last time, if it is still free.
+
+    It used to be a fresh ephemeral port every launch, which is fine until somebody
+    pins the window. Chrome's "Install as app" freezes the whole URL, port and all, and
+    from then on that icon opens wherever the console happened to be the day it was
+    made. One owner's pinned app spent a week opening a LIVE console from before an
+    update - today's page over last week's routes, which reaches them as "ruta
+    desconocida" - and then, once that process died, a dead page.
+
+    Keeping the address costs nothing: the token still changes every launch, so a stale
+    pinned URL still has to be re-opened, but it re-opens onto the right console
+    instead of into nowhere.
+    """
+    if prefer:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("127.0.0.1", int(prefer)))
+                return int(prefer)
+        except OSError:
+            pass                                # taken: fall through and take any
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
@@ -2012,7 +2032,14 @@ def main():
             print("   ", where)
         return
 
-    port = _free_port()
+    # The note from the last run is what remembers the address. take_over() has
+    # already decided nobody is serving on it.
+    _last = 0
+    try:
+        _last = int((console_one.read(INSTALL_DIR) or {}).get("port") or 0)
+    except Exception:  # noqa: BLE001
+        _last = 0
+    port = _free_port(_last)
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     console_one.write(INSTALL_DIR, port, running_version())
     atexit.register(lambda: console_one.clear(INSTALL_DIR))

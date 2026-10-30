@@ -57,11 +57,33 @@ def write(install_dir, port, version):
 
 
 def clear(install_dir, only_mine=True):
+    """This console is no longer serving. The address it served on is kept.
+
+    The note answers two questions and only one of them dies with the process: "who is
+    serving and can I reach them" is about a living console, while "where does this
+    install put its console" outlives it. A window somebody pinned needs the second
+    one, and deleting the whole note on a clean exit threw it away - so a console that
+    closed properly was the one whose address was lost, and a crash kept it.
+
+    A note with no pid is nobody: alive() still has to get an answer on the port, and
+    take_over() still has to be told it is the same version, before anything is reused.
+    """
     got = read(install_dir)
     if only_mine and got.get("pid") not in (os.getpid(), None):
         return
+    port = 0
     try:
-        os.remove(_path(install_dir))
+        port = int(got.get("port") or 0)
+    except (TypeError, ValueError):
+        port = 0
+    try:
+        if port:
+            tmp = "%s.%d.tmp" % (_path(install_dir), os.getpid())
+            with io.open(tmp, "w", encoding="utf-8") as fh:
+                json.dump({"port": port}, fh)
+            os.replace(tmp, _path(install_dir))
+        else:
+            os.remove(_path(install_dir))
     except OSError:
         pass
 

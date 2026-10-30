@@ -58,12 +58,27 @@ def install_dir():
     return agents_registry.install_root()
 
 
+# macOS and Windows treat two spellings of the same path as the same path; Linux does
+# not. A module-level flag rather than a check inside the comparison, so a test can ask
+# both questions on either platform - which is the whole reason this was wrong: the
+# case test passed on Windows because realpath() there corrects the spelling from the
+# filesystem, and a Mac does not do that.
+FOLD_CASE = sys.platform in ("win32", "darwin")
+
+
+def _norm(path):
+    """A path in the form this platform compares them in."""
+    p = os.path.realpath(path)
+    return p.lower() if FOLD_CASE else p
+
+
 def _inside(path, workspaces):
     """The agent whose workspace contains `path`, or ""."""
     if not path:
         return ""
-    here = os.path.realpath(path)
+    here = _norm(path)
     for ws, slug in workspaces:
+        ws = _norm(ws)
         if here == ws or here.startswith(ws + os.sep):
             return slug
     return ""
@@ -95,7 +110,7 @@ def whoami(stated=""):
     rows = agents_registry.list_agents(install_dir())
     workspaces = []
     for row in rows:
-        ws = os.path.realpath(row.get("workspace") or "")
+        ws = (row.get("workspace") or "").strip()
         slug = row.get("slug") or row.get("profile") or ""
         if ws and slug:
             workspaces.append((ws, slug))
