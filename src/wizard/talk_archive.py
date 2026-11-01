@@ -51,6 +51,44 @@ CARRIED = ("id", "session_id", "role", "content", "tool_call_id", "tool_calls",
            "tool_name", "timestamp", "token_count", "finish_reason", "reasoning",
            "reasoning_content")
 
+def _undo_reinsertions(rows):
+    """One copy of each turn, in the order it was first said.
+
+    Compaction does not only archive: it writes the protected head and tail back as NEW
+    rows, byte for byte, next to the summary. So after four compactions the opening of
+    a conversation is in the table five times - and reading the archive, which is the
+    whole point of this module, meant reading all five. One real conversation here held
+    2,177 stored turns that were 134 distinct things anybody said.
+
+    Matched on the speaker and the words, and NOT on the timestamp, which was the first
+    thing tried: a re-inserted copy usually keeps the original moment, but not always -
+    some compactions re-stamp the block with their own, so three copies of one sentence
+    came back wearing three different times. The structural fact is the one to lean on.
+    Hermes only ever re-inserts something that was already said, so the conversation is
+    the distinct turns in the order they were first seen.
+
+    What that costs, stated plainly: if the owner really did type the same words twice
+    in one conversation, the second one is not drawn. Against showing the opening of
+    every long conversation five times over - one real thread here held 2,177 stored
+    turns that were 134 distinct things anybody said - that is the right side to err on,
+    but it IS a loss and not a free one.
+    """
+    seen, out = set(), []
+    for r in rows:
+        text = r.get("content")
+        if not isinstance(text, str) or not text:
+            # Tool calls and empty turns carry no words to compare. Left alone: they
+            # are dropped later anyway, and guessing at them buys nothing.
+            out.append(r)
+            continue
+        key = (r.get("role"), text)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
+
+
 # How far back a chain of parent sessions is followed.
 #
 # In the OTHER compaction mode Hermes ends the session and starts a child carrying
@@ -181,7 +219,7 @@ def messages(session_id, hermes_home=None, include_archived=True, speech_only=Fa
         # A session Hermes knows nothing about is not an empty conversation - it is a
         # question this cannot answer, and answering it "empty" would replace a real
         # transcript with a blank screen.
-        return out or None
+        return _undo_reinsertions(out) or None
     except sqlite3.Error:
         return None
     finally:

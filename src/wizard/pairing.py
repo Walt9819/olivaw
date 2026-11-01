@@ -113,6 +113,9 @@ ROUTES = {
     # Asking what became of a message already accepted. Same permission as saying it:
     # these carry the answer to a turn the device itself started, and nothing else.
     "talk/turns": "hablar",
+    # "has anything been said to me", which is not the same question as "what became
+    # of what I sent" - an agent can add to a conversation nobody prompted.
+    "talk/watch": "hablar",
     "talk/turns/drop": "hablar",
     # Everything this agent has made, not only what came up in one conversation.
     "talk/outbox": "hablar",

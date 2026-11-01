@@ -167,6 +167,9 @@ Future<void> breathe(WidgetTester tester, [int frames = 14]) async {
 /// would walk into the next test. In the app that is the whole point of it; here it
 /// has to be ended by hand.
 Future<void> stopWaiting(WidgetTester tester) async {
+  // The screen goes first: a chat that is still mounted is still asking the computer
+  // whether anything has arrived, and that question has a timer behind it.
+  await tester.pumpWidget(const SizedBox());
   Outbox.instance.resetForTests();
   await tester.pump();
 }

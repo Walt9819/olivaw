@@ -1133,6 +1133,31 @@ void forgetUnsent(String agent, Map<String, dynamic> mine) {
   if (list.isEmpty) _unsent.remove(agent);
 }
 
+/// Turns Hermes writes into a session that nobody said.
+///
+/// A runtime has to tell a model things between turns - that the context was
+/// compacted, what the open task list was before the window was squeezed, that a
+/// background fan-out finished - and the only slot a chat transcript has for
+/// "something arrived that is not the assistant" is the user's. Correct for a model,
+/// wrong for a reader: each of these reached this screen dressed as a message the
+/// owner had typed. The one that was noticed is the task list, re-injected after every
+/// compaction, which showed the owner sending his own agent a list of things to do.
+///
+/// The computer drops these too, with a longer list, because it can see every one of
+/// them in the store. This is here for the window where a phone has updated and the
+/// computer it talks to has not.
+bool machineTurn(String text) {
+  const marks = [
+    '[CONTEXT COMPACTION',
+    '[Your active task list was preserved',
+    '[ASYNC DELEGATION BATCH COMPLETE',
+    '[IMPORTANT: You are running as a scheduled cron job',
+    '[PRIOR CONTEXT',
+  ];
+  final head = text.trimLeft();
+  return marks.any(head.startsWith);
+}
+
 /// Whether the end of a conversation already contains this message.
 ///
 /// Asked before anything is sent a SECOND time. A send that times out is the one case
@@ -1315,6 +1340,19 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
   bool _histMore = false;
   bool _histBusy = false;
 
+  /// How many messages the computer had in this conversation when it was last read.
+  ///
+  /// Counted from the start of the thread, in the same numbering the pages use, so it
+  /// is also the place to carry on from: anything the computer has past this index is
+  /// something that has been said since. See _watch.
+  int _histTotal = 0;
+
+  /// Whether the question "anything new?" is currently at the computer.
+  bool _watching = false;
+
+  /// The gap before asking again. Held so that leaving the screen can cancel it.
+  Timer? _watchAgain;
+
   /// Whether the conversation on screen has actually been read from the computer.
   /// An empty list means "not yet" until this is true, and "nothing was said" after.
   bool _histLoaded = false;
@@ -1485,7 +1523,12 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
     for (final r in rows) {
       if (r is! Map) continue;
       final role = (r['role'] ?? '').toString();
-      if (role != 'user' && role != 'assistant') continue;   // tool, system: not speech
+      // `peer` is another of the owner's agents writing in. It is stored as `user`
+      // because a runtime has nowhere else to put "something arrived", and the
+      // computer re-labels it rather than letting this screen call it the owner.
+      if (role != 'user' && role != 'assistant' && role != 'peer') {
+        continue; // tool, system: not speech
+      }
       if (r['tool_calls'] != null) continue;                 // an action, not a sentence
       // `content` is what Hermes calls it. Reading `text` here is why every bubble in
       // the first build of this screen came out blank.
@@ -1499,10 +1542,15 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
           if (f is Map) f.cast<String, dynamic>(),
       ];
       if (text.isEmpty && files.isEmpty) continue;
-      if (text.startsWith('[CONTEXT COMPACTION')) continue;  // bookkeeping, not a turn
+      // Bookkeeping Hermes writes into a session as if somebody had said it. The
+      // computer drops these now - with a longer list than this one, because it can
+      // see them all - but a phone that has updated before the computer has would
+      // otherwise draw them as the owner's own messages, which is the whole bug.
+      if (machineTurn(text)) continue;
       out.add({
         'role': role,
         'text': text,
+        if ((r['from'] ?? '').toString().isNotEmpty) 'from': r['from'].toString(),
         if (files.isNotEmpty) 'files': files,
       });
     }
@@ -1520,11 +1568,111 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
     setState(() {
       _msgs = _readable(h['messages'] as List? ?? []);
       _histStart = (h['start'] as num?)?.toInt() ?? 0;
+      _histTotal = (h['total'] as num?)?.toInt() ?? _msgs.length;
       _histMore = h['has_more'] == true;
       _histLoaded = true;
       _error = '';
     });
     _toBottom();
+    _watch();
+  }
+
+  /// Hold a question at the computer until this conversation grows.
+  ///
+  /// One request at a time, re-asked as soon as it answers, for as long as the screen
+  /// is here. It is a long poll rather than a timer: the computer compares one number
+  /// every couple of seconds and only reads the transcript when there is something to
+  /// read, so an idle conversation costs about one request a minute and no work.
+  ///
+  /// Safe to lose. If the connection dies mid-question nothing was riding on it - the
+  /// messages are on the computer either way - and the next pass asks again from the
+  /// same place.
+  Future<void> _watch() async {
+    if (_watching || _session.isEmpty || !mounted) return;
+    _watching = true;
+    _watchAgain?.cancel();
+    _watchAgain = null;
+    final began = DateTime.now();
+    var again = true;
+    try {
+      final mine = _session;
+      Map<String, dynamic> res;
+      try {
+        res = await widget.link.reach('POST', '/api/talk/watch',
+            body: _body({
+              'session_id': mine,
+              'have': _histTotal,
+              'wait': kPollHold.inSeconds,
+            }),
+            wait: kPollHold + const Duration(seconds: 10));
+      } catch (_) {
+        // Out of reach for the moment. Nothing is lost - the messages are on the
+        // computer either way - so wait and ask again rather than hammer a dead
+        // socket.
+        return;
+      }
+      // The screen moved to another conversation while that was in the air.
+      if (!mounted || _session != mine) {
+        again = false;
+        return;
+      }
+      if (res['ok'] != true) return;
+      if (res['reset'] == true) {
+        // The computer has FEWER messages than this screen is holding - a compaction
+        // landing between two reads can do it. Stitching a tail onto the wrong place
+        // would be worse than reading the whole thing again, and _history starts the
+        // watching over from the count it reads.
+        again = false;
+        await _history();
+        return;
+      }
+      _histTotal = (res['total'] as num?)?.toInt() ?? _histTotal;
+      final fresh = _readable(res['messages'] as List? ?? []);
+      if (fresh.isNotEmpty) _arrived(fresh);
+    } finally {
+      _watching = false;
+      if (again && mounted && _session.isNotEmpty) {
+        // See kPollFloor: the hold is something the computer is ASKED for, and one
+        // that answers at once must not turn this into a spin.
+        final spent = DateTime.now().difference(began);
+        final gap = spent < kPollFloor ? kPollFloor - spent : kPollFloor;
+        _watchAgain = Timer(gap, () {
+          _watchAgain = null;
+          _watch();
+        });
+      }
+    }
+  }
+
+  /// Messages that turned up on their own. Drawn, and said out loud if nobody is
+  /// looking at the screen they landed on.
+  void _arrived(List<Map<String, dynamic>> fresh) {
+    if (!mounted) return;
+    // The answer to something sent from this screen reaches it twice over - once as
+    // the turn's own reply, once as part of the conversation - and they are the same
+    // words. Whichever gets here first wins; the other is dropped against the tail,
+    // which is a small enough window to compare by hand.
+    final tail = _msgs.length <= 8 ? _msgs : _msgs.sublist(_msgs.length - 8);
+    final add = <Map<String, dynamic>>[];
+    for (final m in fresh) {
+      final already = tail.any((x) =>
+          x['role'] == m['role'] &&
+          (x['text'] ?? '').toString() == (m['text'] ?? '').toString());
+      if (!already) add.add(m);
+    }
+    if (add.isEmpty) return;
+    setState(() {
+      _msgs = [..._msgs.where(_notThinking), ...add, ..._msgs.where((m) => !_notThinking(m))];
+      _ready = true;
+    });
+    _toBottom();
+    // Nobody is reading this. The whole point of the agent being able to come back
+    // later is that coming back later is noticed.
+    if (!_inFront) {
+      final last = add.lastWhere((m) => m['role'] != 'user', orElse: () => add.last);
+      final said = (last['text'] ?? '').toString().trim();
+      if (said.isNotEmpty) Native.notify(widget.agent.name, said);
+    }
   }
 
   /// The turns before the ones on screen.
@@ -1682,6 +1830,9 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
         _session = id;
         _msgs = [..._readable(h['messages'] as List? ?? []), ...stuck];
         _histStart = (h['start'] as num?)?.toInt() ?? 0;
+        // Where the watcher carries on from. Without it the count stays at zero and
+        // the first thing that arrives brings the whole conversation back with it.
+        _histTotal = (h['total'] as num?)?.toInt() ?? _msgs.length;
         _histMore = h['has_more'] == true;
         _histLoaded = true;
         _resume = '';
@@ -1690,6 +1841,8 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       _openThreads[widget.agent.slug] = id;
       await Store.saveThreads(_openThreads);
       _toBottom();
+      // This is the open conversation now, so it is the one to watch.
+      _watch();
     } finally {
       if (mounted) setState(() => _histBusy = false);
     }
@@ -1929,6 +2082,10 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       _ready = true;
       changed = true;
       Outbox.instance.collected(e);
+      // The computer now holds this exchange too, and the watcher is about to offer
+      // it back. It will be dropped against the tail - but the count has to move on
+      // or every later pass would keep re-offering the same turn.
+      _watch();
     }
     // The computer forgot a turn it had accepted - it restarted, or enough time went
     // by. The answer is in the conversation, which is the one place it was always
@@ -2245,6 +2402,11 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
     if (Outbox.instance.watching == widget.agent.slug) {
       Outbox.instance.watching = '';
     }
+    // Nobody is reading this conversation any more, so stop asking after it. The
+    // outbox goes on carrying anything that was SENT from here; this is only the
+    // question about what is arriving.
+    _watchAgain?.cancel();
+    _watchAgain = null;
     _tick?.cancel();
     if (_recording) Native.recordCancel();
     _input.dispose();
@@ -2908,6 +3070,9 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
           itemBuilder: (c, i) {
             if (_histMore && i == 0) return _earlierRow();
             final m = _msgs[_histMore ? i - 1 : i];
+            // Only the owner's own turns sit on the right. A peer's message is not
+            // the owner's, so it goes on the left with everything else that was said
+            // TO them.
             final mine = m['role'] == 'user';
             if (m['pending'] == true && m['voice'] != true) return _bubble(c, m, mine);
             // Telegram's gesture, because it is the one thumbs already know: drag the
@@ -3004,6 +3169,27 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
                 ),
                 child: Builder(builder: (bc) {
                   final ink = mine ? context.c.accentInk : context.c.ink;
+                  // Who wrote it, when it was not this agent and not the owner. One
+                  // line above the words: without it the message is simply unattributed,
+                  // which is how it came to read as the owner's in the first place.
+                  final who = (m['from'] ?? '').toString();
+                  if (who.isNotEmpty) {
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 4),
+                          child: Text(who,
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  color: context.c.accent)),
+                        ),
+                        _bubbleBody(bc, m, mine, ink),
+                      ],
+                    );
+                  }
                   // A message that never left says so underneath itself, next to the
                   // button that sends it again. Wrapped round the ordinary body
                   // rather than replacing it: what failed is still a message, still

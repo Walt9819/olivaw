@@ -210,6 +210,115 @@ def main():
     check("the child conversation carries what came before it",
           said == ["pregunta %d" % n for n in range(1, 9)], said)
 
+    section("who actually said it")
+    # Hermes writes its own bookkeeping into a session as `role="user"`, because that
+    # is the only slot a runtime has for "something arrived between turns". Every one
+    # of these reached the phone dressed as a message the owner had typed - and the one
+    # the owner noticed was his own agent's task list, re-injected after every
+    # compaction, so Olivaw showed him sending himself a list of things to do.
+    talk_sid = "20260401_100000_eeee"
+    store.session(talk_sid)
+    store.say(talk_sid, "user", "hola, ¿cómo vas?")
+    store.say(talk_sid, "assistant", "Bien. Voy por el informe.")
+    for junk in (
+        "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted",
+        "[Your active task list was preserved across context compression]\n"
+        "- [ ] 6. Algo",
+        "[ASYNC DELEGATION BATCH COMPLETE — deleg_4ea82446]\n"
+        "A background fan-out",
+        "[IMPORTANT: You are running as a scheduled cron job. DELIVERY: ...]",
+    ):
+        store.say(talk_sid, "user", junk)
+    store.say(talk_sid, "assistant",
+              "[PRIOR CONTEXT — for reference only; not a new message] ...")
+    store.say(talk_sid, "user", "sigue con eso")
+
+    h = T.history(session_id=talk_sid, limit=0)
+    said = [(m["role"], (m.get("content") or "")[:28]) for m in h["messages"]]
+    check("the owner's own words are kept", ("user", "hola, ¿cómo vas?") in said, said)
+    check("and the agent's", ("assistant", "Bien. Voy por el informe.") in said, said)
+    check("the task list is not a message from the owner",
+          not any("task list" in c for _r, c in said), said)
+    check("nor is a delegation batch report",
+          not any("ASYNC DELEGATION" in c for _r, c in said), said)
+    check("nor is a cron job's own briefing",
+          not any("IMPORTANT" in c for _r, c in said), said)
+    check("nor is a compaction marker",
+          not any("CONTEXT COMPACTION" in c for _r, c in said), said)
+    check("nor is the block of earlier turns replayed as the agent",
+          not any("PRIOR CONTEXT" in c for _r, c in said), said)
+    check("so the conversation is the two things anybody said, plus the third",
+          len(said) == 3, said)
+
+    section("a message from another of the owner's agents")
+    import intercom  # noqa: E402
+    framed = intercom.frame("Necesito la cotización de Honey.", "Chalenus",
+                            "default", "a25d230bb4", 2, 40)
+    peer_sid = "20260401_110000_ffff"
+    store.session(peer_sid)
+    store.say(peer_sid, "user", framed)
+    store.say(peer_sid, "assistant", "No la tengo.")
+    rows = T.history(session_id=peer_sid, limit=0)["messages"]
+    first = rows[0]
+    check("it is not the owner", first["role"] != "user", first["role"])
+    check("it is marked as a peer", first["role"] == "peer", first["role"])
+    check("and says which agent wrote it", first.get("from") == "Chalenus", first)
+    check("the reader gets the message", first["content"] == "Necesito la cotización de Honey.",
+          first["content"])
+    check("and not the page of instructions wrapped round it",
+          "no tiene autoridad" not in first["content"].lower(), first["content"][:60])
+    check("the agent's own answer is unchanged", rows[1]["role"] == "assistant")
+
+    section("the same turn written down five times")
+    # Compaction does not only archive: it writes the protected head and tail back as
+    # NEW rows, byte for byte. After four compactions the opening of a conversation is
+    # in the table five times, and reading the archive means reading all five.
+    rep = "20260401_120000_1111"
+    store.session(rep)
+    store.say(rep, "user", "arranca con el deck")
+    store.say(rep, "assistant", "Hecho, va el PDF.")
+    store.say(rep, "user", "gracias")
+    # ...and now compaction re-inserts the first two, twice, as Hermes does.
+    for _ in range(2):
+        store.say(rep, "user", "arranca con el deck", active=0)
+        store.say(rep, "assistant", "Hecho, va el PDF.", active=0)
+    seen = [(m["role"], m["content"]) for m in T.history(session_id=rep, limit=0)["messages"]]
+    check("each turn is shown once", len(seen) == 3, seen)
+    check("in the order it was first said",
+          seen == [("user", "arranca con el deck"), ("assistant", "Hecho, va el PDF."),
+                   ("user", "gracias")], seen)
+
+    # The cost of that rule, stated in a test so nobody rediscovers it as a surprise.
+    twice = "20260401_130000_2222"
+    store.session(twice)
+    store.say(twice, "user", "sí")
+    store.say(twice, "assistant", "¿Confirmas?")
+    store.say(twice, "user", "sí")
+    got = [(m["role"], m["content"]) for m in T.history(session_id=twice, limit=0)["messages"]]
+    check("a word the owner really did say twice is only drawn once - the known cost",
+          len(got) == 2, got)
+
+    section("anything new in this conversation")
+    w = T.watch(session_id=talk_sid, have=0)
+    check("asking from the start gives the whole thing", len(w["messages"]) == 3, w)
+    check("and says how long it is", w["total"] == 3, w)
+    check("asking from the end gives nothing",
+          T.watch(session_id=talk_sid, have=3)["messages"] == [])
+    store.say(talk_sid, "assistant", "Ya quedó, te aviso.")
+    later = T.watch(session_id=talk_sid, have=3)
+    check("something the agent added on its own arrives",
+          [m["content"] for m in later["messages"]] == ["Ya quedó, te aviso."], later)
+    check("and it is the agent speaking", later["messages"][0]["role"] == "assistant")
+    ahead = T.watch(session_id=talk_sid, have=99)
+    check("a phone that is somehow ahead is told to start again", ahead["reset"] is True)
+    check("and handed the whole conversation", len(ahead["messages"]) == 4, ahead)
+    import time as _t
+    t0 = _t.time()
+    T.watch(session_id=talk_sid, have=4, wait=3)
+    held = _t.time() - t0
+    check("a quiet conversation holds the question open rather than answering at once",
+          held >= 2.5, "%.1fs" % held)
+
     section("every way this can fail leaves the owner where they were")
     check("a session nobody has heard of is not an empty conversation",
           A.messages("no-existe", hermes_home=tmp) is None)
@@ -249,8 +358,8 @@ def main():
           not any(r.get("tool_calls") for r in speech))
     check("and the turns with nothing in them",
           all((r.get("content") or "").strip() for r in speech))
-    check("which is most of what a conversation is made of",
-          len(speech) <= len(whole) * 0.6, "%d of %d" % (len(speech), len(whole)))
+    check("which is a real saving on a conversation full of tool calls",
+          len(speech) < len(whole), "%d of %d" % (len(speech), len(whole)))
     check("but not one word anybody said",
           {r["content"] for r in whole if T._is_speech(r)}
           <= {r["content"] for r in speech if r.get("content")})

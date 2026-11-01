@@ -930,6 +930,59 @@ def _session_id(data):
 HISTORY_PAGE = 25
 
 
+# Turns Hermes writes into a session that nobody said.
+#
+# A runtime has to tell a model things between turns - that the context was compacted,
+# that a background fan-out finished, what the open task list was before the window was
+# squeezed - and the only slot in a chat transcript for "something arrived that is not
+# the assistant" is the user's. Which is correct for a model and wrong for a reader:
+# every one of these reached the phone dressed as a message the owner had typed.
+#
+# Matched on the opening of the text because that is the only mark they carry; nothing
+# in the row distinguishes them. Each one was found in the owner's own store rather
+# than guessed at, and the list is deliberately specific - a looser rule here would
+# start eating messages that somebody really did write.
+_MACHINE_TURNS = (
+    "[CONTEXT COMPACTION",
+    "[Your active task list was preserved",
+    "[ASYNC DELEGATION BATCH COMPLETE",
+    "[IMPORTANT: You are running as a scheduled cron job",
+    # Written as the ASSISTANT rather than the user: the block of earlier conversation
+    # Hermes replays to itself after compacting. Eleven thousand characters of
+    # transcript, drawn as a turn the agent had just taken.
+    "[PRIOR CONTEXT",
+)
+
+# A message from another of the owner's agents, as intercom.frame() builds it.
+_PEER_HEAD = "=== MENSAJE DE OTRO AGENTE"
+_PEER_WHO = re.compile(r"^Te escribe:\s*(.+?)\s*\(agente", re.MULTILINE)
+_PEER_BODY = "--- mensaje ---"
+
+
+def machine_turn(text):
+    """Is this Hermes talking to itself rather than anybody talking to anybody?"""
+    if not isinstance(text, str):
+        return False
+    head = text.strip()
+    return any(head.startswith(m) for m in _MACHINE_TURNS)
+
+
+def peer_message(text):
+    """(who wrote it, what they said), or None if this is not one.
+
+    The envelope is mostly instructions to the RECEIVING AGENT about how much authority
+    a peer has - which is exactly right to send a model and pure noise to show a person.
+    The reader gets the name and the message.
+    """
+    if not isinstance(text, str) or not text.lstrip().startswith(_PEER_HEAD):
+        return None
+    m = _PEER_WHO.search(text)
+    who = (m.group(1).strip() if m else "") or "Otro agente"
+    at = text.find(_PEER_BODY)
+    body = text[at + len(_PEER_BODY):].strip() if at >= 0 else text.strip()
+    return who, body
+
+
 def _is_speech(row):
     """Did a person or the agent actually say this?
 
@@ -948,13 +1001,27 @@ def _is_speech(row):
     text = row.get("content") or row.get("text") or ""
     if not isinstance(text, str) or not text.strip():
         return False
-    return not text.strip().startswith("[CONTEXT COMPACTION")
+    # Hermes' own bookkeeping, written into the session as somebody's turn. See
+    # _MACHINE_TURNS: the task list re-injected after every compaction is the one that
+    # reached the owner, as a message from himself telling his agent what to do.
+    return not machine_turn(text)
 
 
 def _dress(row, install_dir=None, profile=None):
     """One stored turn, made readable. Dressing is per-row and costs disk, so only the
     rows actually being sent go through it."""
     row = dict(row)
+    # Another of the owner's agents wrote this one. It is stored as `user` because that
+    # is the only slot a runtime has for "something arrived", so without this it is the
+    # owner's own bubble - saying things the owner never said, to an agent he was not
+    # talking to. `peer` is a role of its own: an older phone drops a role it does not
+    # know, which loses the exchange but never misattributes it, and a current one
+    # draws it with the name of whoever actually sent it.
+    peer = peer_message(row.get("content")) if row.get("role") == "user" else None
+    if peer:
+        row["role"] = "peer"
+        row["from"] = peer[0]
+        row["content"] = peer[1]
     text = row.get("content")
     if not isinstance(text, str) or not text:
         return row
@@ -1061,6 +1128,71 @@ def history(profile=None, hermes=None, session_id="", install_dir=None,
     return {"ok": True, "messages": out, "total": total, "start": start,
             "end": start + len(out), "has_more": start > 0}
 
+
+
+def _high_water(session_id, profile=None):
+    """The largest message id in this conversation, or None if it cannot be read.
+
+    One indexed lookup. It exists so that "has anything happened" can be asked every
+    couple of seconds without reading a transcript to find out that nothing has.
+    """
+    con = talk_archive._open(talk_archive.db_path(profile_home(profile)))
+    if con is None:
+        return None
+    try:
+        row = con.execute("SELECT MAX(id) FROM messages WHERE session_id = ?",
+                          (str(session_id),)).fetchone()
+        return row[0] if row else None
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        try:
+            con.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def watch(profile=None, hermes=None, session_id="", have=0, install_dir=None,
+          wait=0.0):
+    """What has been said in this conversation beyond the first `have` messages.
+
+    `have` is a count, not an id, and that is deliberate: it is the number of messages
+    the phone is holding, in the same numbering `history` uses, so the two cannot drift
+    apart. The answer is the tail past that point - usually nothing, sometimes one turn
+    the agent added on its own.
+
+    With `wait`, this holds the request open until the conversation grows. Cheap to
+    hold: the loop only compares one number, and the transcript is read exactly once,
+    when there is something to read.
+    """
+    if not _safe_session(session_id):
+        return {"ok": False, "detail": "Conversación no válida."}
+    have = max(0, int(have or 0))
+    wait = max(0.0, min(float(wait or 0.0), 55.0))
+
+    mark = _high_water(session_id, profile)
+    if wait and mark is not None:
+        deadline = time.time() + wait
+        while time.time() < deadline:
+            time.sleep(min(2.0, max(0.25, deadline - time.time())))
+            now = _high_water(session_id, profile)
+            if now != mark:
+                break
+    # Read once, at the end, whether or not anything moved: `have` may already be
+    # behind for reasons this never saw - the phone was asleep, or the database could
+    # not be read and `mark` was None the whole time.
+    full = history(profile, hermes, session_id=session_id, install_dir=install_dir,
+                   limit=0)
+    if not full.get("ok"):
+        return full
+    msgs = full.get("messages") or []
+    # The conversation got SHORTER than what the phone holds. Not impossible - a
+    # compaction landing between two reads can change what de-duplicates against what -
+    # and the honest answer is "take the whole thing again" rather than a tail that
+    # would be stitched onto the wrong place.
+    if have > len(msgs):
+        return {"ok": True, "total": len(msgs), "messages": msgs, "reset": True}
+    return {"ok": True, "total": len(msgs), "messages": msgs[have:], "reset": False}
 
 
 # How far back a search looks, and how many conversations it opens to read.

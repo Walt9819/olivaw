@@ -1328,6 +1328,15 @@ class Handler(BaseHTTPRequestHandler):
             return talk_turns.look(ids=body.get("ids") or [],
                                    session_id=body.get("session_id", ""),
                                    wait=float(body.get("wait") or 0))
+        # Anything added to a conversation since the phone last looked, by whatever
+        # put it there - a turn's follow-up, a long job reporting back, a cron run, or
+        # another agent writing in. Held open the same way and for the same reason.
+        if route == "talk/watch":
+            return talk.watch(_target_profile(body), which("hermes"),
+                              session_id=body.get("session_id", ""),
+                              have=int(body.get("have") or 0),
+                              install_dir=INSTALL_DIR,
+                              wait=float(body.get("wait") or 0))
         if route == "talk/turns/drop":
             return talk_turns.drop(ids=body.get("ids") or [])
         # Everything this agent has made, newest first - not only the files that came up
