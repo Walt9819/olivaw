@@ -48,7 +48,8 @@ if __package__ in (None, ""):
                         config_writer, browser_label, connections, context_policy,
                         cron_patch, cronjobs, hermes_ctl, image_setup, numbers, obsidian,
                         pairing, proposals, providers, relay_client, remote, renaming,
-                        rescue, selfcare, session_health, talk, talk_access, telegram_health,
+                        rescue, selfcare, session_health, talk, talk_access, talk_turns,
+                        telegram_health,
                         console_one, usage, vault,
                         telegram_setup, usecases)
     from wizard import workspace as wsdir   # aliased: `workspace` is a local
@@ -61,7 +62,8 @@ else:
                    config_writer, browser_label, connections, context_policy, cron_patch,
                    cronjobs, hermes_ctl, image_setup, numbers, obsidian, pairing,
                    proposals, providers, relay_client, remote, renaming, rescue,
-                   selfcare, session_health, talk, talk_access, telegram_health, telegram_setup,
+                   selfcare, session_health, talk, talk_access, talk_turns,
+                   telegram_health, telegram_setup,
                    console_one, usage, vault,
                    usecases)
     from . import workspace as wsdir        # aliased: see above
@@ -1299,10 +1301,43 @@ class Handler(BaseHTTPRequestHandler):
                                 limit=int(body.get("limit") or 0),
                                 before=None if before is None else int(before))
         if route == "talk/send":
+            # Two shapes, and which one you get is decided by the caller rather than by
+            # a version check. A phone that asks for `async` is handed a turn id at once
+            # and the turn runs here to its end; anything that does not ask - the
+            # console, an older phone - gets the old behaviour, one request held open
+            # until the agent has finished. The field is simply absent in both
+            # directions when neither side knows about it, which is what lets a phone
+            # and a computer that updated on different days still talk.
+            if body.get("async"):
+                return talk_turns.start(_target_profile(body), which("hermes"),
+                                        session_id=body.get("session_id", ""),
+                                        text=body.get("text", ""),
+                                        files=body.get("files") or [],
+                                        client_id=body.get("client_id", ""),
+                                        install_dir=INSTALL_DIR)
             return talk.send(_target_profile(body), which("hermes"),
                              session_id=body.get("session_id", ""),
                              text=body.get("text", ""),
                              files=body.get("files") or [])
+        # What became of a message that was accepted. `wait` holds this open until one
+        # of the turns moves, which is how the answer reaches a phone the moment it
+        # exists instead of on its next poll. Safe to hold where holding the SEND open
+        # was not: if this connection dies nothing is riding on it, and the phone asks
+        # again.
+        if route == "talk/turns":
+            return talk_turns.look(ids=body.get("ids") or [],
+                                   session_id=body.get("session_id", ""),
+                                   wait=float(body.get("wait") or 0))
+        if route == "talk/turns/drop":
+            return talk_turns.drop(ids=body.get("ids") or [])
+        # Everything this agent has made, newest first - not only the files that came up
+        # in the conversation that happens to be open.
+        if route == "talk/outbox":
+            return talk.agent_files(_target_profile(body),
+                                    install_dir=INSTALL_DIR,
+                                    limit=int(body.get("limit") or 0),
+                                    offset=int(body.get("offset") or 0),
+                                    query=body.get("query", ""))
         # Attaching and downloading are two routes rather than fields on talk/send because
         # they are two different moments: a file is uploaded while the owner is still
         # writing, and downloaded long after the answer arrived. Neither takes a path -

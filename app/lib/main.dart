@@ -24,6 +24,7 @@ import 'sha256.dart';
 import 'markdown.dart';
 import 'media.dart';
 import 'native.dart';
+import 'outbox.dart';
 import 'theme.dart';
 import 'voice.dart';
 import 'settings.dart';
@@ -894,18 +895,28 @@ class _AgentScreenState extends State<AgentScreen> {
         if (st == null) return;
         // Every file in the conversation, which means the whole of it: the chat screen
         // itself only holds the last page.
-        st.wholeThread().then((_) => _gallery(st));
+        st.wholeThread().then((_) => _gallery(st, Pile.thread));
+      case 'files':
+        // From the agent's own settings, where "files" can only sensibly mean the
+        // agent's files. It used to open this same gallery built out of whichever
+        // conversation happened to be on screen, so an agent with two hundred
+        // conversations behind it showed the four files of the open one.
+        final st = _chat.currentState;
+        if (st == null) return;
+        _gallery(st, Pile.agent);
       case 'settings':
         _openSettings();
     }
   }
 
-  void _gallery(ChatTabState st) {
+  void _gallery(ChatTabState st, Pile start) {
         Navigator.of(context).push<int>(MaterialPageRoute(
           builder: (_) => MediaScreen(
             link: widget.link,
             messages: st.messages,
             body: st.bodyFor,
+            start: start,
+            agentName: _agent.name,
           ),
         )).then((index) {
           // The gallery hands back the message a file came with, if somebody asked
@@ -925,7 +936,7 @@ class _AgentScreenState extends State<AgentScreen> {
         name: _agent.name,
         isDefault: _agent.isDefault,
         canEdit: widget.pairing.caps.contains('config'),
-        onOpenFiles: _chat.currentState == null ? null : () => _menu('media'),
+        onOpenFiles: _chat.currentState == null ? null : () => _menu('files'),
       ),
     ));
     if (changed != true || !mounted) return;
@@ -1261,6 +1272,15 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _inFront = state == AppLifecycleState.resumed;
+    Outbox.instance.inFront = _inFront;
+    if (_inFront) {
+      Outbox.instance.watching = widget.agent.slug;
+      // Back from a pocket. Android may have frozen every timer in this process while
+      // it was in there, so what the outbox believes is a poll in flight may be a poll
+      // that died quietly. Asking again costs one request and is the difference between
+      // seeing the answer now and seeing it whenever something else happens to wake us.
+      Outbox.instance.nudge();
+    }
   }
 
   final _input = TextEditingController();
@@ -1313,6 +1333,12 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // Answers arrive here whether or not this screen asked for them: the message may
+    // have been sent from this conversation an hour ago, over a network this phone has
+    // since left. Listening rather than awaiting is the whole shape of it.
+    Outbox.instance.addListener(_fromOutbox);
+    Outbox.instance.watching = widget.agent.slug;
+    Outbox.instance.inFront = _inFront;
     _start();
   }
 
@@ -1362,6 +1388,38 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
           _talkOff = true;
           _error = '';
         });
+        return;
+      }
+      // Unless there is a message in the air. A send handed over from this screen
+      // is still being carried whatever the screen did next, and coming back to the
+      // chat has to land in the conversation it belongs to - not on a blank page
+      // offering to continue something, which reads as "it went nowhere".
+      final flight = Outbox.instance.forAgent(widget.agent.slug);
+      final carried = flight.where((e) => e.session.isNotEmpty).toList();
+      if (carried.isNotEmpty) {
+        _session = carried.last.session;
+        _resume = '';
+        setState(() {
+          _ready = true;
+          _error = '';
+        });
+        // Answers that landed while this screen was away are in the conversation
+        // about to be read, so they are let go of rather than drawn - drawing them
+        // here would put a second copy of each above the real one.
+        Outbox.instance.collectAnswered(widget.agent.slug);
+        // The computer has the accepted message, so the conversation it sends back is
+        // the true one; anything still unsent is laid on top afterwards, exactly as a
+        // retry does, because the computer knows nothing about those.
+        final waiting = [...?_unsent[widget.agent.slug]];
+        await _history();
+        if (!mounted) return;
+        if (waiting.isNotEmpty) {
+          setState(() => _msgs = [
+                ..._msgs.where((x) => !waiting.any((y) => identical(x, y))),
+                ...waiting,
+              ]);
+        }
+        _fromOutbox();
         return;
       }
       // Opening an agent opens a BLANK page, and offers the old conversation.
@@ -1729,9 +1787,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
   /// between wifi and mobile data, which is the phone this is for, that happens often
   /// enough to lose real messages.
   Future<void> _deliver(Map<String, dynamic> mine) async {
-    if (_sending) return;
     final outgoing = (mine['sendText'] ?? mine['text'] ?? '').toString();
-    final files = [for (final f in (mine['sendFiles'] as List? ?? [])) f];
     setState(() {
       _sending = true;
       _error = '';
@@ -1742,128 +1798,143 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
       ];
     });
     _toBottom();
-    try {
-      // From here the agent may take minutes. The service keeps this app out of the
-      // range where Android freezes it, so putting the phone away does not lose the
-      // wait. The computer would finish the turn either way - this is about whether
-      // the phone is still listening when it does.
-      // Asked here rather than at startup: a permission request makes sense next to
-      // the thing it is for, and this is the first moment the answer could matter.
-      if (!_askedToNotify) {
-        _askedToNotify = true;
-        if (!await Native.canNotify()) await Native.askNotify();
-      }
-      await Native.waitStart(widget.agent.name);
-      // The conversation this message belongs to. A retry after the screen was closed
-      // and opened again has no session in hand any more, and the thread it was
-      // written in is the thread it should still go to.
-      if (_session.isEmpty) _session = (mine['session'] ?? '').toString();
-      // The conversation is created by the first thing said in it.
-      if (_session.isEmpty) {
-        final made = await widget.link.reach('POST', '/api/talk/new', body: _body());
-        if (made['ok'] != true) {
-          throw LinkError(tr((made['detail'] ?? tr('No se pudo abrir la conversación.')).toString()));
+    // The conversation this message belongs to. A retry after the screen was closed
+    // and opened again has no session in hand any more, and the thread it was written
+    // in is the thread it should still go to.
+    if (_session.isEmpty) _session = (mine['session'] ?? '').toString();
+    // Before saying anything a second time to a computer that cannot recognise it as
+    // the same message. A newer one keys on the id this message has carried since it
+    // was written, so a retry re-attaches to the turn already running - which is both
+    // safer and faster than asking. An older one has no such idea, and silence after a
+    // request has gone out is the one failure that can mean "it arrived and the answer
+    // was lost"; these agents DO things, and a second copy of "send that email" is not
+    // a cosmetic duplicate.
+    if (mine['tried'] == true && !Outbox.instance.handsOver) {
+      if (await _alreadyThere(outgoing)) {
+        _unqueue(mine);
+        Outbox.instance.discard(mine);
+        final waiting = [...?_unsent[widget.agent.slug]];
+        setState(() => _msgs = _msgs.where(_notThinking).toList());
+        await _history();
+        if (!mounted) return;
+        if (waiting.isNotEmpty) {
+          setState(() => _msgs = [
+                ..._msgs.where((x) => !waiting.any((y) => identical(x, y))),
+                ...waiting,
+              ]);
         }
-        _session = ((made['session'] as Map?)?['id'] ?? made['id'] ?? '').toString();
-        if (_session.isEmpty) {
-          throw LinkError(tr('La computadora no abrió ninguna conversación.'));
-        }
-        _openThreads[widget.agent.slug] = _session;
-        await Store.saveThreads(_openThreads);
-      } else if (mine['tried'] == true) {
-        // It may already be there. Silence after a request has gone out is the one
-        // failure that can mean "it arrived and the answer was lost", and these
-        // agents DO things - a second copy of "send that email" is not a cosmetic
-        // duplicate. So before saying it twice, look at what the computer has.
-        if (await _alreadyThere(outgoing)) {
-          _unqueue(mine);
-          // What the computer has IS the conversation now, so it is read back whole -
-          // including the answer, if the agent has finished one. Anything else still
-          // waiting to be sent is put back underneath afterwards: the reload knows
-          // nothing about those, and they would otherwise vanish off a screen that
-          // still has them queued.
-          final waiting = [...?_unsent[widget.agent.slug]];
-          setState(() => _msgs = _msgs.where(_notThinking).toList());
-          await _history();
-          if (!mounted) return;
-          if (waiting.isNotEmpty) {
-            setState(() => _msgs = [
-                  ..._msgs.where((x) => !waiting.any((y) => identical(x, y))),
-                  ...waiting,
-                ]);
-          }
-          // Said out loud, because the owner pressed a button that promised to send
-          // it and nothing was sent. Silence here looks like the retry did nothing.
-          _say(tr('Ese mensaje ya había llegado.'));
-          _toBottom();
-          return;
-        }
-      }
-      mine['session'] = _session;
-      mine['tried'] = true;
-      final res = await widget.link.reach('POST', '/api/talk/send',
-          body: _body({
-            'session_id': _session,
-            'text': outgoing,
-            if (files.isNotEmpty) 'files': files,
-          }),
-          wait: Link.thinkingWait);
-      if (res['ok'] != true) throw LinkError(tr((res['detail'] ?? tr('Sin respuesta')).toString()));
-      // The reply comes back on the send itself; re-reading the whole transcript to
-      // find it would also drag in every tool call the agent made on the way.
-      final reply = (res['reply'] ?? '').toString().trim();
-      final shown = reply.isEmpty ? tr('(sin respuesta)') : reply;
-      _unqueue(mine);
-      mine['failed'] = false;
-      // And this is a conversation of its own now, so the old one is no longer being
-      // offered. canResumeOver has refused to open it from this moment on anyway -
-      // the strip simply went on sitting there saying otherwise, above a live thread,
-      // showing the last line of a different one. A message that FAILED does not do
-      // this: nothing was said to anybody, and the offer still stands.
-      _resume = '';
-      // The screen may be gone - somebody walked out of the chat while the agent was
-      // thinking - and the answer still arrived. Drawing it is optional; telling them
-      // about it is not.
-      if (mounted) {
-        setState(() {
-          // Whatever the status request said, or failed to say when the screen was
-          // opened with no signal: a turn that just came back from this agent is a
-          // better answer to "can I talk to it" than any question about it. Without
-          // this, rescuing a message offline left the owner looking at the reply with
-          // a composer that still said «no disponible» underneath.
-          _ready = true;
-          _msgs = [
-            ..._msgs.where(_notThinking),
-            {
-              'role': 'assistant',
-              'text': shown,
-              if (res['files'] is List) 'files': res['files'],
-            },
-          ];
-        });
+        // Said out loud, because the owner pressed a button that promised to send it
+        // and nothing was sent. Silence here looks like the retry did nothing.
+        _say(tr('Ese mensaje ya había llegado.'));
         _toBottom();
+        setState(() => _sending = false);
+        return;
       }
-      // Only when they are not already looking at it.
-      if (!_inFront) {
-        await Native.notify(widget.agent.name, shown);
+    }
+    mine['session'] = _session;
+    mine['tried'] = true;
+    // Filed BEFORE it goes, not after it fails. Leaving the chat is precisely what
+    // somebody does while a message is on its way, and from here on the words survive
+    // that whatever happens: the outbox holds them, the outbox does the sending, and
+    // the outbox is above every screen on this phone.
+    _queue(mine);
+    await Outbox.instance.send(
+      link: widget.link,
+      agent: widget.agent.slug,
+      agentName: widget.agent.name,
+      isDefault: widget.agent.isDefault,
+      mine: mine,
+      session: _session,
+      openSession: (sid) {
+        _session = sid;
+        _openThreads[widget.agent.slug] = sid;
+        Store.saveThreads(_openThreads);
+      },
+    );
+    if (mounted) setState(() => _sending = false);
+    // Accepted, failed, or already answered - whichever it is, the listener below has
+    // the whole of it and draws it the same way it would draw one arriving an hour
+    // from now on another network.
+    _fromOutbox();
+    // AFTER the handover, never before it. Asked here rather than at startup because a
+    // permission request makes sense next to the thing it is for - but it is a dialog,
+    // and a dialog between pressing send and the message leaving is a dialog standing
+    // in front of the one thing the owner asked for. The reply no longer needs this
+    // screen, so the permission can be a beat late without costing anything.
+    if (!_askedToNotify) {
+      _askedToNotify = true;
+      if (!await Native.canNotify()) await Native.askNotify();
+    }
+  }
+
+  /// What the outbox has for this conversation, drawn.
+  ///
+  /// The one place an answer becomes a bubble, whether it came back in half a second
+  /// or after the phone changed network twice. Called when the outbox says something
+  /// moved, and once after each send so that the fast case does not wait for a tick.
+  void _fromOutbox() {
+    if (!mounted) return;
+    final mineHere = Outbox.instance.forAgent(widget.agent.slug);
+    var changed = false;
+    for (final e in mineHere) {
+      // The computer has it. `_unsent` means "never left this phone" - it is what
+      // survives backing out of a chat with words still in the box - and these have
+      // left. Leaving them in there would show them again, as unsent, on top of the
+      // same message read back from the conversation.
+      if (e.accepted && e.error.isEmpty) _unqueue(e.mine);
+      if (e.error.isNotEmpty) {
+        // It stays in the conversation, with its words, offering to go again. The
+        // outbox keeps holding it: this is a message, not an incident.
+        if (_error != e.error) {
+          _error = e.error;
+          changed = true;
+        }
+        continue;
       }
-    } catch (e) {
-      // Filed first and redrawn second, in that order and deliberately: leaving the
-      // chat is precisely what somebody does while a message refuses to go, and the
-      // words have to survive that. They are plain data in a map; only the redraw
-      // needs a screen.
-      _queue(mine);
-      mine['failed'] = true;
-      mine['pending'] = false;
-      if (mounted) {
-        setState(() {
-          _msgs = _msgs.where(_notThinking).toList();
-          _error = humanError(e);
-        });
-      }
-    } finally {
-      await Native.waitStop();
-      if (mounted) setState(() => _sending = false);
+      if (!e.answered) continue;
+      // An answer. The message that earned it has arrived, so it stops being unsent.
+      _unqueue(e.mine);
+      _msgs = [
+        ..._msgs.where(_notThinking),
+        {
+          'role': 'assistant',
+          'text': e.reply,
+          if (e.replyFiles.isNotEmpty) 'files': e.replyFiles,
+        },
+      ];
+      // This is a conversation of its own now, so the old one is no longer being
+      // offered - the strip would otherwise sit above a live thread showing the last
+      // line of a different one.
+      _resume = '';
+      _error = '';
+      // Whatever the status request said, or failed to say when the screen was opened
+      // with no signal: a turn that just came back from this agent is a better answer
+      // to "can I talk to it" than any question about it.
+      _ready = true;
+      changed = true;
+      Outbox.instance.collected(e);
+    }
+    // The computer forgot a turn it had accepted - it restarted, or enough time went
+    // by. The answer is in the conversation, which is the one place it was always
+    // safe to look.
+    if (Outbox.instance.takeReload(widget.agent.slug)) {
+      _history();
+    }
+    // Still thinking, or not. Both directions: a conversation reopened while an
+    // answer is being written has to say so, and one whose last message failed must
+    // stop saying so. The bubble is drawn from what is actually in the air rather
+    // than from a flag somebody remembered to clear.
+    final airborne = mineHere.any((e) => e.error.isEmpty && !e.answered);
+    final shown = _msgs.any((m) => !_notThinking(m));
+    if (airborne != shown) {
+      _msgs = airborne
+          ? [..._msgs.where(_notThinking), {'role': 'assistant', 'pending': true}]
+          : _msgs.where(_notThinking).toList();
+      changed = true;
+    }
+    if (changed) {
+      setState(() {});
+      _toBottom();
     }
   }
 
@@ -1900,6 +1971,9 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
   /// there is nothing to put back in a box - so that one really does go.
   void _discard(Map<String, dynamic> m) {
     _unqueue(m);
+    // And out of the outbox, or it would go on trying to send words the owner has just
+    // taken back - and put them in the box underneath at the same time.
+    Outbox.instance.discard(m);
     final back = m['voice'] == true ? '' : (m['text'] ?? '').toString();
     setState(() {
       _msgs = _msgs.where((x) => !identical(x, m)).toList();
@@ -2145,7 +2219,16 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    Native.waitStop();
+    Outbox.instance.removeListener(_fromOutbox);
+    // Deliberately NOT Native.waitStop(). Leaving the chat used to put down the one
+    // service keeping this app out of the range where Android freezes it - so backing
+    // out of a conversation, which is what somebody does after asking a long question,
+    // was enough to lose the answer. The outbox owns that service now: it goes up when
+    // the first message is handed over and comes down when the last one is answered,
+    // on no screen's schedule.
+    if (Outbox.instance.watching == widget.agent.slug) {
+      Outbox.instance.watching = '';
+    }
     _tick?.cancel();
     if (_recording) Native.recordCancel();
     _input.dispose();
@@ -2328,7 +2411,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
         _askedToNotify = true;
         if (!await Native.canNotify()) await Native.askNotify();
       }
-      await Native.waitStart(widget.agent.name);
+      Outbox.instance.standBy(widget.agent.name);
       // One call does both: the recording is kept in the agent's folder AND read out
       // into words. Keeping it is the point of showing a transcript at all - a name
       // Whisper got wrong can still be checked against what was actually said.
@@ -2359,7 +2442,7 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
         _replyTo = null;
       });
     } catch (e) {
-      await Native.waitStop();
+      Outbox.instance.standDown();
       _queue(mine);
       mine['pending'] = false;
       mine['failed'] = true;
@@ -2375,7 +2458,18 @@ class ChatTabState extends State<ChatTab> with WidgetsBindingObserver {
     // the gap is where Android would be free to freeze the app, and the wait is one
     // wait as far as the owner is concerned.
     if (!mounted) {
-      await Native.waitStop();
+      // The screen is gone - somebody walked out while the recording was being read.
+      // The words exist now, and they were spoken on purpose; the one thing that must
+      // not happen is that they sit in a dead widget. The outbox needs no screen.
+      await Outbox.instance.send(
+        link: widget.link,
+        agent: widget.agent.slug,
+        agentName: widget.agent.name,
+        isDefault: widget.agent.isDefault,
+        mine: mine,
+        session: _session,
+      );
+      Outbox.instance.standDown();
       return;
     }
     setState(() => _sending = false);

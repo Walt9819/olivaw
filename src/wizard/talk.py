@@ -91,6 +91,7 @@ import urllib.parse
 import urllib.request
 
 from . import hermes_ctl
+from . import talk_archive
 from . import procutil
 
 PLATFORM = "api_server"
@@ -677,6 +678,103 @@ def file_bytes(file_id=""):
             "data_b64": base64.b64encode(data).decode("ascii")}
 
 
+# Folders inside a workspace that are not the agent's output, however many files they
+# hold. A git checkout or a node_modules is thousands of files nobody made on purpose,
+# and finding "the report" among them is exactly the errand this screen exists for.
+_SKIP_DIRS = {
+    ".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv", "env",
+    ".idea", ".vscode", ".cache", ".pytest_cache", ".mypy_cache", "dist", "build",
+    ".next", ".gradle", "target", "site-packages", ".terraform", ".obsidian",
+}
+
+# What a walk is allowed to cost. A workspace is the agent's own folder, but it is also
+# a folder a person can drop anything into, and this runs while somebody is looking at
+# a spinner on a phone.
+WALK_FILES = 4000
+WALK_DEPTH = 6
+
+
+def _walk(root, skip_dir=None):
+    """Every ordinary file under `root`, bounded, with the noise folders cut out."""
+    out = []
+    root = os.path.abspath(root)
+    stack = [(root, 0)]
+    while stack and len(out) < WALK_FILES:
+        here, depth = stack.pop()
+        try:
+            entries = list(os.scandir(here))
+        except OSError:
+            continue
+        for e in entries:
+            name = e.name
+            try:
+                if e.is_dir(follow_symlinks=False):
+                    if depth >= WALK_DEPTH or name.startswith(".") \
+                            or name.lower() in _SKIP_DIRS:
+                        continue
+                    if skip_dir and os.path.abspath(e.path) == skip_dir:
+                        continue
+                    stack.append((e.path, depth + 1))
+                elif e.is_file(follow_symlinks=False):
+                    if name.startswith(".") or _is_secret(e.path):
+                        continue
+                    st = e.stat()
+                    out.append((e.path, st.st_size, st.st_mtime))
+                    if len(out) >= WALK_FILES:
+                        break
+            except OSError:
+                continue
+    return out
+
+
+def agent_files(profile=None, install_dir=None, limit=0, offset=0, query=""):
+    """Every file in this agent's workspace, newest first.
+
+    Newest first and not by name, because the question somebody opens this with is
+    nearly always "the thing from the other day". Names are what the search box is for.
+
+    A file gets a fetch id here the same way it gets one in a reply - minted on the way
+    out, spent on `talk/file`, never a path crossing the wire - and it gets one only if
+    it is small enough to travel. Anything bigger is still LISTED, with the folder it
+    is in: "it exists, it is 90 MB, here is where" is a better answer than leaving it
+    out and letting the owner conclude the agent never wrote it.
+
+    `adjuntos/` is in here too, marked. Those are the files the OWNER sent, and the
+    separation matters on a screen that says "what this agent has": a photo you sent it
+    in March is a thing you may well be looking for, but it is not something it made.
+    """
+    folder = workspace_for(profile, install_dir)
+    if not os.path.isdir(folder):
+        return {"ok": True, "files": [], "total": 0, "folder": folder,
+                "detail": "Este agente todavía no tiene carpeta de trabajo."}
+    sent = os.path.abspath(os.path.join(folder, ATTACH_DIR))
+    rows = _walk(folder)
+    rows.sort(key=lambda r: r[2], reverse=True)
+    terms = _terms(query)
+    out, total = [], 0
+    offset = max(0, int(offset or 0))
+    limit = max(0, min(int(limit or 0), 500))
+    for path, size, mtime in rows:
+        name = os.path.basename(path)
+        rel = os.path.relpath(path, folder)
+        if terms and not (_hit(name, terms) is not None or _hit(rel, terms) is not None):
+            continue
+        total += 1
+        if total <= offset:
+            continue
+        if limit and len(out) >= limit:
+            continue
+        item = {"kind": kind_of(name), "name": name, "size": size,
+                "human": _human(size), "folder": os.path.dirname(path),
+                "rel": rel.replace("\\", "/"), "at": mtime,
+                "mine": os.path.abspath(path).startswith(sent + os.sep)}
+        if size <= MAX_DOWNLOAD_BYTES:
+            item["id"] = _remember(_GRANTS, {"name": name, "path": path,
+                                             "mime": mime_of(name)})
+        out.append(item)
+    return {"ok": True, "files": out, "total": total, "folder": folder,
+            "has_more": bool(limit) and (offset + len(out)) < total}
+
 # ── talking ──────────────────────────────────────────────────────────────────
 
 # Where each agent's gateway is, remembered for a moment.
@@ -902,11 +1000,26 @@ def _dress(row, install_dir=None, profile=None):
     return row
 
 
-def _messages_of(profile, hermes, session_id):
-    """Every stored row of one conversation, undressed. Hermes ignores limit/offset on
-    this endpoint, so the window is taken here."""
+def _messages_of(profile, hermes, session_id, whole=True, speech_only=False):
+    """Every stored row of one conversation, undressed.
+
+    Hermes ignores limit/offset on this endpoint, so the window is taken here.
+
+    `whole` asks for the conversation INCLUDING the turns compaction archived. Those
+    are the ones the HTTP route cannot return - `get_messages()` defaults to the live
+    set and the route passes no arguments - so they are read from Hermes' own database,
+    read-only, by talk_archive. On this machine that was three quarters of every long
+    conversation: not deleted, not reachable, and not mentioned. If that read cannot be
+    done for any reason at all, this falls back to the route and the owner gets exactly
+    what they got before.
+    """
     if not _safe_session(session_id):
         return None, {"ok": False, "detail": "Conversación no válida."}
+    if whole:
+        got = talk_archive.messages(session_id, hermes_home=profile_home(profile),
+                                    speech_only=speech_only)
+        if got is not None:
+            return got, None
     key, port, err = _require(profile, hermes)
     if err:
         return None, err
@@ -920,7 +1033,7 @@ def _messages_of(profile, hermes, session_id):
 
 
 def history(profile=None, hermes=None, session_id="", install_dir=None,
-            limit=0, before=None):
+            limit=0, before=None, whole=True):
     """A conversation, or the end of one.
 
     `limit=0` is the whole thing, which is what the desktop asks for - it is reading a
@@ -930,7 +1043,7 @@ def history(profile=None, hermes=None, session_id="", install_dir=None,
     other end - counting from the end would quietly shift every page under the reader
     each time a new turn arrived.
     """
-    rows, err = _messages_of(profile, hermes, session_id)
+    rows, err = _messages_of(profile, hermes, session_id, whole=whole)
     if err:
         return err
     speech = [r for r in rows if _is_speech(r)]
@@ -1043,7 +1156,11 @@ def _snippet(text, at, term_len):
 
 def _search_one(profile, hermes, row, terms):
     """One conversation, read and searched. Returns a match or None."""
-    rows, err = _messages_of(profile, hermes, str(row.get("id") or ""))
+    # `speech_only`: a search opens hundreds of conversations and looks at what was
+    # said in them, so the tool calls and the reasoning are left in the database rather
+    # than carried out of it to be dropped a line later.
+    rows, err = _messages_of(profile, hermes, str(row.get("id") or ""),
+                             speech_only=True)
     if err or not rows:
         return None
     for raw in rows:

@@ -127,13 +127,23 @@ bool relayFirst({
 /// Named rather than guessed from the verb: every route here is a POST, so there is no
 /// GET/POST line to hide behind, and a list that has to be edited when a route that
 /// creates something is added is the honest shape of the question.
-bool repeatableRoute(String path) {
+bool repeatableRoute(String path, [Map<String, dynamic>? body]) {
   const makesSomething = [
     '/api/talk/send',     // a message
     '/api/talk/new',      // a conversation
     '/api/talk/attach',   // a file in the agent's folder
     '/api/talk/voice',    // a voice note, and its transcription
   ];
+  // Unless the computer can tell it is the same message. A send that carries a
+  // `client_id` names itself: the computer keys the turn on that id, so asking twice
+  // re-attaches to the turn already running rather than starting a second one. Which
+  // turns the commonest failure on a phone - the request went out, the answer was lost
+  // on the way back as the network changed underneath it - from a message the owner
+  // has to decide about into a reconnection nobody sees.
+  if (path == '/api/talk/send' &&
+      (body?['client_id'] ?? '').toString().isNotEmpty) {
+    return true;
+  }
   return !makesSomething.contains(path);
 }
 
@@ -366,7 +376,7 @@ class Link {
         //
         // Unless saying it twice would mean doing it twice: silence after the request
         // went out is the one case where it may actually have arrived.
-        if (!repeatableRoute(path)) rethrow;
+        if (!repeatableRoute(path, body)) rethrow;
         if (await rediscover()) {
           return await call(method, path, body: body, auth: auth, wait: wait);
         }

@@ -110,6 +110,12 @@ ROUTES = {
     "talk/search": "hablar",
     "talk/new": "hablar",
     "talk/send": "hablar",
+    # Asking what became of a message already accepted. Same permission as saying it:
+    # these carry the answer to a turn the device itself started, and nothing else.
+    "talk/turns": "hablar",
+    "talk/turns/drop": "hablar",
+    # Everything this agent has made, not only what came up in one conversation.
+    "talk/outbox": "hablar",
     "talk/file": "hablar",
     "talk/attach": "hablar",
     # A voice note is a message like any other: the same permission, because it says the

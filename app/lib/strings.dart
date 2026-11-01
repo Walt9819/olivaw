@@ -152,6 +152,7 @@ const Map<String, (String, String)> _table = {
   // that sends it again. Past tense and final on purpose: 'no se pudo enviar' invites
   // the reading that it might still go on its own, and it will not.
   'No se envió.': ('It was not sent.', 'Wurde nicht gesendet.'),
+  'No se pudo enviar.': ('It could not be sent.', 'Konnte nicht gesendet werden.'),
   // After pressing "send it again" and finding it had got there after all: the
   // request went out, the answer was lost on the way back, and nothing was sent a
   // second time. Without this the retry looks like it did nothing.
@@ -540,6 +541,18 @@ const Map<String, (String, String)> _table = {
   'Buscar en la conversación': ('Search in the conversation', 'Im Gespräch suchen'),
   'Nada': ('None', 'Nichts'),
   'Fotos y archivos': ('Photos and files', 'Fotos und Dateien'),
+  'Esta conversación': ('This conversation', 'Dieses Gespräch'),
+  'Todo': ('Everything', 'Alles'),
+  'Todo lo de {0}': ('Everything from {0}', 'Alles von {0}'),
+  'Volver a mirar': ('Look again', 'Noch einmal nachsehen'),
+  'No pude leer su carpeta.': (
+    'I could not read its folder.',
+    'Ich konnte seinen Ordner nicht lesen.'
+  ),
+  'Este agente todavía no tiene carpeta de trabajo.': (
+    'This agent does not have a working folder yet.',
+    'Dieser Agent hat noch keinen Arbeitsordner.'
+  ),
   'Fotos': ('Photos', 'Fotos'),
   'Archivos': ('Files', 'Dateien'),
   'Notas': ('Notes', 'Notizen'),

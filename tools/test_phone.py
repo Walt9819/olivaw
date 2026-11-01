@@ -1256,7 +1256,14 @@ _stored.append({'role': 'assistant', 'content': '[CONTEXT COMPACTION] resumen'})
 _stored.append({'role': 'user', 'content': '   '})
 
 _saved_msgs = talk_mod._messages_of
-talk_mod._messages_of = lambda profile, hermes, sid: (list(_stored), None)
+# `_messages_of` grew two keyword arguments: `whole`, which decides whether the
+# turns compaction archived are read out of Hermes' own database, and
+# `speech_only`, which a search uses to leave the tool calls in it. Neither changes
+# what this stub stands for - it IS the stored conversation - so it takes them and
+# ignores them.
+talk_mod._messages_of = (
+    lambda profile, hermes, sid, whole=True, speech_only=False:
+        (list(_stored), None))
 try:
     _all = talk_mod.history(None, None, session_id='s1')
     ok('only what somebody actually said is a turn',
@@ -1351,7 +1358,7 @@ def _fake_sessions(profile=None, hermes=None, limit=20, offset=0):
     return {'ok': True, 'sessions': _rows2 if not offset else [], 'has_more': False}
 
 
-def _fake_messages(profile, hermes, sid):
+def _fake_messages(profile, hermes, sid, whole=True, speech_only=False):
     _opened.append(sid)
     return list(_talks.get(sid, [])), None
 
