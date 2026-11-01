@@ -153,6 +153,15 @@ class Outbox extends ChangeNotifier {
   /// Set by the chat screen while the app itself is in the foreground.
   bool inFront = false;
 
+  /// Told the moment a message has REACHED the computer.
+  ///
+  /// Whoever is keeping the messages that never left this phone needs to stop keeping
+  /// this one, and it cannot wait for a screen to notice: the chat may be closed, and
+  /// closing the chat while a message is on its way is the ordinary case. Without
+  /// this, reopening the conversation drew the message twice - once as the computer
+  /// now has it, and once as the copy nobody had taken back out of the box.
+  void Function(String agent, Map<String, dynamic> mine)? onAccepted;
+
   /// Whether the computer on the other end takes a message and answers later, rather
   /// than holding the request open for the whole turn.
   ///
@@ -290,6 +299,7 @@ class Outbox extends ChangeNotifier {
           openSession?.call(sid);
         }
         e.mine['sent'] = true;
+        onAccepted?.call(e.agent, e.mine);
         _take(t, e);
         notifyListeners();
         _keepUp();
@@ -299,6 +309,7 @@ class Outbox extends ChangeNotifier {
       // to watch, nothing to poll - take it and finish.
       handsOver = false;
       e.mine['sent'] = true;
+      onAccepted?.call(e.agent, e.mine);
       e.reply = (res['reply'] ?? '').toString().trim();
       e.replyFiles = (res['files'] as List?) ?? const [];
       if (!e.answered) e.reply = tr('(sin respuesta)');
@@ -338,6 +349,7 @@ class Outbox extends ChangeNotifier {
   void _settle(Outgoing e) {
     e.mine['failed'] = false;
     e.mine['sent'] = true;
+    onAccepted?.call(e.agent, e.mine);
     if (!e.announced) {
       e.announced = true;
       // Only when they are not already looking at it. A notification for a reply

@@ -38,6 +38,10 @@ Future<void> main() async {
   // Before the first frame, so nothing is drawn in the wrong language and then redrawn.
   chooseLanguage();
   await loadOpenThreads();
+  // The outbox carries messages for screens that are not there, so it is the outbox
+  // that has to say when one has left the phone - a chat closed over a message on its
+  // way is the ordinary case, not the exception.
+  Outbox.instance.onAccepted = forgetUnsent;
   runApp(const OlivawApp());
 }
 
@@ -1116,6 +1120,18 @@ Future<void> loadOpenThreads() async {
 /// backing out of a chat, or opening another agent, while a message is sitting there
 /// unsent. Before this, leaving the screen was enough to throw it away.
 final Map<String, List<Map<String, dynamic>>> _unsent = {};
+
+/// This message has reached the computer; stop keeping it as one that has not.
+///
+/// `_unsent` means "never left this phone". A message the computer has acknowledged
+/// has left, and leaving it in here showed it twice on the next opening: once in the
+/// conversation read back from the computer, and once as the copy laid on top.
+void forgetUnsent(String agent, Map<String, dynamic> mine) {
+  final list = _unsent[agent];
+  if (list == null) return;
+  list.removeWhere((x) => identical(x, mine));
+  if (list.isEmpty) _unsent.remove(agent);
+}
 
 /// Whether the end of a conversation already contains this message.
 ///

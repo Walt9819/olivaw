@@ -726,7 +726,10 @@ class _AgentSettingsState extends State<AgentSettings> {
                 contentPadding: EdgeInsets.zero,
                 leading: const Icon(Icons.perm_media_outlined),
                 title: Text(tr('Fotos y archivos')),
-                subtitle: Text(tr('Todo lo que os habéis mandado.'),
+                // Not "everything you have sent each other" any more: from here it
+                // opens what the AGENT has, which is the whole point of the change -
+                // reached from its settings, "files" could only sensibly mean its own.
+                subtitle: Text(tr('Todo lo que ha hecho, y lo que le has mandado.'),
                     style: TextStyle(fontSize: 11, color: context.c.muted)),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: widget.onOpenFiles,

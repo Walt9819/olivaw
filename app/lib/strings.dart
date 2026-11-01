@@ -541,6 +541,10 @@ const Map<String, (String, String)> _table = {
   'Buscar en la conversación': ('Search in the conversation', 'Im Gespräch suchen'),
   'Nada': ('None', 'Nichts'),
   'Fotos y archivos': ('Photos and files', 'Fotos und Dateien'),
+  'Todo lo que ha hecho, y lo que le has mandado.': (
+    'Everything it has made, and what you have sent it.',
+    'Alles, was er gemacht hat, und was du ihm geschickt hast.'
+  ),
   'Esta conversación': ('This conversation', 'Dieses Gespräch'),
   'Todo': ('Everything', 'Alles'),
   'Todo lo de {0}': ('Everything from {0}', 'Alles von {0}'),

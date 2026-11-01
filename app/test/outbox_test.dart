@@ -15,6 +15,8 @@
 // asked for, that the owner is told about it, and - the one worth more than the
 // feature - that nothing is ever said twice.
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -52,6 +54,11 @@ class HandsOverLink extends Link {
   /// A computer that has never heard of handing a message over: it holds the request
   /// open and answers down it, the way every version before this one did.
   bool oldSchool = false;
+
+  /// Held here, the send does not finish until the test lets it - which is the only
+  /// way to walk out of the chat WHILE a message is being handed over, as a thumb
+  /// does and as no instant fake can.
+  Completer<void>? holdSend;
   int _minted = 0;
 
   /// How many separate turns this computer was asked to run.
@@ -91,6 +98,7 @@ class HandsOverLink extends Link {
     // still an attempt, and whether the SECOND one carries the same name as the first
     // is the whole question.
     if (path == '/api/talk/send') sends.add({...?body});
+    if (path == '/api/talk/send' && holdSend != null) await holdSend!.future;
     final boom = breaks[path];
     if (boom != null) throw boom;
     if (path == '/api/talk/send' && !oldSchool) {
@@ -181,6 +189,10 @@ void main() {
     setLanguage(Lang.es);
     SharedPreferences.setMockInitialValues({});
     Outbox.instance.resetForTests();
+    // What main() does at startup. These tests pump a widget rather than booting the
+    // app, so without this the outbox has nobody to tell when a message has left the
+    // phone - which is exactly the wiring the test below is about.
+    Outbox.instance.onAccepted = forgetUnsent;
     notified = [];
     service = [];
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -317,6 +329,50 @@ void main() {
     await tester.pumpWidget(screen(link, agentNamed('a-vuelta')));
     await breathe(tester, 30);
     expect(find.textContaining('queda el anexo'), findsOneWidget);
+    await stopWaiting(tester);
+  });
+
+  testWidgets('a message answered while the chat was closed is not drawn twice',
+      (tester) async {
+    // Found on a real phone, not in a test. Send, leave, let the answer land, come
+    // back: the conversation read off the computer had the message in it, and so did
+    // the copy this phone was still holding as "never sent" - because the thing that
+    // takes it out of that box was a listener on a screen that was not there. The
+    // outbox says so itself now.
+    final link = linkThatHandsOver();
+    await tester.pumpWidget(screen(link, agentNamed('a-doble')));
+    await breathe(tester);
+    await type(tester, 'cuenta del 1 al 5');
+
+    // Out of the chat WHILE the message is being handed over - a thumb is faster than
+    // a round trip, and this is the gesture that produced the bug on a real phone.
+    link.holdSend = Completer<void>();
+    await tester.tap(find.byIcon(Icons.send));
+    await tester.pump();
+    await tester.pumpWidget(const MaterialApp(home: Scaffold(body: Text('fuera'))));
+    await breathe(tester);
+    link.holdSend!.complete();
+    link.holdSend = null;
+    await breathe(tester);
+
+    link.answer('t1', '1, 2, 3, 4, 5');
+    await tester.pump(kPollFloor + const Duration(seconds: 1));
+    await breathe(tester);
+
+    link.answers['/api/talk/history'] = {
+      'ok': true,
+      'start': 0,
+      'messages': [
+        {'role': 'user', 'content': 'cuenta del 1 al 5'},
+        {'role': 'assistant', 'content': '1, 2, 3, 4, 5'},
+      ],
+    };
+    await tester.pumpWidget(screen(link, agentNamed('a-doble')));
+    await breathe(tester, 30);
+
+    expect(find.text('cuenta del 1 al 5'), findsOneWidget);
+    expect(find.text('1, 2, 3, 4, 5'), findsOneWidget);
+    expect(find.text('No se envió.'), findsNothing);
     await stopWaiting(tester);
   });
 
