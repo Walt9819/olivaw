@@ -174,24 +174,61 @@ def _target_profile(body, allow_new=False):
                                            allow_new=allow_new)
 
 
+def _at_once(jobs, workers=10):
+    """Run no-argument jobs together and return their answers in order, never raising.
+
+    Every one of these is a status read that spends its time waiting - a `hermes` launch,
+    an HTTP call to a gateway, a file - and none of them needs another's answer. One
+    after another, seven agents is two minutes of spinner on the first screen the owner
+    sees. A job that fails answers None rather than taking the rest of the page with it.
+    """
+    jobs = list(jobs)
+    if not jobs:
+        return []
+
+    def _one(fn):
+        try:
+            return fn()
+        except Exception:  # noqa: BLE001
+            return None
+
+    try:
+        import concurrent.futures
+        # Bounded: each of these may launch a `hermes` process, on a laptop that is also
+        # running the agents themselves.
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=max(1, min(workers, len(jobs)))) as ex:
+            return list(ex.map(_one, jobs))
+    except Exception:  # noqa: BLE001
+        # A pool that will not start is not a reason to show nothing.
+        return [_one(fn) for fn in jobs]
+
+
 def _dashboard(fast=False):
     """The machine at a glance: the brain's session, every agent, and the update state.
 
     One call rather than the page assembling six, because the dashboard is the first thing
     the owner sees and six round trips is six chances to paint half a picture. `fast` skips
-    what leaves the machine so it can render immediately and refine after.
+    what costs a wait so it can render immediately and refine after.
+
+    All of it at once. It used to walk the agents one at a time, and each one asked its
+    gateway whether it was up - a question this function already has the answer to, three
+    lines above, because agents_snapshot asks every agent together. Seven agents: a hundred
+    and twenty-four seconds before anything appeared.
     """
     hp = which("hermes")
     agents = agents_snapshot()
     rows = [agents["default"]] + list(agents.get("extra") or [])
-    out = []
-    for a in rows:
+
+    def _card(a):
         prof = None if a.get("is_default") else (a.get("profile") or a.get("slug"))
         try:
-            snap = connections.snapshot(prof, hp, INSTALL_DIR, port=a.get("port"), fast=fast)
+            snap = connections.snapshot(prof, hp, INSTALL_DIR, port=a.get("port"),
+                                        fast=fast,
+                                        gateway_running=a.get("gateway_running"))
         except Exception as e:  # noqa: BLE001
             snap = {"ok": False, "channels": [], "detail": str(e)}
-        out.append({
+        return {
             "slug": a.get("slug"), "name": a.get("name") or a.get("slug"),
             "is_default": bool(a.get("is_default")),
             "gateway_running": a.get("gateway_running"),
@@ -199,16 +236,22 @@ def _dashboard(fast=False):
             "missing_profile": bool(a.get("missing_profile")),
             "port": a.get("port"),
             "channels": snap.get("channels") or [],
-        })
+        }
+
+    # The three machine-wide answers wait alongside the agents rather than after them.
+    # The session leads the dashboard because the brain is shared: one expired login
+    # silences every agent at once.
+    got = _at_once(
+        [lambda: session_health.status(install_dir=INSTALL_DIR),
+         lambda: updates_mod.status(INSTALL_DIR),
+         lambda: updates_mod.supervisor(INSTALL_DIR)]
+        + [(lambda a=a: _card(a)) for a in rows])
     return {
         "ok": True,
-        # The session is machine-wide: the brain is shared, so one expired login silences
-        # every agent at once. That is why it leads the dashboard rather than sitting in
-        # one agent's page.
-        "session": session_health.status(install_dir=INSTALL_DIR),
-        "agents": out,
-        "update": updates_mod.status(INSTALL_DIR),
-        "supervisor": updates_mod.supervisor(INSTALL_DIR),
+        "session": got[0],
+        "agents": [c for c in got[3:] if c],
+        "update": got[1] or {},
+        "supervisor": got[2] or {},
         "fast": bool(fast),
     }
 
@@ -323,7 +366,6 @@ def _bridge_up(port):
 def agents_snapshot():
     """All agents on this machine: the built-in `default` plus registered extras."""
     hp = which("hermes")
-    owners = hermes_ctl.pairing_list(hp).get("approved", []) if hp else []
     # One name per agent across the whole console. The owner can say what the other agents
     # should call this one ("Chalenus"), and a sidebar that went on saying "Agente
     # principal" would leave her reading two names for the same agent on one screen - the
@@ -340,39 +382,61 @@ def agents_snapshot():
             INSTALL_DIR)
     except Exception:  # noqa: BLE001
         pass
-    # Asking about the agents AT THE SAME TIME, not one after another. Each of these
-    # answers costs a `hermes` CLI launch - about three and a half seconds, nearly all of
-    # it Python starting up - and there are three per agent. Serially that is seventy
-    # seconds on a seven-agent machine, which is what the phone's first screen used to
-    # spend showing a spinner. They do not depend on each other, so they wait together.
-    def _about(slug):
-        """(gateway_running, owners, missing_profile) for one agent."""
-        if not hp:
-            return (None, [], False)
-        if slug == "default":
-            return (hermes_ctl.gateway_status(hp).get("running"), owners, False)
-        if not hermes_ctl.profile_exists(slug, hp):
-            return (None, [], True)   # code/profile deleted -> restore candidate
-        return (hermes_ctl.gateway_status(hp, profile=slug).get("running"),
-                hermes_ctl.pairing_list(hp, profile=slug).get("approved", []), False)
-
     _rows = agents_registry.list_agents(INSTALL_DIR)
     _slugs = ["default"] + [a.get("slug") for a in _rows]
+
+    # Every question that costs a `hermes` launch, asked once and all at the same time.
+    #
+    # There were three per agent, one after another: on a seven-agent machine that is
+    # seventy seconds, and it was the whole of the first screen's spinner. Two of the
+    # three were the same question every time. `profile_exists` runs `hermes profile
+    # list` and reads one name out of it. `gateway status` prints the profile it was
+    # asked about and then every OTHER one with its pid - so the first call already
+    # held all seven answers, and the other six were spent re-reading it.
+    #
+    # What is left is one list, one gateway read, and one pairing read per agent.
+    # Nothing here needs anything else's answer, so none of it waits.
+    _jobs = ([lambda: hermes_ctl.profile_list(hp),
+              lambda: hermes_ctl.gateway_states(hp)]
+             + [(lambda s=s: hermes_ctl.pairing_list(
+                 hp, profile=None if s == "default" else s)) for s in _slugs])
+    _got = (_at_once(_jobs, workers=min(10, len(_jobs))) if hp
+            else [None] * len(_jobs))
+    _gw = dict(_got[1] or {})
+    _pairs = {s: ((_got[2 + i] or {}).get("approved") or [])
+              for i, s in enumerate(_slugs)}
+    owners = _pairs.get("default", [])
+    _known = {p["name"] for p in (_got[0] or [])} or None
+    if _known is None and hp:
+        # The list did not answer at all. Rather than declare every agent missing on one
+        # bad reply, ask each for itself - together, because a retry that ran one after
+        # another would be the serial wait this just removed.
+        _vals = _at_once([(lambda s=s: hermes_ctl.profile_exists(s, hp)) for s in _slugs])
+        _known = {s for s, ok in zip(_slugs, _vals) if ok}
+    # Whatever the single gateway read could not PROVE - an agent it did not list, or
+    # listed without a pid - asked properly, and also together. gateway_states leaves
+    # those out on purpose: see hermes_ctl.
+    _ask = [s for s in _slugs if hp and _gw.get(s) is None
+            and (s == "default" or s in (_known or ()))]
+    if _ask:
+        _vals = _at_once([(lambda s=s: hermes_ctl.gateway_status(
+            hp, profile=None if s == "default" else s).get("running")) for s in _ask])
+        _gw.update(dict(zip(_ask, _vals)))
+
+    def _about(slug):
+        """(gateway_running, owners, missing_profile) for one agent - all of it in hand."""
+        if not hp:
+            return (None, [], False)
+        if slug != "default" and slug not in (_known or ()):
+            return (None, [], True)   # code/profile deleted -> restore candidate
+        return (_gw.get(slug), _pairs.get(slug) or [], False)
+
     _facts = {}
-    try:
-        import concurrent.futures
-        # Bounded: one `hermes` process per worker, and this runs on a laptop that is
-        # also running the agents themselves.
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(_slugs))) as ex:
-            for slug, got in zip(_slugs, ex.map(_about, _slugs)):
-                _facts[slug] = got
-    except Exception:  # noqa: BLE001
-        # A pool that will not start is not a reason to show no agents.
-        for slug in _slugs:
-            try:
-                _facts[slug] = _about(slug)
-            except Exception:  # noqa: BLE001
-                _facts[slug] = (None, [], False)
+    for slug in _slugs:
+        try:
+            _facts[slug] = _about(slug)
+        except Exception:  # noqa: BLE001
+            _facts[slug] = (None, [], False)
 
     _d_running, _d_owners, _ = _facts.get("default", (None, owners, False))
     default = {

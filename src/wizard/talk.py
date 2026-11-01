@@ -391,9 +391,11 @@ def status(profile=None, hermes=None, install_dir=None):
     restarted yet, which is the state right after the owner enables it.
     """
     key = env_of(profile, hermes).get(KEY_ENV, "").strip()
-    enabled = (hermes_ctl.config_get("platforms.%s.enabled" % PLATFORM, hermes, profile)
-               or "").strip().lower() in ("true", "1", "yes", "on")
-    port = _configured_port(profile, hermes)
+    # Both through the caches below rather than around them. These are the same two
+    # `hermes config get` launches the phone's path learned not to pay twice, and the
+    # console was paying them per agent, on every dashboard, for a panel that refreshes.
+    enabled = enabled_flag(profile, hermes)
+    port = _cached_port(profile, hermes)
     out = {"ok": True, "enabled": enabled, "configured": bool(key) and bool(port),
            "port": port, "has_key": bool(key), "reachable": False, "ready": False}
     if not (enabled and key and port):
@@ -829,6 +831,27 @@ def enabled_flag(profile=None, hermes=None):
     with _gate_lock:
         _switch[ck] = (now, on)
     return on
+
+
+def _cached_port(profile=None, hermes=None):
+    """Which port this agent's gateway listens on, remembered with the key beside it.
+
+    `_require` already keeps (key, port) for ten minutes on the same terms; this is the
+    same answer for a caller that wants the port alone, and it fills the same store so
+    whichever path runs first pays for both.
+    """
+    ck = (profile or "", hermes or "")
+    now = time.monotonic()
+    with _gate_lock:
+        hit = _gate.get(ck)
+    if hit and now - hit[0] < _GATE_TTL:
+        return hit[2]
+    port = _configured_port(profile, hermes)
+    key = env_of(profile, hermes).get(KEY_ENV, "").strip()
+    if key and port:
+        with _gate_lock:
+            _gate[ck] = (now, key, port)
+    return port
 
 
 def _gate_gone(profile, hermes, code):

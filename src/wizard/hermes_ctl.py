@@ -150,7 +150,38 @@ def config_path(hermes=None, profile=None):
     return r["out"].strip() if r["ok"] else ""
 
 
+def home(profile=None):
+    """Where Hermes keeps this profile's files, worked out instead of asked.
+
+    The same three rules Hermes uses, in the same order: HERMES_HOME, then
+    %LOCALAPPDATA%\\hermes, then ~/.hermes - with extra agents under `profiles/<slug>`.
+    """
+    base = os.environ.get("HERMES_HOME")
+    if not base:
+        local = os.environ.get("LOCALAPPDATA")
+        base = (os.path.join(local, "hermes")
+                if local and os.path.isdir(os.path.join(local, "hermes"))
+                else os.path.join(os.path.expanduser("~"), ".hermes"))
+    if not profile or profile == "default":
+        return base
+    return os.path.join(base, "profiles", profile)
+
+
 def env_path(hermes=None, profile=None):
+    """This profile's .env - from disk when it is there, from the CLI when it is not.
+
+    `hermes config env-path` costs a Python interpreter starting up: two and a quarter
+    seconds, measured, on every agent. The dashboard asked it once per agent to find a
+    file whose path it could see, and the status strip asked again - sixteen seconds of
+    a two-minute first paint spent re-learning seven paths that were already on disk.
+
+    Only a file that EXISTS answers locally. If it is not there the question is a real
+    one (an install laid out differently, or a profile whose .env has yet to be written)
+    and Hermes is asked, which is also the path `set_env_vars` needs to create one.
+    """
+    guess = os.path.join(home(profile), ".env")
+    if os.path.isfile(guess):
+        return guess
     r = _run(["config", "env-path"], hermes, timeout=30, profile=profile)
     return r["out"].strip() if r["ok"] else ""
 
@@ -281,6 +312,45 @@ def gateway_status(hermes=None, profile=None):
     r = _run(["gateway", "status"], hermes, timeout=30, profile=profile)
     running = r["ok"] and gateway_running_from(r["out"])
     return {"ok": r["ok"], "running": bool(running), "detail": (r["out"] or r["err"])[:400]}
+
+
+# A row of the "Other profiles" block: "  ✓ analecta  — PID 123968". The pid is
+# what makes it an answer; see gateway_states.
+_GW_OTHER_ROW = re.compile(r"^\W*([A-Za-z0-9][\w.-]{0,40})\b.*?\bpid\b\W{0,3}\d+", re.I)
+
+
+def gateway_states(hermes=None):
+    """Every agent whose gateway is up, from ONE call. Only the ones it can prove.
+
+    `hermes gateway status` prints the profile it was asked about and then lists every
+    other one underneath with its pid, so seven agents were seven launches - seventeen
+    seconds, measured - for a page of output that already had all seven answers on it.
+
+    Returns {slug: True|False}, and a slug it cannot settle is simply ABSENT rather than
+    reported stopped. That asymmetry is the whole safety of this: an agent missing from
+    the list, or named on a line with no pid, sends the caller back to the real
+    per-agent question. Calling it stopped here would put a red "pausado" on a working
+    agent and invite the owner to restart something that is busy; the only verdict taken
+    from the block is the one with a process id beside it.
+
+    "default" is the exception: the head of the output is about that gateway and says so
+    either way, so it is the one profile that can also be proved stopped.
+    """
+    r = _run(["gateway", "status"], hermes, timeout=30)
+    if not r["ok"]:
+        return {}
+    out = {"default": bool(gateway_running_from(r["out"]))}
+    parts = _GW_OTHERS.split(r["out"] or "", 1)
+    if len(parts) < 2:
+        return out
+    for line in parts[1].splitlines():
+        line = line.strip()
+        if not line or _GW_DOWN.search(line):
+            continue
+        m = _GW_OTHER_ROW.search(line)
+        if m:
+            out[m.group(1)] = True
+    return out
 
 
 def _wait_gateway(want_running, hermes, profile, seconds):

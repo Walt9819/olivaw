@@ -18,8 +18,9 @@ Two rules it follows
   re-check by hand anyway. Telegram's state is measured against Telegram; a WhatsApp
   number's against its own paired session; the brain's against the bridge that is running.
 
-`fast=True` skips everything that leaves the machine, so a panel can paint immediately and
-then refine. Nothing here mutates anything.
+`fast=True` skips everything that costs a wait - the network, and equally a `hermes`
+launch, which on Windows is two and a half seconds of Python starting up. A panel paints
+from what is already on this disk and then refines. Nothing here mutates anything.
 """
 
 import os
@@ -128,14 +129,46 @@ def _wa_detail(enabled, rows, linked):
             % (len(linked), len(rows), ", ".join(pending)))
 
 
-def talk(profile=None, hermes=None, install_dir=None):
+def talk(profile=None, hermes=None, install_dir=None, fast=False):
+    """Can the owner write to this agent from a screen?
+
+    `fast` answers only the half of that question that is already here: the switch, which
+    is cached for ten minutes and which both paths that flip it forget. Whether the agent
+    is ANSWERING costs an HTTP call to a gateway that may be in the middle of thinking,
+    plus two more `hermes` launches to find out where to knock - six and a half seconds
+    per agent, for a line the second pass corrects half a second later anyway.
+    """
     from . import talk as talk_mod
+    if fast:
+        on = _safe(lambda: talk_mod.enabled_flag(profile, hermes), None)
+        if on is None:
+            return {"ok": True, "enabled": False, "ready": False, "checking": True,
+                    "detail": "Comprobando…"}
+        return {"ok": True, "enabled": bool(on), "ready": False, "checking": bool(on),
+                "detail": ("Comprobando si está escuchando…" if on else
+                           "Aún no está activado. Actívalo y podrás escribirle desde "
+                           "aquí, igual que por Telegram.")}
     return _safe(lambda: talk_mod.status(profile, hermes, install_dir),
                  {"ok": False, "enabled": False, "ready": False,
                   "detail": "No pude comprobarlo."})
 
 
-def gateway(profile=None, hermes=None):
+def _gateway_detail(run):
+    return ("El motor de este agente está corriendo." if run else
+            "El motor de este agente está detenido, así que no recibe mensajes."
+            if run is False else "No pude comprobar el motor.")
+
+
+def gateway(profile=None, hermes=None, fast=False):
+    """Is this agent's engine up? One `hermes gateway status`: ten seconds, measured.
+
+    Nobody is asked in `fast`. The dashboard already has this answer - it asks every agent
+    at once, in agents_snapshot, and hands it in below - and the connections card never
+    drew it at all. Ten seconds per agent for a value nothing on screen was reading is
+    where most of the two-minute first paint was.
+    """
+    if fast:
+        return {"running": None, "checking": True, "detail": "Comprobando el motor…"}
     hp = hermes or which("hermes")
     if not hp:
         return {"running": None, "detail": "Hermes no está en el PATH."}
@@ -143,24 +176,32 @@ def gateway(profile=None, hermes=None):
                                                  profile=None if (profile in (None, "default"))
                                                  else profile), {})
     run = st.get("running")
-    return {"running": run,
-            "detail": ("El motor de este agente está corriendo." if run else
-                       "El motor de este agente está detenido, así que no recibe mensajes."
-                       if run is False else "No pude comprobar el motor.")}
+    return {"running": run, "detail": _gateway_detail(run)}
 
 
-def snapshot(profile=None, hermes=None, install_dir=None, port=None, fast=False):
-    """Everything a "how is this agent connected" panel needs, in one call."""
+_ASK = object()   # "I do not know the gateway's state" - and None is a real answer.
+
+
+def snapshot(profile=None, hermes=None, install_dir=None, port=None, fast=False,
+             gateway_running=_ASK):
+    """Everything a "how is this agent connected" panel needs, in one call.
+
+    `gateway_running` is for a caller that already knows - the dashboard asks every agent
+    at once before it gets here, and asking again, one agent at a time, cost it ten
+    seconds each.
+    """
     hp = hermes or which("hermes")
     out = {
         "ok": True,
         "profile": profile or "default",
         "fast": bool(fast),
-        "gateway": gateway(profile, hp),
+        "gateway": (gateway(profile, hp, fast=fast) if gateway_running is _ASK else
+                    {"running": gateway_running,
+                     "detail": _gateway_detail(gateway_running)}),
         "brain": brain(profile, install_dir, port),
         "telegram": telegram(profile, hp, fast=fast),
         "whatsapp": whatsapp(profile, hp),
-        "talk": talk(profile, hp, install_dir),
+        "talk": talk(profile, hp, install_dir, fast=fast),
     }
     if port:
         out["bridge"] = bridge(port, install_dir)
@@ -190,6 +231,7 @@ def _headline(snap):
     tk = snap.get("talk") or {}
     rows.append(("🖥️", "Desde esta pantalla",
                  "ok" if tk.get("ready") else
+                 "checking" if tk.get("checking") else
                  "off" if not tk.get("enabled") else "warn",
                  tk.get("detail", "")))
     br = snap.get("brain") or {}

@@ -224,10 +224,14 @@ def test_talk():
     _real_env, _real_get = T.env_of, _hc.config_get
     T.env_of = lambda profile=None, hermes=None: {}
     _hc.config_get = lambda k, h=None, p=None: ""
+    # The switch is remembered for ten minutes, so a stub underneath it has to begin by
+    # forgetting what this process already learned - otherwise this measures the cache.
+    T._forget_gate()
     try:
         st = T.status()
     finally:
         T.env_of, _hc.config_get = _real_env, _real_get
+        T._forget_gate()
     check("an unconfigured agent is not reported as broken",
           st["enabled"] is False and st["ready"] is False, st)
     check("and the message invites setting it up",
@@ -573,12 +577,13 @@ def test_session():
     ws = io.open(os.path.join(SRC, "wizard", "wizard_server.py"), encoding="utf-8").read()
     for route in ("session/status", "session/login", "session/verify", "dashboard"):
         check("route %s exists" % route, '"%s"' % route in ws)
-    check("the dashboard carries the session, the agents and the machine",
-          '"session": session_health.status' in ws and '"agents": out' in ws and
-          '"update": updates_mod.status' in ws)
     import wizard.wizard_server as WS
     d = WS._dashboard(fast=True)
     check("and it really answers", d.get("ok") and "session" in d, sorted(d))
+    # The shape, not the source: these are gathered in one wave now, so what matters is
+    # that the one call still carries all of it.
+    check("the dashboard carries the session, the agents and the machine",
+          {"session", "agents", "update", "supervisor"} <= set(d), sorted(d))
     check("with one entry per agent on this machine",
           len(d["agents"]) >= 1 and all("channels" in a for a in d["agents"]),
           [a["slug"] for a in d["agents"]])
