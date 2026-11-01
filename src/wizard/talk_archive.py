@@ -165,6 +165,32 @@ def _ancestry(con, session_id):
     return chain
 
 
+def opening(session_id, hermes_home=None):
+    """The first thing said in a conversation, or "".
+
+    One indexed row. It exists because a session's preview is cut at sixty characters
+    by the time it reaches us, which is not far enough into an agent-to-agent envelope
+    to reach the name of whoever sent it.
+    """
+    if not session_id:
+        return ""
+    con = _open(db_path(hermes_home or ""))
+    if con is None:
+        return ""
+    try:
+        row = con.execute(
+            "SELECT content FROM messages WHERE session_id = ? AND content IS NOT NULL"
+            " AND content <> '' ORDER BY id LIMIT 1", (str(session_id),)).fetchone()
+        return (row[0] if row else "") or ""
+    except sqlite3.Error:
+        return ""
+    finally:
+        try:
+            con.close()
+        except sqlite3.Error:
+            pass
+
+
 def messages(session_id, hermes_home=None, include_archived=True, speech_only=False):
     """Every stored row of a conversation, archived turns included, oldest first.
 

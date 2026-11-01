@@ -881,6 +881,11 @@ def sessions(profile=None, hermes=None, limit=20, offset=0):
         return {"ok": False, "detail": _explain(code, data)}
     rows = data.get("data") if isinstance(data, dict) else data
     rows = rows if isinstance(rows, list) else []
+    for r in rows:
+        if isinstance(r, dict) and r.get("preview"):
+            r["preview"] = tidy_preview(r["preview"],
+                                        session_id=str(r.get("id") or ""),
+                                        profile=profile)
     more = bool(data.get("has_more")) if isinstance(data, dict) else len(rows) == limit
     return {"ok": True, "sessions": rows, "offset": offset, "limit": limit,
             "has_more": more}
@@ -981,6 +986,35 @@ def peer_message(text):
     at = text.find(_PEER_BODY)
     body = text[at + len(_PEER_BODY):].strip() if at >= 0 else text.strip()
     return who, body
+
+
+def tidy_preview(text, session_id="", profile=None):
+    """The first line of a conversation, as something to call it by.
+
+    The list shows a session's first message when nobody has named it. That message is
+    quite often not a message: an agent-to-agent envelope, whose opening line is the
+    same for every one of them, or a piece of Hermes' own bookkeeping.
+
+    Hermes cuts the preview at sixty characters, which for an envelope is the banner
+    and nothing else - not far enough to reach the name of whoever wrote it, nor the
+    message itself. So for those, and only those, the opening turn is read.
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    if raw.lstrip().startswith(_PEER_HEAD):
+        full = talk_archive.opening(session_id, profile_home(profile)) if session_id else ""
+        peer = peer_message(full) if full else None
+        if peer:
+            who, body = peer
+            head = " ".join(body.split())[:70]
+            return "%s: %s" % (who, head) if head else who
+        # The envelope is all we have. Its banner is the same for every one of them,
+        # so anything is better than that - including saying only what it is.
+        return "Mensaje de otro agente"
+    if machine_turn(raw):
+        return ""
+    return raw
 
 
 def _is_speech(row):

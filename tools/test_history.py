@@ -269,6 +269,26 @@ def main():
           "no tiene autoridad" not in first["content"].lower(), first["content"][:60])
     check("the agent's own answer is unchanged", rows[1]["role"] == "assistant")
 
+    section("what a conversation nobody named is called")
+    # The list falls back to a session's first message, and Hermes cuts that at sixty
+    # characters - which for an agent-to-agent envelope is the banner and nothing else.
+    # Four different conversations all came out called
+    # "=== MENSAJE DE OTRO AGENTE (no es tu due\u00f1o) === Te escribe: ...".
+    cut = framed[:60] + "..."
+    name = T.tidy_preview(cut, session_id=peer_sid, profile=None)
+    check("a peer conversation is named after the agent that started it",
+          name.startswith("Chalenus:"), name)
+    check("and says what they wanted", "Honey" in name, name)
+    check("not the banner every one of them shares",
+          "MENSAJE DE OTRO AGENTE" not in name, name)
+    check("one whose opening cannot be read still is not the banner",
+          T.tidy_preview(cut, session_id="no-existe", profile=None)
+          == "Mensaje de otro agente")
+    check("Hermes' own bookkeeping is not a name for anything",
+          T.tidy_preview("[Your active task list was preserved]") == "")
+    check("and an ordinary first message is left exactly as it is",
+          T.tidy_preview("arranca con el deck") == "arranca con el deck")
+
     section("the same turn written down five times")
     # Compaction does not only archive: it writes the protected head and tail back as
     # NEW rows, byte for byte. After four compactions the opening of a conversation is
