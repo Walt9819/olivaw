@@ -89,11 +89,44 @@ def telegram(profile=None, hermes=None, fast=False):
     return st
 
 
-def whatsapp(profile=None, hermes=None):
+def _wa_live(rows, fast=False):
+    """Is each linked number's WhatsApp connection UP, right now?
+
+    `linked` is read from creds.json: it proves a phone was once paired, and goes on saying so
+    forever - after WhatsApp logs the device out, after the bridge dies, with the computer
+    offline. That is the same gap Telegram had: a green dot sourced from a file rather than
+    from the connection it claims. The bridge answers /health on localhost in milliseconds,
+    and a bridge that is not running refuses the connection instantly, so this costs nothing
+    worth skipping outside the fast pass.
+
+    Sets `live` to the bridge's own word ("open" when connected) and leaves it None when
+    nothing could be asked - unknown, never "disconnected".
+    """
+    if fast:
+        return
+    try:
+        from whatsapp_delivery import bridge_health   # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return                                        # no probe available: say nothing
+    for r in rows:
+        if not r.get("linked") or not r.get("port"):
+            continue
+        h = _safe(lambda p=r["port"]: bridge_health("127.0.0.1", int(p), timeout=3), None)
+        if not isinstance(h, dict):
+            continue
+        r["reachable"] = bool(h.get("reachable"))
+        r["live"] = h.get("connection") if h.get("reachable") else None
+        r["connected"] = (r["live"] == "open")
+
+
+def whatsapp(profile=None, hermes=None, fast=False):
     """Every WhatsApp number this agent answers, and whether each one is really linked."""
     from . import numbers
     rows = _safe(lambda: numbers.listing(profile, hermes), [])
+    _wa_live(rows, fast)
     linked = [r for r in rows if r.get("linked")]
+    probed = [r for r in linked if "live" in r]
+    live = [r for r in probed if r.get("connected")]
     enabled = bool(rows and rows[0].get("enabled"))
     # The receipt patch is global to Hermes, but it decides whether ANY number can prove a
     # delivery, so it belongs in the WhatsApp panel rather than buried in a log.
@@ -110,23 +143,35 @@ def whatsapp(profile=None, hermes=None):
         "can_add": len(rows) < getattr(numbers, "MAX_NUMBERS", 6),
         "main": next((r["slug"] for r in rows if r.get("main")), None),
         "receipts": (patch or {}).get("state", "unknown"),
-        "detail": _wa_detail(enabled, rows, linked),
+        "probed": len(probed),
+        "live_count": len(live),
+        "detail": _wa_detail(enabled, rows, linked, probed, live),
     }
 
 
-def _wa_detail(enabled, rows, linked):
+def _wa_detail(enabled, rows, linked, probed=(), live=()):
     if not enabled and not linked:
         return ("WhatsApp no está activado en este agente. Puedes conectar tu número y, "
                 "si quieres, más de uno.")
     if not linked:
         return ("Está activado pero ningún número está vinculado todavía: falta escanear "
                 "el código QR con el teléfono.")
-    if len(linked) == len(rows):
-        return ("%d número%s conectado%s." % (len(linked), "" if len(linked) == 1 else "s",
-                                              "" if len(linked) == 1 else "s"))
+    # Vinculado y caído no es lo mismo que vinculado: el teléfono sigue emparejado y aun así
+    # no entra ni sale un mensaje. Decir "conectado" aquí es la mentira que hay que evitar.
+    if probed and not live:
+        down = ", ".join(r["label"] for r in probed if not r.get("connected"))
+        return ("El teléfono sigue vinculado, pero la conexión con WhatsApp está caída (%s). "
+                "Reconecta a este agente para levantarla." % down)
     pending = [r["label"] for r in rows if not r.get("linked")]
-    return ("%d de %d conectados. Falta vincular: %s."
+    down = [r["label"] for r in probed if not r.get("connected")]
+    base = ("%d número%s conectado%s." % (len(linked), "" if len(linked) == 1 else "s",
+                                          "" if len(linked) == 1 else "s")
+            if len(linked) == len(rows) else
+            "%d de %d conectados. Falta vincular: %s."
             % (len(linked), len(rows), ", ".join(pending)))
+    if down:
+        base += " Sin conexión ahora mismo: %s." % ", ".join(down)
+    return base
 
 
 def talk(profile=None, hermes=None, install_dir=None, fast=False):
@@ -183,14 +228,21 @@ _ASK = object()   # "I do not know the gateway's state" - and None is a real ans
 
 
 def snapshot(profile=None, hermes=None, install_dir=None, port=None, fast=False,
-             gateway_running=_ASK):
+             gateway_running=_ASK, telegram_state=_ASK):
     """Everything a "how is this agent connected" panel needs, in one call.
 
     `gateway_running` is for a caller that already knows - the dashboard asks every agent
     at once before it gets here, and asking again, one agent at a time, cost it ten
-    seconds each.
+    seconds each. `telegram_state` is the same courtesy for the reconnect path, which has
+    just waited for the gateway's handshake and must not spend another sixteen seconds
+    asking Telegram the question it is holding the answer to.
     """
     hp = hermes or which("hermes")
+    if telegram_state is _ASK:
+        tg = telegram(profile, hp, fast=fast)
+    else:
+        tg = dict(telegram_state or {})
+        tg.setdefault("owner_locked", bool(tg.get("has_owner")))
     out = {
         "ok": True,
         "profile": profile or "default",
@@ -199,8 +251,8 @@ def snapshot(profile=None, hermes=None, install_dir=None, port=None, fast=False,
                     {"running": gateway_running,
                      "detail": _gateway_detail(gateway_running)}),
         "brain": brain(profile, install_dir, port),
-        "telegram": telegram(profile, hp, fast=fast),
-        "whatsapp": whatsapp(profile, hp),
+        "telegram": tg,
+        "whatsapp": whatsapp(profile, hp, fast=fast),
         "talk": talk(profile, hp, install_dir, fast=fast),
     }
     if port:
@@ -224,7 +276,11 @@ def _headline(snap):
                  "off" if tg_state == "no_token" else "warn",
                  tg.get("detail", "")))
     wa = snap.get("whatsapp") or {}
+    # Asked and nobody answered is a warning, not a tick: the pairing on disk outlives the
+    # connection, and the owner reads this dot to decide whether a message would arrive.
+    wa_down = bool(wa.get("probed")) and not wa.get("live_count")
     rows.append(("💬", "WhatsApp",
+                 "warn" if wa_down else
                  "ok" if wa.get("linked_count") else
                  "off" if not wa.get("enabled") else "warn",
                  wa.get("detail", "")))

@@ -627,11 +627,136 @@
       '<div class="card pad" id="connCard"><span class="muted small">Comprobando…</span></div>';
   }
 
+  // Which row is open, and the last full answer. Kept outside the paint because the card
+  // paints twice - once from disk, once from the network - and a row the owner opened must
+  // not close under her hand when the slow pass lands.
+  var CONN = { open: "", snap: null, logs: null };
+
   function connDot(state) {
     var m = { ok: ["dot-ok", "Conectado"], warn: ["dot-warn", "Atención"],
               off: ["dot-off", "Sin configurar"], checking: ["dot-wait", "Comprobando"] };
     var v = m[state] || m.off;
     return '<span class="cdot ' + v[0] + '" title="' + v[1] + '"></span>';
+  }
+
+  // What to DO about each verdict, in the row that reports it. The detail sentence says
+  // what is true; this says what the owner's next move is - and, where it matters more,
+  // which move not to make. telegram_down is the one worth reading twice: the fix that
+  // suggests itself is a new token, and taking it destroys the working one.
+  var CONN_FIX = {
+    token_rejected: "Abre @BotFather, envía <code>/token</code>, elige este bot y pega aquí " +
+      "el token nuevo. El anterior dejó de servir en cuanto generaste otro.",
+    token_rejected_log: "Pulsa «Reconectar»: el motor arrancará otra vez y tomará el token " +
+      "que hay ahora.",
+    telegram_down: "No hay nada que arreglar en este equipo y <b>no generes un token nuevo</b>: " +
+      "el actual sirve. Reconectar tampoco cambia nada — el motor ya reintenta solo cada " +
+      "pocos minutos. Vuelve a comprobar dentro de un rato.",
+    telegram_busy: "Espera unos minutos y vuelve a comprobar. No toques el token.",
+    telegram_slow: "Es Telegram, no tu conexión. Vuelve a comprobar dentro de un rato; el " +
+      "motor sigue reintentando por su cuenta.",
+    telegram_refused: "Vuelve a comprobar en un rato. Si sigue igual, el registro de abajo " +
+      "dice exactamente qué contesta Telegram.",
+    webhook_set: "Ese bot tiene un webhook puesto y por eso no recibe nada por aquí. " +
+      "Quítalo (o usa otro bot) y vuelve a comprobar.",
+    gateway_down: "El motor de este agente no está corriendo: pulsa «Reconectar».",
+    no_token: "Este agente todavía no tiene bot. Ábrelo en «Telegram» y pega el token.",
+    unreachable: "Este equipo no pudo hablar con Telegram. Comprueba la conexión y vuelve " +
+      "a intentarlo.",
+    unreachable_tls: "Lo resuelve tu departamento de sistemas: instalar el certificado raíz " +
+      "de la empresa en Windows, o excluir api.telegram.org de la inspección.",
+    unreachable_network: "Es la red o el DNS de este equipo, no el token."
+  };
+
+  function connFacts(rows) {
+    return '<ul class="cfacts">' + rows.filter(Boolean).map(function (r) {
+      return '<li><span class="ck">' + esc(r[0]) + '</span><span class="cv">' +
+        (r[2] ? r[1] : esc(r[1])) + '</span></li>';
+    }).join("") + '</ul>';
+  }
+
+  function connBtn(id, label, primary) {
+    return '<button class="btn ' + (primary ? "btn-primary" : "btn-soft") +
+      ' btn-xs" data-conn="' + id + '">' + esc(label) + '</button>';
+  }
+
+  // Every row ends in the same two questions - what do I know about this channel, and what
+  // can I press. Built per channel rather than generically: "reconnect" means a gateway
+  // restart for three of them and nothing at all for the brain, and a button that is there
+  // for symmetry is a button that lies.
+  function connBody(label, snap) {
+    var acts = "", facts = "", note = "";
+    if (label === "Telegram") {
+      var tg = snap.telegram || {};
+      note = CONN_FIX[tg.state] || "";
+      facts = connFacts([
+        tg.bot ? ["Bot", "@" + tg.bot] : ["Bot", "sin bot configurado"],
+        ["Motor", snap.gateway && snap.gateway.running === true ? "encendido"
+          : (snap.gateway && snap.gateway.running === false ? "detenido" : "sin comprobar")],
+        ["Dueño", tg.has_owner ? "solo tú puedes darle órdenes 🔒"
+          : "abierto: cualquiera que lo encuentre puede escribirle"],
+        ["Avisos programados", tg.has_home ? "tienen canal a donde llegar"
+          : "sin canal principal"],
+        tg.api_up ? ["Telegram desde este equipo", "responde ✓"] : null
+      ]);
+      acts = connBtn("reconnect", "Reconectar", !tg.ok) + connBtn("recheck", "Volver a comprobar") +
+        connBtn("logs", "Ver el registro") + connBtn("go:canales", "Cambiar el token");
+    } else if (label === "WhatsApp") {
+      var wa = snap.whatsapp || {};
+      facts = '<ul class="cfacts">' + (wa.numbers || []).map(function (n) {
+        var st = !n.linked ? "off" : (n.connected ? "ok" : ("live" in n ? "warn" : "ok"));
+        var say = !n.linked ? "sin vincular"
+          : (n.connected ? "conectado" : ("live" in n ? "vinculado, pero sin conexión ahora"
+                                                      : "vinculado"));
+        return '<li><span class="ck">' + connDot(st) + esc(n.label) + '</span>' +
+          '<span class="cv">' + esc(say) + '</span></li>';
+      }).join("") + '</ul>';
+      if (wa.probed && !wa.live_count) {
+        note = "El teléfono sigue vinculado: no hace falta volver a escanear nada. Lo que " +
+          "está caído es la conexión, y «Reconectar» la levanta.";
+      }
+      acts = connBtn("reconnect", "Reconectar", !!(wa.probed && !wa.live_count)) +
+        connBtn("recheck", "Volver a comprobar") +
+        connBtn("go:whatsapp", wa.linked_count ? "Administrar los números" : "Vincular un número");
+    } else if (label === "Desde esta pantalla") {
+      var tk = snap.talk || {};
+      facts = connFacts([
+        ["Activado", tk.enabled ? "sí" : "no"],
+        ["Escuchando", tk.ready ? "sí" : (tk.checking ? "comprobando…" : "no")]
+      ]);
+      acts = (tk.enabled && !tk.ready ? connBtn("reconnect", "Reconectar", true) : "") +
+        connBtn("recheck", "Volver a comprobar") + connBtn("go:hablar", "Abrir el chat");
+    } else {
+      var br = snap.brain || {}, bg = snap.bridge || {};
+      facts = connFacts([
+        ["Cerebro", br.label || "—"],
+        ["Según", br.source_label || "—"],
+        ["Puede pensar", br.available ? "sí" : "no"],
+        bg.port ? ["Su puente", (bg.up ? "responde en el puerto " : "no responde en el puerto ") +
+          bg.port + (bg.version ? " (v" + bg.version + ")" : "")] : null
+      ]);
+      // No "reconnect" here on purpose: the brain's bridge is the supervisor's to restart,
+      // and what actually fails is the session behind it - which is the front page's
+      // button, because it is shared by every agent on this machine.
+      acts = connBtn("session", "Revisar la sesión", !br.available) +
+        connBtn("recheck", "Volver a comprobar") + connBtn("go:cerebro", "Abrir el cerebro");
+    }
+    return '<div class="cbody">' +
+      (note ? '<div class="callout warn small">' + note + '</div>' : "") +
+      facts + '<div class="row cacts">' + acts + '</div>' +
+      (CONN.open === label && CONN.logs ? connLogs() : "") + '</div>';
+  }
+
+  function connLogs() {
+    var d = CONN.logs;
+    if (!d.lines || !d.lines.length) {
+      return '<div class="small muted" style="margin-top:8px">El registro no tiene avisos ' +
+        'recientes de este agente.</div>';
+    }
+    return '<div class="loglist">' + d.lines.map(function (l) {
+      return '<div class="logline"><span class="lts">' + esc(l.ts.slice(5, 16)) + '</span>' +
+        '<span class="llv ' + (l.level === "ERROR" || l.level === "CRITICAL" ? "err" : "warn") +
+        '">' + esc(l.logger) + '</span><span class="ltx">' + esc(l.text) + '</span></div>';
+    }).join("") + '</div>';
   }
 
   function paintConn(snap) {
@@ -641,25 +766,109 @@
       box.innerHTML = '<span class="muted small">No pude comprobarlo.</span>';
       return;
     }
+    CONN.snap = snap;
+    // The jump link stays on the collapsed row. "Revisar" opens the diagnosis and the
+    // buttons; "abrir" is still the one-click way to the page that configures the channel,
+    // and burying it behind the toggle would have taken away a working path to add one.
     var jump = { "Telegram": "canales", "WhatsApp": "whatsapp",
                  "Desde esta pantalla": "hablar" };
     box.innerHTML = '<ul class="connlist">' + snap.channels.map(function (c) {
-      var to = jump[c.label];
+      var open = CONN.open === c.label;
       // The brain row is the one that does not link anywhere agent-scoped: it is shared.
-      var go = to ? ' <a href="#" class="clink" data-goto="' + to + '">abrir</a>' :
-        ' <a href="#" class="clink" data-goto="cerebro">abrir</a>';
-      return '<li>' + connDot(c.state) + '<span class="cico">' + c.icon + '</span>' +
-        '<b>' + esc(c.label) + '</b>' +
-        '<span class="muted small cdet">' + esc(c.detail || "") + go + '</span></li>';
+      var go = ' <a href="#" class="clink" data-goto="' + (jump[c.label] || "cerebro") +
+        '">abrir</a>';
+      return '<li' + (open ? ' class="copen"' : '') + '>' +
+        connDot(c.state) + '<span class="cico">' + c.icon + '</span>' +
+        '<div class="chead"><b>' + esc(c.label) + '</b>' +
+        '<button class="cmore" data-row="' + esc(c.label) + '" aria-expanded="' + open + '">' +
+        (open ? "ocultar" : "revisar") + '</button></div>' +
+        '<span class="muted small cdet">' + esc(c.detail || "") + go + '</span>' +
+        (open ? connBody(c.label, snap) : "") + '</li>';
     }).join("") + '</ul>' +
-      (snap.fast ? '<div class="small muted" style="margin-top:8px">Comprobando con Telegram…</div>' : '');
+      '<div class="row connacts">' +
+      '<button class="btn btn-soft btn-sm" data-conn="reconnect">🔌 Reconectar</button>' +
+      '<button class="btn btn-soft btn-sm" data-conn="recheck">Revisar todo</button>' +
+      '<span class="pill" id="connPill" style="display:none"></span></div>' +
+      (snap.fast ? '<div class="small muted" style="margin-top:8px">Comprobando con ' +
+        'Telegram…</div>' : '');
+    wireConn(box);
+  }
+
+  function wireConn(box) {
     Array.prototype.forEach.call(box.querySelectorAll("[data-goto]"), function (n) {
       n.onclick = function (e) { e.preventDefault(); goSec(n.getAttribute("data-goto")); };
     });
+    Array.prototype.forEach.call(box.querySelectorAll("[data-row]"), function (n) {
+      n.onclick = function () {
+        var want = n.getAttribute("data-row");
+        CONN.open = (CONN.open === want) ? "" : want;
+        CONN.logs = null;
+        paintConn(CONN.snap);
+      };
+    });
+    Array.prototype.forEach.call(box.querySelectorAll("[data-conn]"), function (n) {
+      n.onclick = function () { connAct(n.getAttribute("data-conn"), n); };
+    });
+  }
+
+  function connPill(cls, text) {
+    var p = el("connPill");
+    if (!p) return;
+    p.style.display = "inline-flex";
+    p.className = "pill " + cls;
+    p.innerHTML = (cls === "load" ? '<span class="spinner"></span>' : "") + esc(text);
+  }
+
+  function connAct(what, btn) {
+    var prof = targetProfile();
+    if (what.indexOf("go:") === 0) { goSec(what.slice(3)); return; }
+    // The session is one login for the whole machine, and the front page is where it is
+    // reported and renewed. Sending the owner there beats a second button that would have
+    // to keep its own copy of that state in an agent's panel.
+    if (what === "session") { goSec("panel"); return; }
+    if (what === "logs") {
+      btn.disabled = true;
+      api("connections/logs", { profile: prof }).then(function (d) {
+        CONN.logs = d || { lines: [] };
+        paintConn(CONN.snap);
+      });
+      return;
+    }
+    if (what === "recheck") {
+      connPill("load", "Comprobando…");
+      api("connections/status", { profile: prof }).then(function (s) {
+        paintConn(s);
+        connPill(connBad(s) ? "err" : "ok", connBad(s) || "Todo responde");
+      });
+      return;
+    }
+    if (what === "reconnect") {
+      connPill("load", "Reconectando… puede tardar un minuto");
+      // Everything on this card is about to be re-measured by the server, so the buttons
+      // go dead rather than let a second restart overlap the first.
+      Array.prototype.forEach.call(document.querySelectorAll("#connCard [data-conn]"),
+        function (b) { b.disabled = true; });
+      api("connections/reconnect", { profile: prof }).then(function (r) {
+        if (r && r.report) paintConn(r.report);
+        connPill(r && r.ok && !connBad(r.report) ? "ok" : "err",
+                 (r && r.detail) || "No pude reconectarlo.");
+        setTimeout(refreshAgents, 400);
+      }).catch(function () { connPill("err", "No pude reconectarlo."); });
+    }
+  }
+
+  // The short version of "and is it actually working", for the pill. Returns the name of
+  // what is still wrong, or "" - so a restart that fixed the gateway and not the channel
+  // cannot report itself as a success.
+  function connBad(snap) {
+    var bad = ((snap && snap.channels) || []).filter(function (c) { return c.state === "warn"; })
+      .map(function (c) { return c.label; });
+    return bad.length ? ("Sigue sin conectar: " + bad.join(", ")) : "";
   }
 
   function loadConn() {
     var prof = targetProfile();
+    CONN.logs = null;
     // Two passes on purpose: the fast one answers from files and paints at once, the slow
     // one asks Telegram whether the token still works. A single slow call would leave the
     // card saying "Comprobando…" for as long as the network takes.
@@ -1964,9 +2173,15 @@
       if (after) after();
     }
     if (el("tgRecheck")) el("tgRecheck").onclick = function () { recheck(); };
+    // connections/reconnect, not agent/action: this button used to send {action,profile} to
+    // a route that reads {action,slug}, so the slug arrived empty, the server answered
+    // "identificador inválido", and the only thing that ever happened was the word
+    // "Reiniciando…" on the button. It then re-checked the unchanged gateway and reported
+    // the same failure - which reads as "restarting did not help".
     if (el("tgRestart")) el("tgRestart").onclick = function () {
       var b = this; b.disabled = true; b.textContent = "Reiniciando…";
-      api("agent/action", { action: "restart", profile: targetProfile() }).then(function () {
+      api("connections/reconnect", { profile: targetProfile() }).then(function (r) {
+        if (r && r.detail) toast(r.detail);
         recheck();
       });
     };

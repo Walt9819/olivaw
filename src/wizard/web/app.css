@@ -471,6 +471,37 @@ body.sos-open{overflow:hidden}
 .clink{color:var(--accent); text-decoration:none; margin-left:6px}
 .clink:hover{text-decoration:underline}
 
+/* ── and what to do about it ───────────────────────────────────────────────────
+   The dot says whether a channel is working. The row underneath says why, and holds
+   the buttons that change it: an owner who can see that Telegram is down and has to
+   leave Olivaw to do anything about it has been informed, not helped. */
+.connlist .chead{display:flex; align-items:center; gap:8px; min-width:0}
+.connlist .chead b{flex:1 1 auto; min-width:0}
+.cmore{background:none; border:0; padding:2px 4px; cursor:pointer; font:inherit;
+  font-size:12px; color:var(--accent)}
+.cmore:hover{text-decoration:underline}
+.connlist li.copen{background:var(--panel-2); border-radius:10px; padding-left:8px;
+  padding-right:8px; margin:0 -8px}
+.connlist .cbody{grid-column:1/4; margin-top:10px}
+.cfacts{list-style:none; margin:0 0 10px; padding:0; font-size:12.5px}
+.cfacts li{display:flex; gap:10px; padding:3px 0; align-items:center}
+.cfacts .ck{flex:0 0 42%; color:var(--muted); display:flex; align-items:center; gap:6px}
+.cfacts .cv{flex:1 1 auto; min-width:0}
+.cacts{flex-wrap:wrap; gap:6px}
+.connacts{margin-top:12px; gap:8px; flex-wrap:wrap}
+
+/* The gateway's own words, in the panel. Only its warnings, so this stays a diagnosis
+   and never becomes a way to read the owner's conversations back out of a log. */
+.loglist{margin-top:10px; max-height:230px; overflow:auto; border:1px solid var(--line-2);
+  border-radius:10px; background:var(--bg)}
+.logline{display:grid; grid-template-columns:72px 80px auto; gap:8px; padding:5px 9px;
+  font-size:11.5px; border-bottom:1px solid var(--line-2)}
+.logline:last-child{border-bottom:none}
+.logline .lts{color:var(--muted); font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.logline .llv.warn{color:var(--warn)}
+.logline .llv.err{color:var(--err)}
+.logline .ltx{word-break:break-word}
+
 /* The WhatsApp list carries actions per row, so rows are taller and the buttons
    wrap instead of squeezing the label. */
 .walist li{grid-template-columns:14px auto}

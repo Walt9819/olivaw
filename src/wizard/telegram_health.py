@@ -101,31 +101,71 @@ def _read_env(path):
     return out
 
 
-def _api(token, method, timeout=15):
+def _api(token, method, timeout=20):
     """Returns (ok, data, status). The status matters: 401 is Telegram REFUSING the token, while
     no status at all means we never reached Telegram - and telling someone their token was
-    revoked when their wifi is down sends them to BotFather to fix a router."""
+    revoked when their wifi is down sends them to BotFather to fix a router.
+
+    Twenty seconds, not fifteen: Telegram holds a request for a bot it cannot serve and then
+    answers 502 at about sixteen. At fifteen that verdict arrived as a timeout, which reads
+    as "no internet" - on a machine whose other six bots were answering in half a second.
+    """
     ok, data, status = http_json(API.format(token=token, method=method), timeout=timeout)
     if isinstance(data, dict) and "ok" in data:
         return data.get("ok", False), data, status
     return ok, {"ok": False, "description": str(data)[:200]}, status
 
 
-def log_paths(profile=None):
-    """Where this profile's gateway writes. Named in the result so a person (or the SOS console)
-    can go straight there instead of hunting."""
-    local = os.environ.get("LOCALAPPDATA", "")
-    home = os.path.expanduser("~")
-    bases = [os.path.join(local, "hermes"), os.path.join(home, ".hermes")]
-    if profile and profile != "default":
-        bases = [os.path.join(b, "profiles", profile) for b in bases] + bases
+# Shaped like a token, belongs to nobody. Telegram answers 401 "invalid token specified" for
+# it in about half a second whenever the API is serving this machine.
+_NO_TOKEN = "0:0"
+
+
+def api_reachable(timeout=10):
+    """Is the Telegram API answering THIS computer at all, without using anybody's token?
+
+    The discriminator the diagnosis was missing. When a real token gets 502 or no answer, the
+    question is whether the fault is here (network, DNS, an inspecting proxy, a firewall) or
+    there. A deliberately invalid bot id settles it: any HTTP status at all means the request
+    reached Telegram and came back, so the network is fine and the silence belongs to that one
+    bot. No token is sent, so this is safe to run on any failure path.
+    """
+    _ok, _data, status = http_json(API.format(token=_NO_TOKEN, method="getMe"), timeout=timeout)
+    return bool(status)
+
+
+_LOG_NAMES = ("gateway.log", "gateway-stdio.log", "gateway-exit-diag.log")
+
+
+def _logs_under(bases):
     out = []
     for b in bases:
-        for name in ("gateway.log", "gateway-stdio.log", "gateway-exit-diag.log"):
+        for name in _LOG_NAMES:
             p = os.path.join(b, "logs", name)
             if os.path.isfile(p):
                 out.append(p)
     return out
+
+
+def log_paths(profile=None):
+    """Where this profile's gateway writes. Named in the result so a person (or the SOS console)
+    can go straight there instead of hunting.
+
+    An agent with logs of its own gets ONLY those. The shared ones used to be appended as a
+    fallback and were then read as if they were his: scan_logs ORs its signals across every
+    file it is given, so the main agent's "Connected to Telegram" became proof that a silent
+    agent had connected, and the main agent's token error became his to fix. The fallback is
+    still there for an agent that has never written a log, where the shared file is the only
+    account of the start that failed.
+    """
+    local = os.environ.get("LOCALAPPDATA", "")
+    home = os.path.expanduser("~")
+    bases = [os.path.join(local, "hermes"), os.path.join(home, ".hermes")]
+    if profile and profile != "default":
+        own = _logs_under([os.path.join(b, "profiles", profile) for b in bases])
+        if own:
+            return own
+    return _logs_under(bases)
 
 
 def _tail(path, chars=20000):
@@ -137,6 +177,54 @@ def _tail(path, chars=20000):
             return fh.read()
     except Exception:  # noqa: BLE001
         return ""
+
+
+# A structured gateway line: timestamp, level, logger, message. Anything that does not match
+# is a traceback continuation or free text, and does not go on screen.
+_LOG_LINE = re.compile(
+    r"^(\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d)[,.]?\d* +"
+    r"(DEBUG|INFO|WARNING|ERROR|CRITICAL) +([\w.\[\]_-]+): +(.*)$")
+_SHOWN = ("WARNING", "ERROR", "CRITICAL")
+# Belt and braces: a token can only get into a log through somebody else's mistake, but this
+# is the one place a log is shown on a screen, so it is also the place to catch it.
+_TOKENISH = re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{30,}")
+
+
+def _source(logger):
+    """`hermes_plugins.telegram_platform.adapter` -> `Telegram`. The owner is reading this to
+    find out which part is unhappy, and the dotted path is an answer for somebody else."""
+    low = (logger or "").lower()
+    for word, label in (("telegram", "Telegram"), ("whatsapp", "WhatsApp"),
+                        ("api_server", "esta pantalla"), ("http", "esta pantalla")):
+        if word in low:
+            return label
+    return "motor" if "gateway" in low else (logger or "").split(".")[-1]
+
+
+def log_digest(profile=None, limit=40, chars=60000):
+    """The last diagnostic lines of this agent's gateway, for reading inside Olivaw.
+
+    Only the levels that are a diagnosis, and only lines whose shape says they came from a
+    logger rather than from a message. The owner's conversations pass through this gateway;
+    "show me the log" must not become a way to read them back out of a panel, so the filter
+    is a whitelist of structure and level, never a blacklist of what looks private.
+    """
+    out, files = [], []
+    for p in log_paths(profile):
+        if p.endswith("-exit-diag.log"):      # JSON records of starts and exits, not lines
+            continue
+        files.append(p)
+        for raw in _tail(p, chars).splitlines():
+            m = _LOG_LINE.match(raw.strip())
+            if not m:
+                continue
+            ts, level, logger, msg = m.groups()
+            if level not in _SHOWN and not SIGNS["connected"].search(msg):
+                continue
+            out.append({"ts": ts, "level": level, "logger": _source(logger),
+                        "text": _TOKENISH.sub("«token»", msg)[:300]})
+    out.sort(key=lambda r: r["ts"])
+    return {"lines": out[-max(1, limit):], "files": files, "total": len(out)}
 
 
 def scan_logs(profile=None, chars=20000):
@@ -157,8 +245,14 @@ def scan_logs(profile=None, chars=20000):
 
 
 # States where waiting longer cannot help: the answer will not change on its own.
+#
+# The three telegram_* states are here for a second reason. Each costs a request Telegram
+# holds for sixteen seconds before refusing it, so a poll that "waits for it to settle"
+# spends half a minute confirming what the first answer already said. A bot Telegram is not
+# serving is not a handshake in progress.
 TERMINAL = ("token_rejected", "webhook_set", "no_token", "unreachable",
-            "unreachable_tls", "unreachable_network")
+            "unreachable_tls", "unreachable_network",
+            "telegram_down", "telegram_busy", "telegram_slow")
 
 
 def wait_for_connection(profile=None, hermes=None, seconds=30):
@@ -180,13 +274,61 @@ def wait_for_connection(profile=None, hermes=None, seconds=30):
         _time.sleep(2)
 
 
+# The advice that must never be given by mistake. BotFather invalidates the old token the
+# moment it issues the next one, so "generate a new token" is a one-way door: follow it
+# against a bot Telegram is merely unwell about, and the working token is gone and the new
+# one meets the identical 502. Only Telegram SAYING NO to the credential justifies it.
+_DEAD_TOKEN = (400, 401, 403, 404)
+
+
+def _refused(res, profile, status, data):
+    """Telegram answered, and the answer was not yes. Which kind of no is the whole question."""
+    why = (data.get("description") or "") if isinstance(data, dict) else ""
+    said = (" (%s)" % why) if why else ""
+    if status in _DEAD_TOKEN:
+        res.update(state="token_rejected",
+                   detail="Telegram RECHAZÓ el token del perfil «%s»%s. Suele pasar cuando el "
+                          "token fue revocado (BotFather invalida el anterior al generar uno "
+                          "nuevo). Crea uno con /token en @BotFather y pégalo otra vez."
+                          % (profile, said))
+        return res
+    # Everything below is Telegram's own trouble with this bot. The token is not in question,
+    # and saying so plainly matters more than the wording of the rest.
+    res["api_up"] = api_reachable()
+    proof = (" Este equipo sí alcanza a Telegram: una petición de prueba sin token recibe "
+             "respuesta al instante, así que no es tu red ni tu cortafuegos."
+             if res["api_up"] else "")
+    if status == 429:
+        res.update(state="telegram_busy",
+                   detail="Telegram está limitando las peticiones de este bot%s (error 429), "
+                          "así que de momento no contesta. No es el token.%s Espera unos "
+                          "minutos y vuelve a comprobar." % (said, proof))
+        return res
+    if status >= 500:
+        res.update(state="telegram_down",
+                   detail="Telegram respondió «%s» (error %d) al preguntarle por este bot. Es "
+                          "un fallo del lado de Telegram, no de tu token.%s\n\nNO generes un "
+                          "token nuevo: al hacerlo el actual deja de servir y el problema "
+                          "seguiría igual. Hermes reintenta la conexión solo cada pocos "
+                          "minutos; esto suele restablecerse por sí mismo."
+                          % (why or "Bad Gateway", status, proof))
+        return res
+    res.update(state="telegram_refused",
+               detail="Telegram contestó con un error %d%s al preguntarle por este bot.%s"
+                      % (status, said, proof))
+    return res
+
+
 def check(profile=None, hermes=None, token=None):
     """The verdict. `token` overrides the profile's own (used to pre-flight a token the owner
     just typed, before it is written anywhere)."""
     profile = profile or "default"
+    # gateway_running starts as None - UNKNOWN, not stopped. Every branch that returns before
+    # the gateway is asked used to hand back a confident False, so a verdict about Telegram's
+    # side carried "y su motor está apagado" about an agent that was up and retrying.
     res = {"ok": False, "profile": profile, "state": "unknown", "detail": "",
            "bot": "", "has_token": False, "has_owner": False, "has_home": False,
-           "gateway_running": False, "logs": log_paths(profile), "notes": []}
+           "gateway_running": None, "logs": log_paths(profile), "notes": []}
 
     env_file = ""
     env = {}
@@ -231,19 +373,24 @@ def check(profile=None, hermes=None, token=None):
                        detail="Este equipo no pudo siquiera resolver api.telegram.org. Es la "
                               "red o el DNS, no el token.%s" % via)
             return res
+        # The handshake worked, so the chain, the DNS and the route are all fine. Ask the API
+        # itself, with no token: if it answers, this machine's connection is not the problem
+        # and "comprueba tu conexión" would send the owner to repair a working router.
+        if api_reachable():
+            res["api_up"] = True
+            res.update(state="telegram_slow",
+                       detail="Telegram aceptó la conexión desde este equipo pero no contestó a "
+                              "tiempo al preguntarle por este bot. No es tu red: una petición "
+                              "de prueba sin token recibe respuesta al instante. Es Telegram, "
+                              "que ahora mismo no está atendiendo a este bot.%s" % via)
+            return res
         res.update(state="unreachable",
                    detail="No pude hablar con Telegram desde este equipo (sin conexión, o un "
                           "cortafuegos lo bloquea).%s No sé si el token es bueno; vuelve a "
                           "comprobarlo cuando haya red." % via)
         return res
     if not ok:
-        why = (data.get("description") or "") if isinstance(data, dict) else ""
-        res.update(state="token_rejected",
-                   detail="Telegram RECHAZÓ el token del perfil «%s»%s. Suele pasar cuando el "
-                          "token fue revocado (BotFather invalida el anterior al generar uno "
-                          "nuevo). Crea uno con /token en @BotFather y pégalo otra vez."
-                          % (profile, (" (%s)" % why) if why else ""))
-        return res
+        return _refused(res, profile, status or 0, data)
     res["bot"] = (data.get("result") or {}).get("username") or ""
 
     ok_wh, wh, _st = _api(token, "getWebhookInfo")

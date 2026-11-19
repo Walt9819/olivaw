@@ -284,6 +284,47 @@ def _queue_gateway_reload(profile):
         return {"ok": False, "detail": str(e)}
 
 
+def _wait_talk(profile, hermes, seconds=12):
+    """Give "Desde esta pantalla" the few seconds it needs after a restart.
+
+    Returns the last status, or None when the channel is switched off - in which case
+    nothing is waited for, because nothing is coming up.
+    """
+    st = _safe_call(lambda: talk.status(profile, hermes, INSTALL_DIR))
+    if not st or not st.get("enabled"):
+        return st
+    deadline = time.time() + max(0, seconds)
+    while not st.get("ready") and time.time() < deadline:
+        time.sleep(1.5)
+        st = _safe_call(lambda: talk.status(profile, hermes, INSTALL_DIR)) or st
+    return st
+
+
+def _safe_call(fn, default=None):
+    try:
+        return fn()
+    except Exception:  # noqa: BLE001
+        return default
+
+
+def _reconnect_detail(restart, snap):
+    """The one sentence the button leaves on screen.
+
+    It describes the state AFTER the restart, which is not the same thing as whether the
+    restart command worked - and the difference is the whole value of the button. An agent
+    whose gateway came back up and whose Telegram is still refused has not been repaired,
+    and a green "listo" there is how an owner walks away from a silent agent.
+    """
+    if not restart.get("running"):
+        return ("El motor no llegó a levantarse. Mira el registro aquí abajo: ahí está lo "
+                "que dijo al intentarlo.")
+    bad = [c["label"] for c in (snap.get("channels") or []) if c.get("state") == "warn"]
+    if not bad:
+        return "Listo: el motor volvió a arrancar y sus canales responden."
+    return ("El motor volvió a arrancar, pero %s %s sin conectar. El detalle de abajo dice "
+            "por qué." % (" y ".join(bad), "sigue" if len(bad) == 1 else "siguen"))
+
+
 def _safe_slug(slug):
     """Accept only a strict lowercase-alnum slug (<=24). Rejects path traversal / injection
     for the reconfigure + agent-action paths, which take a slug straight from the request."""
@@ -1170,6 +1211,21 @@ class Handler(BaseHTTPRequestHandler):
                                         port=_port_for_profile(prof),
                                         fast=bool(body.get("fast")))
 
+        # Put ONE agent back on its channels, and say what happened. The console had no
+        # such button: an agent whose Telegram had dropped could only be "paused" and
+        # "resumed", which is a different thing - it writes enabled=false, and an owner
+        # reaching for it to repair a connection is being asked to turn the agent off and
+        # hope. See _reconnect.
+        if route == "connections/reconnect":
+            return self._reconnect(body)
+
+        # The gateway's own diagnostic lines, in the panel, so "ver el registro" is not an
+        # instruction to go and find a file. Levels and shape only; see log_digest.
+        if route == "connections/logs":
+            return {"ok": True,
+                    **telegram_health.log_digest(_target_profile(body),
+                                                 limit=int(body.get("limit") or 40))}
+
         # Talking to the agent from this screen, through Hermes' own api_server platform -
         # so it is the SAME agent, with its persona, memory and skills, and not the raw
         # brain behind the bridge. wizard/talk.py explains why that distinction matters.
@@ -2042,6 +2098,54 @@ class Handler(BaseHTTPRequestHandler):
         out["activation"] = activation
         return out
 
+    def _reconnect(self, body):
+        """Stop this agent's gateway, start it, wait for it, and report what came back.
+
+        Telegram and WhatsApp both ride the gateway, so one restart is the honest unit of
+        "reconnect" - there is no smaller thing to turn off and on. It goes through
+        gateway_restart_safe, which verifies each half rather than trusting the command,
+        and then re-reads every channel so the answer on screen is measured AFTER the
+        restart instead of being the hopeful sentence the button could have printed.
+
+        It refuses two things on purpose. A paused agent is not restarted: the supervisor
+        would stop it again within the minute, and the owner would be left believing a
+        repair had been attempted. And a verdict that waiting cannot change - Telegram
+        refusing this bot, a revoked token - ends the wait immediately instead of spending
+        half a minute on polls that re-ask a settled question.
+        """
+        prof = _target_profile(body)
+        hp = which("hermes")
+        if not hp:
+            return {"ok": False, "detail": "No encuentro el comando «hermes» en este equipo, "
+                                           "así que no puedo reiniciar nada desde aquí."}
+        slug = prof or "default"
+        if slug != "default":
+            rec = agents_registry.get(slug, INSTALL_DIR) or {}
+            if rec and rec.get("enabled") is False:
+                return {"ok": False, "paused": True,
+                        "detail": "Este agente está pausado. Reanúdalo primero: mientras lo "
+                                  "esté, el vigilante volvería a detenerlo en cuanto lo "
+                                  "arrancara."}
+            if not hermes_ctl.profile_exists(slug, hp):
+                return {"ok": False, "detail": "Este agente ya no tiene su perfil de Hermes en "
+                                               "este equipo. Usa «Restaurar» para volver a "
+                                               "escribirlo."}
+        r = hermes_ctl.gateway_restart_safe(hp, None if slug == "default" else slug)
+        tg = telegram_health.wait_for_connection(slug, hp,
+                                                 seconds=int(body.get("wait") or 20))
+        # The gateway's process is up before its platforms are, and this screen's one binds
+        # last. Measuring the instant the pid exists reported "configurado pero todavía no
+        # escucha" about an agent that was seconds from listening - a warning produced by
+        # asking too early, on the one screen the owner is looking at while she waits. The
+        # wait is skipped entirely when the channel is off: there is nothing to come up.
+        _wait_talk(slug, hp)
+        snap = connections.snapshot(slug, hp, INSTALL_DIR, port=_port_for_profile(slug),
+                                    gateway_running=r.get("running"), telegram_state=tg)
+        return {"ok": bool(r.get("ok")), "running": r.get("running"),
+                "restarted_cleanly": r.get("restarted_cleanly"),
+                "steps": r.get("detail", ""), "profile": slug, "report": snap,
+                "detail": _reconnect_detail(r, snap)}
+
     def _agent_action(self, slug, action):
         hp = which("hermes")
         if slug == "default":
@@ -2060,6 +2164,18 @@ class Handler(BaseHTTPRequestHandler):
             if hp and hermes_ctl.profile_exists(slug, hp):
                 hermes_ctl.gateway("stop", hp, profile=slug)
             return {"ok": True, "detail": "Agente pausado; su puente se detiene en segundos."}
+        # Restart WITHOUT touching `enabled`. The console only ever offered pause and
+        # resume, which write that flag: an owner reaching for them to put a dropped
+        # channel back is editing whether the agent should exist at all, and leaves it
+        # off if the second click never lands. Restarting is a separate intent and now
+        # has a separate verb - this is what connections/reconnect calls.
+        if action == "restart":
+            if not hp:
+                return {"ok": False, "detail": "No encuentro el comando «hermes»."}
+            if not hermes_ctl.profile_exists(slug, hp):
+                return {"ok": False, "detail": "Este agente ya no tiene su perfil de Hermes."}
+            r = hermes_ctl.gateway("restart", hp, profile=slug)
+            return {"ok": bool(r.get("ok")), "detail": r.get("detail", "")}
         if action in ("start", "restore"):
             ws = rec.get("workspace") or os.path.join(
                 agents_registry.agent_dir(slug, INSTALL_DIR), "workspace")

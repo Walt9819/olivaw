@@ -1088,6 +1088,112 @@ await new Promise((r) => setTimeout(r, 0));
   ok("each row links to the page that fixes it", card.includes('data-goto="whatsapp"'), card);
 }
 
+// ── and something can be DONE about it from here ───────────────────────────────
+// The card reported and stopped. One agent on this machine lost Telegram while the other
+// six kept it: there was no button in Olivaw that put it back, no account of what was
+// wrong, and the nearest thing on the agent's page was "Pausar" - which writes
+// enabled=false and is not a repair. The case below is that failure exactly: Telegram
+// answering 502 for one bot, with the gateway up and the token good.
+console.log("\n=== a channel that stopped can be diagnosed and reconnected from the agent ===");
+{
+  const BASE = CANNED["connections/status"];
+  const DOWN = JSON.parse(JSON.stringify(BASE));
+  DOWN.telegram = {
+    ok: false, state: "telegram_down", bot: "", has_token: true, has_owner: true,
+    has_home: true, api_up: true, gateway_running: null,
+    detail: "Telegram respondio Bad Gateway (error 502) al preguntarle por este bot.",
+  };
+  DOWN.whatsapp.numbers[0].live = null;
+  DOWN.whatsapp.numbers[0].connected = false;
+  DOWN.whatsapp.probed = 1;
+  DOWN.whatsapp.live_count = 0;
+  DOWN.channels = [
+    // Verbatim from telegram.detail, which is what the server's _headline does: one
+    // sentence, one source, so the row and the report cannot disagree about the same bot.
+    { icon: "TG", label: "Telegram", state: "warn", detail: DOWN.telegram.detail },
+    { icon: "WA", label: "WhatsApp", state: "warn", detail: "vinculado, sin conexion" },
+    { icon: "UI", label: "Desde esta pantalla", state: "ok", detail: "Listo" },
+    { icon: "BR", label: "Codex", state: "ok", detail: "Codex es el cerebro" },
+  ];
+  CANNED["connections/status"] = DOWN;
+  CANNED["connections/reconnect"] = {
+    ok: true, running: true, restarted_cleanly: true, profile: "daneel",
+    steps: "stop: ok | start: ok",
+    detail: "El motor volvio a arrancar, pero Telegram sigue sin conectar.",
+    report: DOWN,
+  };
+  CANNED["connections/logs"] = {
+    ok: true, total: 2, files: ["gateway.log"], lines: [
+      { ts: "2026-11-18 20:33:16", level: "WARNING", logger: "Telegram",
+        text: "Connect attempt 1/8 failed: Bad Gateway" },
+      { ts: "2026-11-18 20:33:27", level: "ERROR", logger: "motor",
+        text: "Reconnect telegram error: timed out after 30s" },
+    ],
+  };
+
+  CALLS.length = 0;
+  OL.goSec("home", "daneel");
+  await new Promise((r) => setTimeout(r, 0));
+  const card0 = getEl("connCard");
+  ok("the card carries a reconnect button without opening anything",
+     htmlOf("connCard").includes('data-conn="reconnect"'), htmlOf("connCard"));
+
+  const more = card0.querySelectorAll('[data-row="Telegram"]')[0];
+  ok("and each channel opens into its own report", !!more, htmlOf("connCard"));
+  more.onclick();
+  const open = htmlOf("connCard");
+  ok("the report says what Telegram itself answered", open.includes("Bad Gateway"), open);
+  // The one sentence that matters most. BotFather invalidates the old token the moment it
+  // issues the next, so "just make a new token" against a bot Telegram is merely unwell
+  // about destroys the working credential and changes nothing.
+  ok("it tells the owner NOT to regenerate a good token",
+     /no generes un token nuevo/i.test(open), open);
+  ok("it reports that Telegram is reachable from this computer",
+     /responde/.test(open) && open.includes("Telegram desde este equipo"), open);
+  ok("the owner's lock is reported in the same place", /solo t[uú] puedes/i.test(open), open);
+
+  CALLS.length = 0;
+  getEl("connCard").querySelectorAll('[data-conn="logs"]')[0].onclick();
+  await new Promise((r) => setTimeout(r, 0));
+  ok("the gateway's own words can be read without leaving Olivaw",
+     CALLS.some((c) => c.route === "connections/logs"), JSON.stringify(CALLS));
+  const logged = htmlOf("connCard");
+  ok("and they are shown in the panel", logged.includes("Connect attempt 1/8 failed"), logged);
+  ok("asking for the log asks only about this agent",
+     CALLS.filter((c) => c.route === "connections/logs").every((c) => c.body.profile === "daneel"),
+     JSON.stringify(CALLS));
+
+  CALLS.length = 0;
+  getEl("connCard").querySelectorAll('[data-conn="reconnect"]')[0].onclick();
+  await new Promise((r) => setTimeout(r, 0));
+  const recon = CALLS.filter((c) => c.route === "connections/reconnect");
+  ok("reconnecting restarts THIS agent", recon.length === 1 && recon[0].body.profile === "daneel",
+     JSON.stringify(CALLS.map((c) => c.route + ":" + JSON.stringify(c.body))));
+  ok("it does not reach for pause/resume to do it",
+     !CALLS.some((c) => c.route === "agent/action"), JSON.stringify(CALLS.map((c) => c.route)));
+  // The restart worked and the channel did not come back. Reporting that as success is how
+  // an owner walks away from an agent that still cannot hear anyone.
+  const pill = htmlOf("connPill") + " " + (getEl("connPill") || {}).className;
+  ok("a restart that did not fix the channel does not report success",
+     /sigue sin conectar/i.test(pill) && /err/.test((getEl("connPill") || {}).className || ""),
+     pill);
+
+  // WhatsApp's own version of the same lie: creds.json on disk says "linked" forever, so a
+  // number whose connection is down used to read as connected.
+  getEl("connCard").querySelectorAll('[data-row="WhatsApp"]')[0].onclick();
+  const wopen = htmlOf("connCard");
+  ok("a number that is paired but not connected says exactly that",
+     /sin conexi[oó]n ahora/i.test(wopen), wopen);
+  ok("and it says the phone does not need to scan anything again",
+     /no hace falta volver a escanear/i.test(wopen), wopen);
+
+  CANNED["connections/status"] = BASE;
+  delete CANNED["connections/reconnect"];
+  delete CANNED["connections/logs"];
+  OL.goSec("home", "default");
+  await new Promise((r) => setTimeout(r, 0));
+}
+
 console.log("\n=== WhatsApp is a page you manage, with every number's state on it ===");
 CALLS.length = 0;
 OL.goSec("whatsapp", "daneel");
